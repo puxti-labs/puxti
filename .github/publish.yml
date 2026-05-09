@@ -3,7 +3,7 @@ name: Publish
 on:
   push:
     tags:
-      - "pypi/v*"
+      - "v*"
 
 jobs:
   test:
@@ -44,4 +44,4 @@ jobs:
         run: uv build
 
       - name: Publish to PyPI
-        run: uv run twine upload --username __token__ --password ${{ secrets.PYPI_API_TOKEN }} dist/*
+        run: uv publish --token ${{ secrets.PYPI_API_TOKEN }}
