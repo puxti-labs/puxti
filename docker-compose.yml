@@ -1,0 +1,17 @@
+services:
+  neo4j:
+    image: neo4j:5.20-community
+    container_name: puxti-neo4j
+    ports:
+      - "7474:7474"   # Neo4j browser UI
+      - "7687:7687"   # Bolt driver (used by Puxti)
+    environment:
+      NEO4J_AUTH: neo4j/puxti_dev
+      NEO4J_PLUGINS: '["apoc"]'
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+
+volumes:
+  neo4j_data:
+  neo4j_logs:

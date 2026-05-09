@@ -1,0 +1,373 @@
+import base64
+
+import httpx
+
+from puxti.models import PropagationResult, SemanticChangeEvent
+
+_BASE_URL = "https://api.github.com"
+
+
+def _raise_for_status(response: httpx.Response, context: str = "") -> None:
+    """Like raise_for_status() but includes the GitHub error message body."""
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        try:
+            body = response.json()
+            message = body.get("message", "")
+            errors = body.get("errors", [])
+            detail = f"{message}"
+            if errors:
+                detail += f" — {errors}"
+        except Exception:
+            detail = response.text[:300]
+        ctx = f" [{context}]" if context else ""
+        raise httpx.HTTPStatusError(
+            f"GitHub API error {response.status_code}{ctx}: {detail}",
+            request=exc.request,
+            response=exc.response,
+        ) from exc
+
+
+class GitHubConnector:
+    """Delivers PropagationResult diffs as a GitHub pull request.
+
+    This is an output-only connector — it does not extract entities or lineage.
+    It takes the file diffs produced by the propagation engine and opens a PR
+    on the target repository.
+
+    Config keys:
+        repo        - "owner/repo" (required)
+        token       - GitHub personal access token or app token (required)
+        base_branch - branch to open the PR against (default: "main")
+    """
+
+    def __init__(
+        self, config: dict, client: httpx.AsyncClient | None = None
+    ) -> None:
+        self._repo = config["repo"]
+        self._token = config["token"]
+        self._base_branch = config.get("base_branch", "main")
+        self._client = client or httpx.AsyncClient()
+
+    @property
+    def _headers(self) -> dict:
+        return {
+            "Authorization": f"Bearer {self._token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+
+    async def health_check(self) -> bool:
+        """Verify the token has write access to the configured repo."""
+        try:
+            response = await self._client.get(
+                f"{_BASE_URL}/repos/{self._repo}",
+                headers=self._headers,
+            )
+            if response.status_code != 200:
+                return False
+            return response.json().get("permissions", {}).get("push", False)
+        except httpx.HTTPError:
+            return False
+
+    async def open_pr(
+        self,
+        result: PropagationResult,
+        event: SemanticChangeEvent,
+        companions: list[tuple[str, str, str]] | None = None,
+    ) -> PropagationResult:
+        """Open a GitHub PR for all diffs in the PropagationResult.
+
+        Creates a branch off base_branch, commits each diff as a file update,
+        then opens a PR with the semantic context and reasoning as the body.
+
+        Args:
+            result: The PropagationResult containing the file diffs to apply.
+            event:  The SemanticChangeEvent — used for PR title and body.
+
+        Returns:
+            The same PropagationResult with pr_url and status="opened" set.
+        """
+        branch_name = f"puxti/{result.change_event_id[:8]}"
+
+        # 1. Get the HEAD SHA of the base branch
+        base_sha = await self._get_branch_sha(self._base_branch)
+
+        # 2. Create the feature branch
+        await self._create_branch(branch_name, base_sha)
+
+        # 3. Commit each diff onto the new branch
+        for diff in result.diffs:
+            existing_sha = await self._get_file_sha(diff.file_path, branch_name)
+            await self._upsert_file(
+                path=diff.file_path,
+                content=diff.after,
+                message=f"puxti: {diff.description}",
+                branch=branch_name,
+                sha=existing_sha,
+            )
+
+        # 4. Open the PR
+        pr_url = await self._create_pull_request(
+            title=_pr_title(event),
+            body=_pr_body(event, result, companions=companions),
+            head=branch_name,
+        )
+
+        result.pr_url = pr_url
+        result.status = "opened"
+        return result
+
+    async def add_companion_note(
+        self,
+        pr_url: str,
+        companions: list[tuple[str, str, str]],
+        this_connector: str,
+    ) -> None:
+        """Patch an already-opened PR to add a Related PRs section.
+
+        Called after all PRs in a multi-connector propagation are open, so each
+        PR can reference the URLs of the others.
+        """
+        pr_number = int(pr_url.rstrip("/").rsplit("/", 1)[-1])
+
+        response = await self._client.get(
+            f"{_BASE_URL}/repos/{self._repo}/pulls/{pr_number}",
+            headers=self._headers,
+        )
+        _raise_for_status(response, f"get PR body: {pr_number}")
+        current_body = response.json().get("body") or ""
+
+        section = _companion_section(companions, this_connector=this_connector)
+        footer = "---\n*Generated by Puxti"
+        if footer in current_body:
+            updated_body = current_body.replace(footer, section + "\n\n" + footer)
+        else:
+            updated_body = current_body + "\n\n" + section
+
+        response = await self._client.patch(
+            f"{_BASE_URL}/repos/{self._repo}/pulls/{pr_number}",
+            headers=self._headers,
+            json={"body": updated_body},
+        )
+        _raise_for_status(response, f"patch PR body: {pr_number}")
+
+    # ── Private helpers ────────────────────────────────────────────────────────
+
+    async def _get_branch_sha(self, branch: str) -> str:
+        response = await self._client.get(
+            f"{_BASE_URL}/repos/{self._repo}/git/refs/heads/{branch}",
+            headers=self._headers,
+        )
+        _raise_for_status(response, f"get branch SHA: {branch}")
+        return response.json()["object"]["sha"]
+
+    async def _create_branch(self, name: str, sha: str) -> None:
+        response = await self._client.post(
+            f"{_BASE_URL}/repos/{self._repo}/git/refs",
+            headers=self._headers,
+            json={"ref": f"refs/heads/{name}", "sha": sha},
+        )
+        _raise_for_status(response, f"create branch: {name}")
+
+    async def _get_file_sha(self, path: str, branch: str) -> str | None:
+        """Return the blob SHA of path on branch, or None if the file doesn't exist."""
+        response = await self._client.get(
+            f"{_BASE_URL}/repos/{self._repo}/contents/{path}",
+            headers=self._headers,
+            params={"ref": branch},
+        )
+        if response.status_code == 404:
+            return None
+        _raise_for_status(response, f"get file SHA: {path}")
+        return response.json()["sha"]
+
+    async def _upsert_file(
+        self,
+        path: str,
+        content: str,
+        message: str,
+        branch: str,
+        sha: str | None,
+    ) -> None:
+        payload: dict = {
+            "message": message,
+            "content": base64.b64encode(content.encode()).decode(),
+            "branch": branch,
+        }
+        if sha:
+            payload["sha"] = sha
+
+        response = await self._client.put(
+            f"{_BASE_URL}/repos/{self._repo}/contents/{path}",
+            headers=self._headers,
+            json=payload,
+        )
+        _raise_for_status(response, f"upsert file: {path}")
+
+    async def _create_pull_request(
+        self, title: str, body: str, head: str
+    ) -> str:
+        response = await self._client.post(
+            f"{_BASE_URL}/repos/{self._repo}/pulls",
+            headers=self._headers,
+            json={
+                "title": title,
+                "body": body,
+                "head": head,
+                "base": self._base_branch,
+            },
+        )
+        _raise_for_status(response, f"create PR: {head} → {self._base_branch}")
+        return response.json()["html_url"]
+
+
+# ── PR content helpers ────────────────────────────────────────────────────────
+
+_CONNECTOR_ROLE = {
+    "airflow": "annotation only — safe to merge independently",
+    "dbt": "SQL changes — review after Airflow annotation is merged",
+}
+
+
+def _companion_section(companions: list[tuple[str, str, str]], this_connector: str) -> str:
+    """Build a Related PRs section from a list of (connector, repo, pr_url) tuples."""
+    lines = [
+        "## Related PRs",
+        "This PR is part of a cross-system semantic change. Review alongside:",
+    ]
+    for connector, repo, pr_url in companions:
+        pr_num = pr_url.rstrip("/").rsplit("/", 1)[-1]
+        role = _CONNECTOR_ROLE.get(connector, connector)
+        lines.append(f"- **{connector}** ({role}): [{repo}#{pr_num}]({pr_url})")
+
+    has_airflow = any(c == "airflow" for c, _, _ in companions)
+    has_dbt = any(c == "dbt" for c, _, _ in companions)
+
+    if this_connector == "dbt" and has_airflow:
+        lines += ["", "Suggested merge order: Airflow annotation first, then this PR."]
+    elif this_connector == "airflow" and has_dbt:
+        lines += ["", "Suggested merge order: merge this annotation first, then the dbt PR."]
+
+    return "\n".join(lines)
+
+def _pr_title(event: SemanticChangeEvent) -> str:
+    """Concise imperative title derived from the change, not the prose description."""
+    before = event.change.get("before", {}).get("name") if event.change else None
+    after = event.change.get("after", {}).get("name") if event.change else None
+
+    # Strip the column name from the entity_id to get the parent model
+    parts = event.entity_id.rsplit(".", 1)
+    model_id = parts[0] if len(parts) == 2 else event.entity_id
+
+    if before and after:
+        title = f"rename {before} → {after}"
+    else:
+        # Fallback: first sentence of semantic_context, capped
+        title = event.semantic_context.split(".")[0].strip()
+
+    if len(title) > 70:
+        title = title[:67] + "..."
+    return title
+
+
+def _needs_attention(description: str) -> bool:
+    """Return True if this diff requires human review rather than a clean auto-change."""
+    return any(kw in description.lower() for kw in (
+        "naming conflict",
+        "manual review required",
+        "manual resolution required",
+        "verify carefully",
+    ))
+
+
+def _pr_body(
+    event: SemanticChangeEvent,
+    result: PropagationResult,
+    companions: list[tuple[str, str, str]] | None = None,
+) -> str:
+    changed = [d for d in result.diffs if not _needs_attention(d.description)]
+    attention = [d for d in result.diffs if _needs_attention(d.description)]
+
+    sections: list[str] = [f"## What changed\n{event.semantic_context}"]
+
+    if changed:
+        file_list = "\n".join(f"- `{d.file_path}`" for d in changed)
+        sections.append(f"## Files changed\n{file_list}")
+
+    if attention:
+        attention_list = "\n".join(
+            f"- `{d.file_path}` — {_attention_reason(d.description)}"
+            for d in attention
+        )
+        sections.append(f"## Requires your attention\n{attention_list}")
+
+    if result.unverified_entity_ids:
+        # Derive source model name to distinguish the two unverified cases.
+        entity_parts = event.entity_id.rsplit(".", 1)
+        model_part = entity_parts[0] if len(entity_parts) == 2 else event.entity_id
+        source_model_name = model_part.rsplit(".", 1)[-1]
+
+        source_unverified = [
+            eid for eid in result.unverified_entity_ids
+            if eid.rsplit(".", 1)[-1] == source_model_name
+        ]
+        transitive_unverified = [
+            eid for eid in result.unverified_entity_ids
+            if eid not in source_unverified
+        ]
+
+        unverified_sections: list[str] = []
+
+        if source_unverified:
+            source_list = "\n".join(f"- `{eid}`" for eid in source_unverified)
+            old_name = event.change.get("before", {}).get("name", "?") if event.change else "?"
+            new_name = event.change.get("after", {}).get("name", "?") if event.change else "?"
+            unverified_sections.append(
+                f"### 🛑 Do not merge until this is resolved\n"
+                f"The source model uses a qualified column reference (e.g. `alias.{old_name}`) "
+                f"which puxti cannot safely rename without a SQL parser.\n\n"
+                f"**Before merging this PR**, manually update the source model to add the alias:\n\n"
+                f"```sql\n-- In the SELECT list of the source model, change:\n"
+                f"    alias.{old_name}\n"
+                f"-- to:\n"
+                f"    alias.{old_name} AS {new_name}\n"
+                f"```\n\n"
+                f"Source model that needs the manual update:\n\n"
+                f"{source_list}\n\n"
+                f"Once that change is live, the files in **Files changed** above will be correct."
+            )
+
+        if transitive_unverified:
+            transitive_list = "\n".join(f"- `{eid}`" for eid in transitive_unverified)
+            unverified_sections.append(
+                f"### Transitive dependents — scope unclear\n"
+                f"These models were flagged as potentially affected but puxti could not "
+                f"confirm the renamed column traces back to the source. "
+                f"This can happen with non-standard dbt layering or shared column names across unrelated models.\n\n"
+                f"{transitive_list}"
+            )
+
+        sections.append(
+            "## Could not verify — review manually\n"
+            + "\n\n".join(unverified_sections)
+        )
+
+    if companions:
+        sections.append(_companion_section(companions, this_connector=result.connector))
+
+    sections.append(f"---\n*Generated by Puxti — change ID: `{result.change_event_id}`*")
+    return "\n\n".join(sections)
+
+
+def _attention_reason(description: str) -> str:
+    """Return a short human-readable reason for why this file needs attention."""
+    desc = description.lower()
+    if "naming conflict" in desc or "manual resolution" in desc:
+        return "naming conflict — see inline comment"
+    if "verify carefully" in desc:
+        return "LLM-generated at hop 2 — verify logic"
+    if "manual review" in desc:
+        return "too deep to generate SQL — review for impact"
+    return "review required"
