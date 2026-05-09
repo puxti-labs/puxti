@@ -6,7 +6,7 @@ Puxti helps data teams propagate schema and semantic changes across dbt and the 
 pip install puxti
 ```
 
-Python 3.12+ required. No signup, no license key.
+Python 3.12 or 3.13 required. No signup, no license key.
 
 ---
 
@@ -31,7 +31,7 @@ Together, these layers let Puxti reason about what a change *means* across the s
 
 ## Requirements
 
-- **Python 3.12+**
+- **Python 3.12 or 3.13** — dbt-duckdb is not yet compatible with Python 3.14
 - **Docker** — for running Neo4j locally (until the SQLite port lands)
 - **Anthropic API key** (BYOK) — for semantic reasoning. Your key stays in your environment and is used to call the Anthropic API directly — nothing goes through a Puxti-controlled server. Calls use `claude-sonnet-4-6`. Typical cost for `puxti scan` on a 20-model project is under $0.05; `puxti capture` on a single column is under $0.02.
 - **GitHub personal access token** — with `repo` scope (Contents + Pull requests write)
