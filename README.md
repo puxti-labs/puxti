@@ -32,7 +32,6 @@ Together, these layers let Puxti reason about what a change *means* across the s
 ## Requirements
 
 - **Python 3.12 or 3.13** — dbt-duckdb is not yet compatible with Python 3.14
-- **Docker** — for running Neo4j locally (until the SQLite port lands)
 - **Anthropic API key** (BYOK) — for semantic reasoning. Your key stays in your environment and is used to call the Anthropic API directly — nothing goes through a Puxti-controlled server. Calls use `claude-sonnet-4-6`. Typical cost for `puxti scan` on a 20-model project is under $0.05; `puxti capture` on a single column is under $0.02.
 - **GitHub personal access token** — with `repo` scope (Contents + Pull requests write)
 - **A dbt project** with a compiled `manifest.json` (`dbt compile` or `dbt run`)
@@ -59,9 +58,6 @@ cp .env.example .env
 
 | Variable | Description |
 |---|---|
-| `NEO4J_URI` | Bolt connection string — `bolt://localhost:7687` if running locally via Docker |
-| `NEO4J_USERNAME` | Neo4j username — `neo4j` by default |
-| `NEO4J_PASSWORD` | Neo4j password — must match `NEO4J_AUTH` in `docker-compose.yml` |
 | `ANTHROPIC_API_KEY` | Your Anthropic API key — get one at [console.anthropic.com](https://console.anthropic.com) |
 | `GITHUB_TOKEN` | Personal access token with `repo` scope (Contents + Pull requests write) |
 | `DBT_PROJECT_DIR` | Path to your dbt project root (the directory containing `dbt_project.yml`) |
@@ -105,28 +101,6 @@ Precedence: CLI flags > `.puxti.yml` > environment variables.
 
 ---
 
-## Start Neo4j
-
-Puxti uses Neo4j as its Knowledge Graph store. The included `docker-compose.yml` runs Neo4j 5.20 (Community) with the APOC plugin enabled — required for graph traversal queries.
-
-```bash
-docker compose up -d
-```
-
-Neo4j browser is available at `http://localhost:7474` — useful for inspecting the Knowledge Graph directly. The Bolt endpoint at `bolt://localhost:7687` is what Puxti connects to.
-
-To stop Neo4j without losing data:
-
-```bash
-docker compose down
-```
-
-To wipe the graph data entirely (e.g. to start fresh):
-
-```bash
-docker compose down -v
-```
-
 ## Verify setup
 
 ```bash
@@ -137,7 +111,7 @@ puxti health   # verify connectivity to all services
 Expected output from `puxti health`:
 
 ```
-✓ Neo4j
+✓ Knowledge Graph  (~/.puxti/graph.db)
 ✓ Anthropic API key
 ✓ dbt manifest
 ✓ GitHub write access — your-org/your-dbt-repo (dbt)
@@ -312,7 +286,6 @@ Puxti v0.6.0 collects no telemetry. A future release will add anonymous, opt-in 
 ## What's next
 
 - **MCP server for coding agents (Claude Code, Cursor)** — query Puxti's knowledge graph from your AI assistant
-- **SQLite backend** — drop the Docker requirement, run Puxti with zero external dependencies
 
 ---
 
@@ -376,12 +349,9 @@ src/puxti/
 ├── core/
 │   ├── capture.py          # semantic capture — LLM enrichment + Knowledge Graph write
 │   ├── corrector.py        # puxti correct — definition correction without propagation
-│   ├── graph.py            # Knowledge Graph — Neo4j interface
+│   ├── graph.py            # Knowledge Graph — SQLite backend (~/.puxti/graph.db)
 │   ├── scanner.py          # puxti scan — bootstraps KG from dbt manifest
 │   └── redefine.py         # puxti redefine — semantic change propagation
-├── graph/
-│   ├── models.py           # graph node/edge type definitions
-│   └── repository.py       # low-level Neo4j read/write operations
 ├── connectors/
 │   ├── base.py             # connector interface
 │   ├── airflow.py          # Airflow connector — DAG parsing + task diff generation

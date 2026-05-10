@@ -428,7 +428,7 @@ def test_health_all_ok():
         result = runner.invoke(app, ["health"])
 
     assert result.exit_code == 0
-    assert "Neo4j" in result.output
+    assert "Knowledge Graph" in result.output
     assert "Anthropic" in result.output
     assert "dbt" in result.output
 
@@ -513,22 +513,18 @@ def test_health_anthropic_not_configured_exits_nonzero():
     assert "ANTHROPIC_API_KEY" in result.output
 
 
-def test_health_neo4j_down_exits_nonzero():
-    mock_graph = MagicMock()
-    mock_graph.connect = AsyncMock(side_effect=Exception("Connection refused"))
-    mock_graph.close = AsyncMock()
-
+def test_health_graph_not_initialised_shows_dash():
     with (
         patch("puxti.cli.settings") as mock_settings,
-        patch("puxti.cli.KnowledgeGraph", return_value=mock_graph),
+        patch("puxti.core.graph.DEFAULT_DB_PATH") as mock_path,
     ):
+        mock_path.exists.return_value = False
         mock_settings.dbt_project_dir = None
         mock_settings.anthropic_api_key = None
 
         result = runner.invoke(app, ["health"])
 
-    assert result.exit_code == 1
-    assert "Neo4j" in result.output
+    assert "Knowledge Graph" in result.output
 
 
 def test_health_dbt_not_configured_shows_dash():

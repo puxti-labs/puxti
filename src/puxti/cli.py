@@ -477,9 +477,8 @@ def config() -> None:
     table.add_column("Key", style="bold", no_wrap=True)
     table.add_column("Value")
 
-    table.add_row("neo4j_uri",         _mask(settings.neo4j_uri))
-    table.add_row("neo4j_username",    _mask(settings.neo4j_username))
-    table.add_row("neo4j_password",    _mask(settings.neo4j_password, secret=True))
+    from puxti.core.graph import DEFAULT_DB_PATH
+    table.add_row("graph_db",          str(DEFAULT_DB_PATH))
     table.add_row("anthropic_api_key", _mask(settings.anthropic_api_key, secret=True))
     table.add_row("github_token",      _mask(settings.github_token, secret=True))
     table.add_row("dbt_project_dir",   _mask(settings.dbt_project_dir))
@@ -1413,15 +1412,12 @@ async def _run_describe(entity: str | None, project: str | None = None) -> None:
 async def _run_health(dbt_project_dir: str | None, workspace: WorkspaceConfig | None = None) -> None:
     all_ok = True
 
-    # Neo4j
-    graph = KnowledgeGraph()
-    try:
-        await graph.connect()
-        console.print("[green]✓[/green] Neo4j")
-        await graph.close()
-    except Exception as exc:
-        console.print(f"[red]✗[/red] Neo4j: {exc}")
-        all_ok = False
+    # Knowledge Graph (SQLite)
+    from puxti.core.graph import DEFAULT_DB_PATH
+    if DEFAULT_DB_PATH.exists():
+        console.print(f"[green]✓[/green] Knowledge Graph  ({DEFAULT_DB_PATH})")
+    else:
+        console.print(f"[yellow]–[/yellow] Knowledge Graph  (not initialised — run [bold]puxti scan[/bold])")
 
     # Anthropic API — uses count_tokens (no credits consumed)
     if settings.anthropic_api_key:

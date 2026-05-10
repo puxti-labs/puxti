@@ -1,667 +1,546 @@
-from neo4j import AsyncDriver, AsyncGraphDatabase, NotificationMinimumSeverity
+"""SQLite-backed Knowledge Graph."""
+from __future__ import annotations
+
+import json
+import logging
+from pathlib import Path
+
+import aiosqlite
 
 from puxti.models import ChangeEvent, CorrectionEvent, Definition, Edge, Entity, SemanticEdge
-from puxti.settings import settings
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_DB_PATH = Path.home() / ".puxti" / "graph.db"
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS entities (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    type TEXT NOT NULL,
+    source_connector TEXT NOT NULL,
+    project TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_entities_name_connector ON entities(name, source_connector);
+CREATE INDEX IF NOT EXISTS idx_entities_project ON entities(project);
+
+CREATE TABLE IF NOT EXISTS lineage_edges (
+    from_id TEXT NOT NULL,
+    to_id TEXT NOT NULL,
+    connector TEXT NOT NULL,
+    type TEXT NOT NULL,
+    PRIMARY KEY (from_id, to_id, connector)
+);
+CREATE INDEX IF NOT EXISTS idx_lineage_to ON lineage_edges(to_id);
+
+CREATE TABLE IF NOT EXISTS semantic_edges (
+    from_id TEXT NOT NULL,
+    to_id TEXT NOT NULL,
+    type TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (from_id, to_id, type)
+);
+CREATE INDEX IF NOT EXISTS idx_semantic_to ON semantic_edges(to_id);
+
+CREATE TABLE IF NOT EXISTS definitions (
+    id TEXT PRIMARY KEY,
+    entity_id TEXT NOT NULL,
+    description TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    created_by TEXT NOT NULL,
+    change_event_id TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_definitions_entity_version ON definitions(entity_id, version);
+
+CREATE TABLE IF NOT EXISTS change_events (
+    id TEXT PRIMARY KEY,
+    type TEXT NOT NULL,
+    source_entity_id TEXT NOT NULL,
+    change TEXT NOT NULL,
+    semantic_context TEXT NOT NULL DEFAULT '',
+    declared_by TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL,
+    detected_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS correction_events (
+    id TEXT PRIMARY KEY,
+    entity_id TEXT NOT NULL,
+    old_definition_id TEXT NOT NULL,
+    new_definition_id TEXT NOT NULL,
+    classified_as TEXT NOT NULL,
+    change_event_id TEXT,
+    created_at TEXT NOT NULL
+);
+"""
+
+
+def _to_entity(row: aiosqlite.Row) -> Entity:
+    return Entity(
+        id=row["id"],
+        name=row["name"],
+        type=row["type"],
+        source_connector=row["source_connector"],
+        project=row["project"] or "",
+    )
+
+
+def _to_semantic_edge(row: aiosqlite.Row) -> SemanticEdge:
+    return SemanticEdge(
+        from_entity_id=row["from_id"],
+        to_entity_id=row["to_id"],
+        type=row["type"],
+        description=row["description"] or "",
+        created_by=row["created_by"] or "scan",
+    )
 
 
 class KnowledgeGraph:
-    """Interface to the Neo4j Knowledge Graph.
+    """SQLite-backed Knowledge Graph. Drop-in replacement for the Neo4j implementation."""
 
-    Two layers:
-    - Structural lineage: Entity nodes + Edge relationships (populated by connectors)
-    - Semantic graph: Definition nodes + SemanticEdge relationships (populated by capture)
-    """
-
-    def __init__(self) -> None:
-        self._driver: AsyncDriver | None = None
+    def __init__(self, db_path: Path | None = None) -> None:
+        self._db_path = db_path or DEFAULT_DB_PATH
+        self._db: aiosqlite.Connection | None = None
 
     async def connect(self) -> None:
-        self._driver = AsyncGraphDatabase.driver(
-            settings.neo4j_uri,
-            auth=(settings.neo4j_username, settings.neo4j_password),
-            # Suppress schema-missing warnings (01N42) that fire on an empty
-            # database when MATCH queries reference labels not yet created.
-            # These are expected and not actionable.
-            notifications_min_severity=NotificationMinimumSeverity.OFF,
-        )
-        await self._driver.verify_connectivity()
-        await self.create_indexes()
+        if str(self._db_path) != ":memory:":
+            self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._db = await aiosqlite.connect(str(self._db_path))
+        self._db.row_factory = aiosqlite.Row
+        await self._db.executescript(_SCHEMA)
+        await self._db.execute("PRAGMA journal_mode=WAL")
+        await self._db.commit()
+        logger.info("Knowledge Graph connected: %s", self._db_path)
 
     async def close(self) -> None:
-        if self._driver:
-            await self._driver.close()
-
-    # ── Schema ────────────────────────────────────────────────────────────────
-
-    async def create_indexes(self) -> None:
-        constraints = [
-            "CREATE CONSTRAINT entity_id IF NOT EXISTS "
-            "FOR (e:Entity) REQUIRE e.id IS UNIQUE",
-            "CREATE CONSTRAINT definition_id IF NOT EXISTS "
-            "FOR (d:Definition) REQUIRE d.id IS UNIQUE",
-            "CREATE CONSTRAINT change_event_id IF NOT EXISTS "
-            "FOR (c:ChangeEvent) REQUIRE c.id IS UNIQUE",
-            "CREATE INDEX entity_name IF NOT EXISTS FOR (e:Entity) ON (e.name)",
-        ]
-        async with self._driver.session() as session:
-            for query in constraints:
-                await session.run(query)
+        if self._db:
+            await self._db.close()
+            self._db = None
 
     # ── Entities ──────────────────────────────────────────────────────────────
 
     async def upsert_entity(self, entity: Entity) -> None:
-        async with self._driver.session() as session:
-            await session.run(
-                """
-                MERGE (e:Entity {id: $id})
-                ON CREATE SET e.created_at = $created_at
-                SET e.name = $name,
-                    e.type = $type,
-                    e.source_connector = $source_connector,
-                    e.project = $project,
-                    e.metadata = $metadata,
-                    e.updated_at = $updated_at
-                """,
-                id=entity.id,
-                name=entity.name,
-                type=entity.type.value,
-                source_connector=entity.source_connector,
-                project=entity.project,
-                metadata=str(entity.metadata),
-                created_at=entity.created_at.isoformat(),
-                updated_at=entity.updated_at.isoformat(),
-            )
+        await self._db.execute(
+            """
+            INSERT INTO entities (id, name, type, source_connector, project, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name=excluded.name, type=excluded.type,
+                source_connector=excluded.source_connector,
+                project=excluded.project, updated_at=excluded.updated_at
+            """,
+            (entity.id, entity.name, entity.type.value, entity.source_connector,
+             entity.project, entity.created_at.isoformat(), entity.updated_at.isoformat()),
+        )
+        await self._db.commit()
 
     async def upsert_entity_by_name(self, entity: Entity) -> Entity:
-        """Create or update an entity keyed on (name, source_connector).
+        """Create or update an entity keyed on (name, source_connector). Returns stored entity."""
+        async with self._db.execute(
+            "SELECT id FROM entities WHERE name=? AND source_connector=?",
+            (entity.name, entity.source_connector),
+        ) as cur:
+            row = await cur.fetchone()
 
-        Unlike upsert_entity (which keys on uuid), this is safe to call for
-        cross-system entities where we have no canonical id from the source system.
-        Returns the entity as stored, with its id.
-        """
-        async with self._driver.session() as session:
-            result = await session.run(
-                """
-                MERGE (e:Entity {name: $name, source_connector: $source_connector})
-                ON CREATE SET e.id = $id, e.created_at = $created_at
-                SET e.type = $type,
-                    e.project = $project,
-                    e.updated_at = $updated_at
-                RETURN e
-                """,
-                name=entity.name,
-                source_connector=entity.source_connector,
-                id=entity.id,
-                type=entity.type.value,
-                project=entity.project,
-                created_at=entity.created_at.isoformat(),
-                updated_at=entity.updated_at.isoformat(),
+        if row:
+            existing_id = row["id"]
+            await self._db.execute(
+                "UPDATE entities SET type=?, project=?, updated_at=? WHERE id=?",
+                (entity.type.value, entity.project, entity.updated_at.isoformat(), existing_id),
             )
-            record = await result.single()
-        node = record["e"]
-        return Entity(
-            id=node["id"],
-            name=node["name"],
-            type=node["type"],
-            source_connector=node["source_connector"],
-            project=node.get("project", ""),
+            await self._db.commit()
+            return Entity(
+                id=existing_id,
+                name=entity.name,
+                type=entity.type,
+                source_connector=entity.source_connector,
+                project=entity.project,
+            )
+
+        await self._db.execute(
+            """
+            INSERT INTO entities (id, name, type, source_connector, project, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (entity.id, entity.name, entity.type.value, entity.source_connector,
+             entity.project, entity.created_at.isoformat(), entity.updated_at.isoformat()),
         )
+        await self._db.commit()
+        return entity
 
     async def get_entity_by_name(self, name: str, connector: str) -> Entity | None:
-        async with self._driver.session() as session:
-            result = await session.run(
-                "MATCH (e:Entity {name: $name, source_connector: $connector}) RETURN e",
-                name=name,
-                connector=connector,
+        async with self._db.execute(
+            "SELECT * FROM entities WHERE name=? AND source_connector=?",
+            (name, connector),
+        ) as cur:
+            row = await cur.fetchone()
+        return _to_entity(row) if row else None
+
+    async def get_entity_by_id(self, entity_id: str) -> Entity | None:
+        async with self._db.execute(
+            "SELECT * FROM entities WHERE id=?", (entity_id,)
+        ) as cur:
+            row = await cur.fetchone()
+        return _to_entity(row) if row else None
+
+    async def get_all_entity_ids(self) -> list[str]:
+        async with self._db.execute("SELECT id FROM entities ORDER BY id") as cur:
+            return [row["id"] for row in await cur.fetchall()]
+
+    async def filter_existing_entity_ids(self, entity_ids: list[str]) -> list[str]:
+        if not entity_ids:
+            return []
+        placeholders = ",".join("?" * len(entity_ids))
+        async with self._db.execute(
+            f"SELECT id FROM entities WHERE id IN ({placeholders})", entity_ids
+        ) as cur:
+            return [row["id"] for row in await cur.fetchall()]
+
+    async def get_all_entities_with_definitions(
+        self,
+    ) -> list[tuple[Entity, Definition | None]]:
+        async with self._db.execute(
+            """
+            SELECT e.*,
+                   d.id AS def_id, d.description AS def_desc, d.version AS def_ver,
+                   d.created_by AS def_created_by, d.change_event_id AS def_change_event_id,
+                   d.created_at AS def_created_at
+            FROM entities e
+            LEFT JOIN definitions d ON d.id = (
+                SELECT id FROM definitions WHERE entity_id=e.id ORDER BY version DESC LIMIT 1
             )
-            record = await result.single()
-            if not record:
-                return None
-            node = record["e"]
-            return Entity(
-                id=node["id"],
-                name=node["name"],
-                type=node["type"],
-                source_connector=node["source_connector"],
-                project=node.get("project", ""),
-            )
+            ORDER BY e.name
+            """
+        ) as cur:
+            rows = await cur.fetchall()
+
+        result = []
+        for row in rows:
+            entity = _to_entity(row)
+            definition = None
+            if row["def_id"]:
+                definition = Definition(
+                    id=row["def_id"],
+                    entity_id=row["id"],
+                    description=row["def_desc"],
+                    version=row["def_ver"],
+                    created_by=row["def_created_by"],
+                    change_event_id=row["def_change_event_id"],
+                )
+            result.append((entity, definition))
+        return result
 
     # ── Structural lineage edges ───────────────────────────────────────────────
 
     async def upsert_edge(self, edge: Edge) -> None:
-        async with self._driver.session() as session:
-            await session.run(
-                """
-                MATCH (from:Entity {id: $from_id})
-                MATCH (to:Entity {id: $to_id})
-                MERGE (from)-[r:LINEAGE {connector: $connector}]->(to)
-                SET r.type = $type
-                """,
-                from_id=edge.from_entity_id,
-                to_id=edge.to_entity_id,
-                type=edge.type.value,
-                connector=edge.connector,
+        await self._db.execute(
+            """
+            INSERT INTO lineage_edges (from_id, to_id, connector, type)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(from_id, to_id, connector) DO UPDATE SET type=excluded.type
+            """,
+            (edge.from_entity_id, edge.to_entity_id, edge.connector, edge.type.value),
+        )
+        await self._db.commit()
+
+    async def get_structural_dependents(self, entity_id: str) -> list[Entity]:
+        """Return direct structural dependents (single-hop LINEAGE). Falls back to name lookup."""
+        async with self._db.execute(
+            """
+            SELECT DISTINCT e.* FROM lineage_edges le
+            JOIN entities e ON e.id = le.from_id
+            WHERE le.to_id=?
+            """,
+            (entity_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+
+        if rows:
+            return [_to_entity(r) for r in rows]
+
+        # Fallback: resolve by model name (e.g. "model.jaffle_shop.orders.amount" → "orders")
+        parts = entity_id.rsplit(".", 1)
+        model_name = parts[0].rsplit(".", 1)[-1] if len(parts) == 2 else entity_id
+        if not model_name:
+            return []
+
+        async with self._db.execute(
+            """
+            SELECT DISTINCT e.* FROM lineage_edges le
+            JOIN entities e ON e.id = le.from_id
+            JOIN entities src ON src.id = le.to_id
+            WHERE src.name=? AND src.type='model'
+            """,
+            (model_name,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [_to_entity(r) for r in rows]
+
+    async def get_structural_ancestors(self, entity_id: str) -> list[tuple[Entity, int]]:
+        """Return upstream model ancestors with hop depth via recursive CTE."""
+        async with self._db.execute(
+            """
+            WITH RECURSIVE ancs(id, depth) AS (
+                SELECT to_id, 1 FROM lineage_edges WHERE from_id=?
+                UNION ALL
+                SELECT le.to_id, ancs.depth + 1
+                FROM lineage_edges le JOIN ancs ON le.from_id = ancs.id
+                WHERE ancs.depth < 20
             )
+            SELECT e.*, MIN(ancs.depth) AS depth
+            FROM ancs JOIN entities e ON e.id = ancs.id
+            WHERE e.type = 'model'
+            GROUP BY ancs.id
+            ORDER BY MIN(ancs.depth)
+            """,
+            (entity_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [(_to_entity(r), r["depth"]) for r in rows]
 
     # ── Semantic graph ────────────────────────────────────────────────────────
 
-    async def upsert_definition(self, definition: Definition) -> None:
-        async with self._driver.session() as session:
-            await session.run(
-                """
-                MERGE (d:Definition {id: $id})
-                SET d.entity_id = $entity_id,
-                    d.description = $description,
-                    d.version = $version,
-                    d.created_by = $created_by,
-                    d.change_event_id = $change_event_id,
-                    d.created_at = $created_at
-                WITH d
-                MATCH (e:Entity {id: $entity_id})
-                MERGE (e)-[:HAS_DEFINITION]->(d)
-                """,
-                id=definition.id,
-                entity_id=definition.entity_id,
-                description=definition.description,
-                version=definition.version,
-                created_by=definition.created_by,
-                change_event_id=definition.change_event_id,
-                created_at=definition.created_at.isoformat(),
-            )
-
-    async def get_latest_definition(self, entity_id: str) -> Definition | None:
-        async with self._driver.session() as session:
-            result = await session.run(
-                """
-                MATCH (e:Entity {id: $entity_id})-[:HAS_DEFINITION]->(d:Definition)
-                RETURN d ORDER BY d.version DESC LIMIT 1
-                """,
-                entity_id=entity_id,
-            )
-            record = await result.single()
-            if not record:
-                return None
-            node = record["d"]
-            return Definition(
-                id=node["id"],
-                entity_id=node["entity_id"],
-                description=node["description"],
-                version=node["version"],
-                created_by=node["created_by"],
-                change_event_id=node.get("change_event_id"),
-            )
-
     async def upsert_semantic_edge(self, edge: SemanticEdge) -> None:
-        """Link concepts in the semantic graph.
-        Example: revenue DERIVED_FROM sales."""
-        async with self._driver.session() as session:
-            await session.run(
-                """
-                MATCH (from:Entity {id: $from_id})
-                MATCH (to:Entity {id: $to_id})
-                MERGE (from)-[r:SEMANTIC {type: $type}]->(to)
-                SET r.description = $description,
-                    r.created_by = $created_by,
-                    r.created_at = $created_at
-                """,
-                from_id=edge.from_entity_id,
-                to_id=edge.to_entity_id,
-                type=edge.type.value,
-                description=edge.description,
-                created_by=edge.created_by,
-                created_at=edge.created_at.isoformat(),
-            )
+        await self._db.execute(
+            """
+            INSERT INTO semantic_edges (from_id, to_id, type, description, created_by, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(from_id, to_id, type) DO UPDATE SET
+                description=excluded.description,
+                created_by=excluded.created_by,
+                created_at=excluded.created_at
+            """,
+            (edge.from_entity_id, edge.to_entity_id, edge.type.value,
+             edge.description, edge.created_by, edge.created_at.isoformat()),
+        )
+        await self._db.commit()
 
-    async def get_entity_by_id(self, entity_id: str) -> Entity | None:
-        """Fetch a single entity by its ID."""
-        async with self._driver.session() as session:
-            result = await session.run(
-                "MATCH (e:Entity {id: $id}) RETURN e",
-                id=entity_id,
-            )
-            record = await result.single()
-            if not record:
-                return None
-            node = record["e"]
-            return Entity(
-                id=node["id"],
-                name=node["name"],
-                type=node["type"],
-                source_connector=node["source_connector"],
-                project=node.get("project", ""),
-            )
+    async def get_all_semantic_edges(self) -> list[SemanticEdge]:
+        async with self._db.execute(
+            """
+            SELECT se.from_id, se.to_id, se.type, se.description, se.created_by, se.created_at
+            FROM semantic_edges se
+            JOIN entities a ON a.id = se.from_id
+            JOIN entities b ON b.id = se.to_id
+            ORDER BY a.name, b.name
+            """
+        ) as cur:
+            rows = await cur.fetchall()
+        return [_to_semantic_edge(r) for r in rows]
 
-    async def get_all_entities_with_definitions(
-        self,
-    ) -> list[tuple[Entity, "Definition | None"]]:
-        """Return all entities paired with their latest definition (or None)."""
-        async with self._driver.session() as session:
-            result = await session.run(
-                """
-                MATCH (e:Entity)
-                OPTIONAL MATCH (e)-[:HAS_DEFINITION]->(d:Definition)
-                WITH e, d ORDER BY d.version DESC
-                WITH e, collect(d)[0] AS latest_def
-                RETURN e, latest_def
-                ORDER BY e.name
-                """
-            )
-            pairs = []
-            async for record in result:
-                node = record["e"]
-                entity = Entity(
-                    id=node["id"],
-                    name=node["name"],
-                    type=node["type"],
-                    source_connector=node["source_connector"],
-                    project=node.get("project", ""),
-                )
-                def_node = record["latest_def"]
-                definition = None
-                if def_node:
-                    from puxti.models import Definition
-                    definition = Definition(
-                        id=def_node["id"],
-                        entity_id=def_node["entity_id"],
-                        description=def_node["description"],
-                        version=def_node["version"],
-                        created_by=def_node["created_by"],
-                        change_event_id=def_node.get("change_event_id"),
-                    )
-                pairs.append((entity, definition))
-            return pairs
-
-    async def get_all_semantic_edges(self) -> list["SemanticEdge"]:
-        """Return all semantic edges in the graph."""
-        async with self._driver.session() as session:
-            result = await session.run(
-                """
-                MATCH (a:Entity)-[r:SEMANTIC]->(b:Entity)
-                RETURN a.id AS from_id, b.id AS to_id,
-                       r.type AS type, r.description AS description,
-                       r.created_by AS created_by
-                ORDER BY a.name, b.name
-                """
-            )
-            edges = []
-            async for record in result:
-                edges.append(SemanticEdge(
-                    from_entity_id=record["from_id"],
-                    to_entity_id=record["to_id"],
-                    type=record["type"],
-                    description=record["description"],
-                    created_by=record["created_by"] or "scan",
-                ))
-            return edges
+    async def get_entity_semantic_edges(self, entity_id: str) -> list[SemanticEdge]:
+        async with self._db.execute(
+            """
+            SELECT from_id, to_id, type, description, created_by, created_at
+            FROM semantic_edges WHERE from_id=? OR to_id=?
+            """,
+            (entity_id, entity_id),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [_to_semantic_edge(r) for r in rows]
 
     async def get_semantic_dependents_with_depth(
         self, entity_id: str
     ) -> list[tuple[Entity, int]]:
-        """Return all semantically dependent entities with their hop depth.
-
-        Depth 1 = directly depends on this entity.
-        Depth 2 = depends on a depth-1 dependent. Etc.
-        Returns the minimum depth for each entity (shortest path).
-        Ordered by depth ascending.
-        """
-        async with self._driver.session() as session:
-            result = await session.run(
-                """
-                MATCH p = (source:Entity {id: $entity_id})<-[:SEMANTIC*1..]-(dependent:Entity)
-                WITH last(nodes(p)) AS dep_node, min(length(p)) AS depth
-                RETURN dep_node AS dependent, depth
-                ORDER BY depth
-                """,
-                entity_id=entity_id,
+        """Return entities with SEMANTIC paths pointing to entity_id, with min hop depth."""
+        async with self._db.execute(
+            """
+            WITH RECURSIVE deps(id, depth) AS (
+                SELECT from_id, 1 FROM semantic_edges WHERE to_id=?
+                UNION ALL
+                SELECT se.from_id, deps.depth + 1
+                FROM semantic_edges se JOIN deps ON se.to_id = deps.id
+                WHERE deps.depth < 10
             )
-            pairs: list[tuple[Entity, int]] = []
-            async for record in result:
-                node = record["dependent"]
-                pairs.append((
-                    Entity(
-                        id=node["id"],
-                        name=node["name"],
-                        type=node["type"],
-                        source_connector=node["source_connector"],
-                    ),
-                    record["depth"],
-                ))
-            return pairs
+            SELECT e.*, MIN(deps.depth) AS depth
+            FROM deps JOIN entities e ON e.id = deps.id
+            GROUP BY deps.id
+            ORDER BY MIN(deps.depth)
+            """,
+            (entity_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [(_to_entity(r), r["depth"]) for r in rows]
 
     async def get_semantic_dependents(self, entity_id: str) -> list[Entity]:
-        """Return all entities semantically dependent on this one.
-        Used for Case 3 — definition redefinition impact traversal."""
-        async with self._driver.session() as session:
-            result = await session.run(
-                """
-                MATCH (source:Entity {id: $entity_id})<-[:SEMANTIC*1..]-(dependent:Entity)
-                RETURN DISTINCT dependent
-                """,
-                entity_id=entity_id,
+        async with self._db.execute(
+            """
+            WITH RECURSIVE deps(id) AS (
+                SELECT from_id FROM semantic_edges WHERE to_id=?
+                UNION
+                SELECT se.from_id FROM semantic_edges se JOIN deps ON se.to_id = deps.id
             )
-            entities = []
-            async for record in result:
-                node = record["dependent"]
-                entities.append(Entity(
-                    id=node["id"],
-                    name=node["name"],
-                    type=node["type"],
-                    source_connector=node["source_connector"],
-                ))
-            return entities
+            SELECT DISTINCT e.* FROM deps JOIN entities e ON e.id = deps.id
+            """,
+            (entity_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [_to_entity(r) for r in rows]
 
     async def get_feeds_producers(self, entity_id: str) -> list[Entity]:
-        """Return entities with a FEEDS edge pointing to entity_id.
-
-        Checks both the entity itself and its parent (for column-level IDs like
-        source.clariva.raw_opportunities.amount → source.clariva.raw_opportunities).
-        """
         ids_to_check = [entity_id]
         if "." in entity_id:
             parent_id = entity_id.rsplit(".", 1)[0]
             if parent_id != entity_id:
                 ids_to_check.append(parent_id)
 
-        async with self._driver.session() as session:
-            result = await session.run(
-                """
-                UNWIND $ids AS target_id
-                MATCH (producer:Entity)-[:SEMANTIC {type: "feeds"}]->(target:Entity {id: target_id})
-                RETURN DISTINCT producer
-                """,
-                ids=ids_to_check,
-            )
-            entities: list[Entity] = []
-            seen: set[str] = set()
-            async for record in result:
-                node = record["producer"]
-                if node["id"] not in seen:
-                    seen.add(node["id"])
-                    entities.append(Entity(
-                        id=node["id"],
-                        name=node["name"],
-                        type=node["type"],
-                        source_connector=node["source_connector"],
-                        project=node.get("project", ""),
-                    ))
-            return entities
-
-    async def get_all_entity_ids(self) -> list[str]:
-        """Return all entity IDs currently in the graph."""
-        async with self._driver.session() as session:
-            result = await session.run("MATCH (e:Entity) RETURN e.id AS id ORDER BY e.id")
-            ids = []
-            async for record in result:
-                ids.append(record["id"])
-            return ids
-
-    async def filter_existing_entity_ids(self, entity_ids: list[str]) -> list[str]:
-        """Return only the entity IDs from the list that exist in the graph."""
-        if not entity_ids:
-            return []
-        async with self._driver.session() as session:
-            result = await session.run(
-                "UNWIND $ids AS id MATCH (e:Entity {id: id}) RETURN e.id AS id",
-                ids=entity_ids,
-            )
-            existing = []
-            async for record in result:
-                existing.append(record["id"])
-            return existing
-
-    async def get_structural_ancestors(self, entity_id: str) -> list[tuple[Entity, int]]:
-        """Return structural ancestors (upstream models) with hop depth from the entity.
-
-        Depth 1 = directly upstream. Used to propagate new attributes from the
-        ingestion boundary back through the staging/mart chain.
-        Only returns model-type entities (not sources/columns).
-        """
-        async with self._driver.session() as session:
-            result = await session.run(
-                """
-                MATCH p = (source:Entity {id: $entity_id})-[:LINEAGE*1..]->(ancestor:Entity)
-                WHERE ancestor.type = 'model'
-                WITH last(nodes(p)) AS anc_node, min(length(p)) AS depth
-                RETURN anc_node AS ancestor, depth
-                ORDER BY depth
-                """,
-                entity_id=entity_id,
-            )
-            pairs: list[tuple[Entity, int]] = []
-            async for record in result:
-                node = record["ancestor"]
-                pairs.append((
-                    Entity(
-                        id=node["id"],
-                        name=node["name"],
-                        type=node["type"],
-                        source_connector=node["source_connector"],
-                    ),
-                    record["depth"],
-                ))
-            return pairs
-
-    async def get_structural_dependents(self, entity_id: str) -> list[Entity]:
-        """Return direct (single-hop) structural dependents of this entity.
-
-        Only returns models that directly reference this entity in lineage.
-        Used as context for the LLM in capture — giving the LLM transitive
-        dependents causes scope over-expansion, since those models may not
-        reference the changed column at all.
-
-        When the exact entity_id is not in the graph (e.g. a column entity
-        that was never extracted because the model has no schema YAML), falls
-        back to looking up the parent model by name. This ensures the LLM gets
-        correct structural context even for non-standard entity ID formats.
-        """
-        async with self._driver.session() as session:
-            result = await session.run(
-                """
-                MATCH (dependent:Entity)-[:LINEAGE]->(source:Entity {id: $entity_id})
-                RETURN DISTINCT dependent
-                """,
-                entity_id=entity_id,
-            )
-            entities = []
-            async for record in result:
-                node = record["dependent"]
-                entities.append(Entity(
-                    id=node["id"],
-                    name=node["name"],
-                    type=node["type"],
-                    source_connector=node["source_connector"],
-                ))
-
-            if entities:
-                return entities
-
-            # Fallback: entity_id not in graph — try resolving by model name.
-            # Format examples:
-            #   "sports_sims.prep.nba_results_log.type" → model "nba_results_log"
-            #   "model.jaffle_shop.orders.order_date"   → model "orders"
-            parts = entity_id.rsplit(".", 1)
-            model_name = parts[0].rsplit(".", 1)[-1] if len(parts) == 2 else entity_id
-            if not model_name:
-                return []
-
-            result2 = await session.run(
-                """
-                MATCH (dependent:Entity)-[:LINEAGE]->(source:Entity {name: $name, type: 'model'})
-                RETURN DISTINCT dependent
-                """,
-                name=model_name,
-            )
-            fallback: list[Entity] = []
-            async for record in result2:
-                node = record["dependent"]
-                fallback.append(Entity(
-                    id=node["id"],
-                    name=node["name"],
-                    type=node["type"],
-                    source_connector=node["source_connector"],
-                ))
-            return fallback
-
-    async def get_entity_semantic_edges(self, entity_id: str) -> list[SemanticEdge]:
-        """Return all semantic edges where this entity is the source or the target."""
-        async with self._driver.session() as session:
-            result = await session.run(
-                """
-                MATCH (a:Entity)-[r:SEMANTIC]->(b:Entity)
-                WHERE a.id = $entity_id OR b.id = $entity_id
-                RETURN a.id AS from_id, b.id AS to_id,
-                       r.type AS type, r.description AS description,
-                       r.created_by AS created_by, r.created_at AS created_at
-                """,
-                entity_id=entity_id,
-            )
-            edges: list[SemanticEdge] = []
-            async for record in result:
-                edges.append(SemanticEdge(
-                    from_entity_id=record["from_id"],
-                    to_entity_id=record["to_id"],
-                    type=record["type"],
-                    description=record["description"],
-                    created_by=record["created_by"] or "scan",
-                ))
-            return edges
+        placeholders = ",".join("?" * len(ids_to_check))
+        seen: set[str] = set()
+        entities: list[Entity] = []
+        async with self._db.execute(
+            f"""
+            SELECT DISTINCT e.* FROM semantic_edges se
+            JOIN entities e ON e.id = se.from_id
+            WHERE se.to_id IN ({placeholders}) AND se.type='feeds'
+            """,
+            ids_to_check,
+        ) as cur:
+            for row in await cur.fetchall():
+                if row["id"] not in seen:
+                    seen.add(row["id"])
+                    entities.append(_to_entity(row))
+        return entities
 
     async def delete_semantic_edge(self, from_entity_id: str, to_entity_id: str) -> None:
-        """Remove a semantic edge between two entities."""
-        async with self._driver.session() as session:
-            await session.run(
-                """
-                MATCH (a:Entity {id: $from_id})-[r:SEMANTIC]->(b:Entity {id: $to_id})
-                DELETE r
-                """,
-                from_id=from_entity_id,
-                to_id=to_entity_id,
+        await self._db.execute(
+            "DELETE FROM semantic_edges WHERE from_id=? AND to_id=?",
+            (from_entity_id, to_entity_id),
+        )
+        await self._db.commit()
+
+    # ── Definitions ───────────────────────────────────────────────────────────
+
+    async def upsert_definition(self, definition: Definition) -> None:
+        await self._db.execute(
+            """
+            INSERT INTO definitions
+                (id, entity_id, description, version, created_by, change_event_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                description=excluded.description,
+                version=excluded.version,
+                created_by=excluded.created_by
+            """,
+            (definition.id, definition.entity_id, definition.description,
+             definition.version, definition.created_by, definition.change_event_id,
+             definition.created_at.isoformat()),
+        )
+        await self._db.commit()
+
+    async def get_latest_definition(self, entity_id: str) -> Definition | None:
+        async with self._db.execute(
+            "SELECT * FROM definitions WHERE entity_id=? ORDER BY version DESC LIMIT 1",
+            (entity_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        if not row:
+            return None
+        return Definition(
+            id=row["id"],
+            entity_id=row["entity_id"],
+            description=row["description"],
+            version=row["version"],
+            created_by=row["created_by"],
+            change_event_id=row["change_event_id"],
+        )
+
+    # ── Change and correction events ──────────────────────────────────────────
+
+    async def save_change_event(self, event: ChangeEvent) -> None:
+        await self._db.execute(
+            """
+            INSERT INTO change_events
+                (id, type, source_entity_id, change, semantic_context, declared_by, status, detected_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                status=excluded.status,
+                semantic_context=excluded.semantic_context
+            """,
+            (event.id, event.type.value, event.source_entity_id,
+             json.dumps(event.change), event.semantic_context or "",
+             event.declared_by or "", event.status.value,
+             event.detected_at.isoformat()),
+        )
+        await self._db.commit()
+
+    async def write_correction(
+        self, event: CorrectionEvent, updated_edges: list[SemanticEdge]
+    ) -> None:
+        for from_id, to_id in event.edges_removed:
+            await self._db.execute(
+                "DELETE FROM semantic_edges WHERE from_id=? AND to_id=?",
+                (from_id, to_id),
             )
 
-    async def write_correction(self, event: CorrectionEvent, updated_edges: list[SemanticEdge]) -> None:
-        """Atomically apply a correction: remove deleted edges, upsert updated edges.
-
-        The new definition is written separately via upsert_definition before
-        calling this method. This method handles only edge mutations and records
-        the CorrectionEvent node.
-        """
-        async with self._driver.session() as session:
-            # Remove edges marked for deletion
-            for from_id, to_id in event.edges_removed:
-                await session.run(
-                    "MATCH (a:Entity {id: $from_id})-[r:SEMANTIC]->(b:Entity {id: $to_id}) DELETE r",
-                    from_id=from_id,
-                    to_id=to_id,
-                )
-
-            # Upsert updated edges
-            for edge in updated_edges:
-                await session.run(
-                    """
-                    MATCH (a:Entity {id: $from_id})
-                    MATCH (b:Entity {id: $to_id})
-                    MERGE (a)-[r:SEMANTIC {type: $type}]->(b)
-                    SET r.description = $description,
-                        r.created_by = $created_by,
-                        r.created_at = $created_at
-                    """,
-                    from_id=edge.from_entity_id,
-                    to_id=edge.to_entity_id,
-                    type=edge.type.value,
-                    description=edge.description,
-                    created_by=edge.created_by,
-                    created_at=edge.created_at.isoformat(),
-                )
-
-            # Record the CorrectionEvent node
-            await session.run(
+        for edge in updated_edges:
+            await self._db.execute(
                 """
-                CREATE (c:CorrectionEvent {
-                    id: $id,
-                    entity_id: $entity_id,
-                    old_definition_id: $old_definition_id,
-                    new_definition_id: $new_definition_id,
-                    classified_as: $classified_as,
-                    change_event_id: $change_event_id,
-                    created_at: $created_at
-                })
+                INSERT INTO semantic_edges (from_id, to_id, type, description, created_by, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(from_id, to_id, type) DO UPDATE SET
+                    description=excluded.description,
+                    created_by=excluded.created_by,
+                    created_at=excluded.created_at
                 """,
-                id=event.id,
-                entity_id=event.entity_id,
-                old_definition_id=event.old_definition_id,
-                new_definition_id=event.new_definition_id,
-                classified_as=event.classified_as,
-                change_event_id=event.change_event_id,
-                created_at=event.created_at.isoformat(),
+                (edge.from_entity_id, edge.to_entity_id, edge.type.value,
+                 edge.description, edge.created_by, edge.created_at.isoformat()),
             )
+
+        await self._db.execute(
+            """
+            INSERT INTO correction_events
+                (id, entity_id, old_definition_id, new_definition_id,
+                 classified_as, change_event_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (event.id, event.entity_id, event.old_definition_id,
+             event.new_definition_id, event.classified_as,
+             event.change_event_id, event.created_at.isoformat()),
+        )
+        await self._db.commit()
 
     # ── Project management ────────────────────────────────────────────────────
 
     async def get_projects(self) -> list[str]:
-        """Return all distinct project names currently in the graph."""
-        async with self._driver.session() as session:
-            result = await session.run(
-                """
-                MATCH (e:Entity)
-                WHERE e.project IS NOT NULL AND e.project <> ''
-                RETURN DISTINCT e.project AS project ORDER BY project
-                """
-            )
-            projects = []
-            async for record in result:
-                projects.append(record["project"])
-            return projects
+        async with self._db.execute(
+            "SELECT DISTINCT project FROM entities WHERE project IS NOT NULL AND project != '' ORDER BY project"
+        ) as cur:
+            return [row["project"] for row in await cur.fetchall()]
 
     async def purge_project(self, project: str) -> int:
-        """Delete all entities (and their definitions + edges) for a project.
+        async with self._db.execute(
+            "SELECT id FROM entities WHERE project=?", (project,)
+        ) as cur:
+            ids = [row["id"] for row in await cur.fetchall()]
 
-        Returns the number of entities deleted.
-        """
-        async with self._driver.session() as session:
-            result = await session.run(
-                """
-                MATCH (e:Entity {project: $project})
-                OPTIONAL MATCH (e)-[:HAS_DEFINITION]->(d:Definition)
-                DETACH DELETE e, d
-                RETURN count(DISTINCT e) AS deleted
-                """,
-                project=project,
+        count = len(ids)
+        if ids:
+            ph = ",".join("?" * len(ids))
+            await self._db.execute(f"DELETE FROM definitions WHERE entity_id IN ({ph})", ids)
+            await self._db.execute(
+                f"DELETE FROM semantic_edges WHERE from_id IN ({ph}) OR to_id IN ({ph})",
+                ids + ids,
             )
-            record = await result.single()
-            return record["deleted"] if record else 0
+            await self._db.execute(
+                f"DELETE FROM lineage_edges WHERE from_id IN ({ph}) OR to_id IN ({ph})",
+                ids + ids,
+            )
+            await self._db.execute("DELETE FROM entities WHERE project=?", (project,))
+            await self._db.commit()
+        return count
 
     async def purge_all(self) -> int:
-        """Delete everything in the Knowledge Graph.
+        async with self._db.execute("SELECT COUNT(*) AS n FROM entities") as cur:
+            row = await cur.fetchone()
+        count = row["n"] if row else 0
 
-        Removes all Entity, Definition, ChangeEvent, and CorrectionEvent nodes
-        along with all relationships. Returns the total number of nodes deleted.
-        """
-        async with self._driver.session() as session:
-            result = await session.run("MATCH (n) DETACH DELETE n RETURN count(n) AS deleted")
-            record = await result.single()
-            return record["deleted"] if record else 0
-
-    # ── Change events ─────────────────────────────────────────────────────────
-
-    async def save_change_event(self, event: ChangeEvent) -> None:
-        async with self._driver.session() as session:
-            await session.run(
-                """
-                MERGE (c:ChangeEvent {id: $id})
-                SET c.type = $type,
-                    c.source_entity_id = $source_entity_id,
-                    c.change = $change,
-                    c.semantic_context = $semantic_context,
-                    c.declared_by = $declared_by,
-                    c.status = $status,
-                    c.detected_at = $detected_at
-                """,
-                id=event.id,
-                type=event.type.value,
-                source_entity_id=event.source_entity_id,
-                change=str(event.change),
-                semantic_context=event.semantic_context,
-                declared_by=event.declared_by,
-                status=event.status.value,
-                detected_at=event.detected_at.isoformat(),
-            )
+        for table in ("correction_events", "change_events", "definitions",
+                      "semantic_edges", "lineage_edges", "entities"):
+            await self._db.execute(f"DELETE FROM {table}")
+        await self._db.commit()
+        return count

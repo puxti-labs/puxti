@@ -1,134 +1,261 @@
-"""
-Unit tests for WorkspaceGraph — no live Neo4j required.
-
-The driver is fully mocked. Tests verify:
-- workspace_id is injected into every query param
-- query methods never accept workspace_id from the caller
-- cross-workspace leaks are structurally impossible (wrong workspace → no results)
-- relationship types are restricted to RelType enum values
-"""
+"""Integration tests for the SQLite-backed KnowledgeGraph."""
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from pathlib import Path
 
 import pytest
 
-from puxti.graph.models import Entity, Relationship, RelType
-from puxti.graph.repository import WorkspaceGraph
+from puxti.core.graph import KnowledgeGraph
+from puxti.models import (
+    ChangeEvent,
+    ChangeType,
+    CorrectionEvent,
+    Definition,
+    Edge,
+    EdgeType,
+    Entity,
+    EntityType,
+    SemanticEdge,
+)
 
 
-# ── helpers ───────────────────────────────────────────────────────────────────
-
-def _make_graph(workspace_id: str, *, isolated: bool = False) -> tuple[WorkspaceGraph, MagicMock]:
-    """Return a WorkspaceGraph wired to a mock driver."""
-    driver = MagicMock()
-    session_ctx = AsyncMock()
-    session_ctx.__aenter__ = AsyncMock(return_value=session_ctx)
-    session_ctx.__aexit__ = AsyncMock(return_value=False)
-    session_ctx.run = AsyncMock()
-    driver.session.return_value = session_ctx
-    graph = WorkspaceGraph(driver, workspace_id, isolated=isolated)
-    return graph, session_ctx
+@pytest.fixture
+async def kg() -> KnowledgeGraph:
+    graph = KnowledgeGraph(db_path=Path(":memory:"))
+    await graph.connect()
+    yield graph
+    await graph.close()
 
 
-# ── workspace_id injection ─────────────────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_upsert_entity_injects_workspace_id() -> None:
-    graph, session = _make_graph("ws_aaa")
-    await graph.upsert_entity(Entity(name="orders", type="table"))
-    _, kwargs = session.run.call_args
-    params = session.run.call_args[0][1]
-    assert params["workspace_id"] == "ws_aaa"
-    assert params["name"] == "orders"
+def _entity(name: str, etype: EntityType = EntityType.MODEL, project: str = "test") -> Entity:
+    return Entity(name=name, type=etype, source_connector="dbt", project=project)
 
 
-@pytest.mark.asyncio
-async def test_list_entities_injects_workspace_id() -> None:
-    graph, session = _make_graph("ws_bbb")
-    result_mock = AsyncMock()
-    result_mock.data = AsyncMock(return_value=[])
-    session.run.return_value = result_mock
-    await graph.list_entities()
-    params = session.run.call_args[0][1]
-    assert params["workspace_id"] == "ws_bbb"
+def _sedge(from_id: str, to_id: str, etype: EdgeType = EdgeType.DERIVED_FROM) -> SemanticEdge:
+    return SemanticEdge(
+        from_entity_id=from_id,
+        to_entity_id=to_id,
+        type=etype,
+        description="test edge",
+        created_by="test",
+    )
 
+
+# ── entity CRUD ───────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_relate_injects_workspace_id_on_both_sides() -> None:
-    graph, session = _make_graph("ws_ccc")
-    await graph.relate(Relationship("orders", "customers", RelType.DEPENDS_ON))
-    params = session.run.call_args[0][1]
-    assert params["workspace_id"] == "ws_ccc"
-    assert params["from_name"] == "orders"
-    assert params["to_name"] == "customers"
-
-
-# ── two workspaces are independent ───────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_two_workspaces_use_different_workspace_ids() -> None:
-    graph_a, session_a = _make_graph("ws_alpha")
-    graph_b, session_b = _make_graph("ws_beta")
-
-    await graph_a.upsert_entity(Entity(name="revenue", type="column"))
-    await graph_b.upsert_entity(Entity(name="revenue", type="column"))
-
-    params_a = session_a.run.call_args[0][1]
-    params_b = session_b.run.call_args[0][1]
-
-    assert params_a["workspace_id"] == "ws_alpha"
-    assert params_b["workspace_id"] == "ws_beta"
-    # Same entity name — different workspace scopes
-    assert params_a["workspace_id"] != params_b["workspace_id"]
-
-
-# ── isolated mode routes to correct database ─────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_isolated_mode_routes_session_to_workspace_database() -> None:
-    graph, _ = _make_graph("ws_isolated", isolated=True)
-    await graph.upsert_entity(Entity(name="events", type="table"))
-    graph._driver.session.assert_called_with(database="ws_isolated")
+async def test_upsert_and_get_entity_by_id(kg: KnowledgeGraph) -> None:
+    e = _entity("orders")
+    await kg.upsert_entity(e)
+    result = await kg.get_entity_by_id(e.id)
+    assert result is not None
+    assert result.name == "orders"
+    assert result.id == e.id
 
 
 @pytest.mark.asyncio
-async def test_shared_mode_uses_default_session() -> None:
-    graph, _ = _make_graph("ws_shared", isolated=False)
-    await graph.upsert_entity(Entity(name="events", type="table"))
-    graph._driver.session.assert_called_with()  # no database= kwarg
-
-
-# ── relationship type safety ──────────────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_relate_uses_enum_value_not_raw_string() -> None:
-    graph, session = _make_graph("ws_ddd")
-    await graph.relate(Relationship("a", "b", RelType.DERIVED_FROM))
-    cypher: str = session.run.call_args[0][0]
-    assert "DERIVED_FROM" in cypher
-
-
-def test_invalid_rel_type_raises_value_error() -> None:
-    with pytest.raises(ValueError):
-        RelType("INVENTED_TYPE")
-
-
-# ── drop workspace ────────────────────────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_drop_shared_deletes_by_workspace_id() -> None:
-    graph, session = _make_graph("ws_eee", isolated=False)
-    await graph.drop()
-    params = session.run.call_args[0][1]
-    assert params["workspace_id"] == "ws_eee"
-    cypher: str = session.run.call_args[0][0]
-    assert "DETACH DELETE" in cypher
+async def test_get_entity_by_id_missing_returns_none(kg: KnowledgeGraph) -> None:
+    assert await kg.get_entity_by_id("does-not-exist") is None
 
 
 @pytest.mark.asyncio
-async def test_drop_isolated_targets_system_database() -> None:
-    graph, _ = _make_graph("ws_fff", isolated=True)
-    await graph.drop()
-    # Must open a session on the "system" database, not the workspace database
-    graph._driver.session.assert_called_with(database="system")
+async def test_upsert_entity_is_idempotent(kg: KnowledgeGraph) -> None:
+    e = _entity("orders")
+    await kg.upsert_entity(e)
+    await kg.upsert_entity(e)
+    ids = await kg.get_all_entity_ids()
+    assert ids.count(e.id) == 1
+
+
+@pytest.mark.asyncio
+async def test_upsert_entity_by_name_creates_then_returns_same_id(kg: KnowledgeGraph) -> None:
+    e = _entity("revenue")
+    first = await kg.upsert_entity_by_name(e)
+    second = await kg.upsert_entity_by_name(_entity("revenue"))
+    assert first.id == second.id
+
+
+@pytest.mark.asyncio
+async def test_get_entity_by_name(kg: KnowledgeGraph) -> None:
+    e = _entity("customers")
+    await kg.upsert_entity(e)
+    result = await kg.get_entity_by_name("customers", "dbt")
+    assert result is not None
+    assert result.id == e.id
+
+
+@pytest.mark.asyncio
+async def test_filter_existing_entity_ids(kg: KnowledgeGraph) -> None:
+    e = _entity("orders")
+    await kg.upsert_entity(e)
+    found = await kg.filter_existing_entity_ids([e.id, "phantom-id"])
+    assert e.id in found
+    assert "phantom-id" not in found
+
+
+@pytest.mark.asyncio
+async def test_filter_existing_entity_ids_empty_input(kg: KnowledgeGraph) -> None:
+    assert await kg.filter_existing_entity_ids([]) == []
+
+
+# ── lineage edges ─────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_upsert_edge_and_get_structural_dependents(kg: KnowledgeGraph) -> None:
+    parent = await kg.upsert_entity_by_name(_entity("raw_orders"))
+    child = await kg.upsert_entity_by_name(_entity("stg_orders"))
+    await kg.upsert_edge(Edge(
+        from_entity_id=child.id,
+        to_entity_id=parent.id,
+        type=EdgeType.DEPENDS_ON,
+        connector="dbt",
+    ))
+    deps = await kg.get_structural_dependents(parent.id)
+    assert any(e.id == child.id for e in deps)
+
+
+@pytest.mark.asyncio
+async def test_get_structural_ancestors(kg: KnowledgeGraph) -> None:
+    source = await kg.upsert_entity_by_name(_entity("raw_orders"))
+    stg = await kg.upsert_entity_by_name(_entity("stg_orders"))
+    mart = await kg.upsert_entity_by_name(_entity("orders"))
+    await kg.upsert_edge(Edge(from_entity_id=stg.id, to_entity_id=source.id, type=EdgeType.DEPENDS_ON, connector="dbt"))
+    await kg.upsert_edge(Edge(from_entity_id=mart.id, to_entity_id=stg.id, type=EdgeType.DEPENDS_ON, connector="dbt"))
+    ancestors = await kg.get_structural_ancestors(mart.id)
+    ancestor_ids = {e.id for e, _ in ancestors}
+    assert stg.id in ancestor_ids
+    assert source.id in ancestor_ids
+
+
+# ── semantic edges ────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_upsert_and_get_semantic_edge(kg: KnowledgeGraph) -> None:
+    a = await kg.upsert_entity_by_name(_entity("revenue"))
+    b = await kg.upsert_entity_by_name(_entity("sales"))
+    await kg.upsert_semantic_edge(_sedge(a.id, b.id))
+    edges = await kg.get_all_semantic_edges()
+    assert any(e.from_entity_id == a.id and e.to_entity_id == b.id for e in edges)
+
+
+@pytest.mark.asyncio
+async def test_delete_semantic_edge(kg: KnowledgeGraph) -> None:
+    a = await kg.upsert_entity_by_name(_entity("a"))
+    b = await kg.upsert_entity_by_name(_entity("b"))
+    await kg.upsert_semantic_edge(_sedge(a.id, b.id))
+    await kg.delete_semantic_edge(a.id, b.id)
+    edges = await kg.get_all_semantic_edges()
+    assert not any(e.from_entity_id == a.id for e in edges)
+
+
+@pytest.mark.asyncio
+async def test_get_semantic_dependents_with_depth(kg: KnowledgeGraph) -> None:
+    # chain: c → b → a  (c and b depend on a transitively)
+    a = await kg.upsert_entity_by_name(_entity("a"))
+    b = await kg.upsert_entity_by_name(_entity("b"))
+    c = await kg.upsert_entity_by_name(_entity("c"))
+    await kg.upsert_semantic_edge(_sedge(b.id, a.id))
+    await kg.upsert_semantic_edge(_sedge(c.id, b.id))
+    deps = await kg.get_semantic_dependents_with_depth(a.id)
+    depths = {e.id: d for e, d in deps}
+    assert depths[b.id] == 1
+    assert depths[c.id] == 2
+
+
+@pytest.mark.asyncio
+async def test_get_semantic_dependents(kg: KnowledgeGraph) -> None:
+    a = await kg.upsert_entity_by_name(_entity("a"))
+    b = await kg.upsert_entity_by_name(_entity("b"))
+    await kg.upsert_semantic_edge(_sedge(b.id, a.id))
+    deps = await kg.get_semantic_dependents(a.id)
+    assert any(e.id == b.id for e in deps)
+
+
+@pytest.mark.asyncio
+async def test_get_entity_semantic_edges(kg: KnowledgeGraph) -> None:
+    a = await kg.upsert_entity_by_name(_entity("a"))
+    b = await kg.upsert_entity_by_name(_entity("b"))
+    await kg.upsert_semantic_edge(_sedge(a.id, b.id))
+    edges = await kg.get_entity_semantic_edges(a.id)
+    assert len(edges) == 1
+    assert edges[0].from_entity_id == a.id
+
+
+# ── definitions ───────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_upsert_and_get_latest_definition(kg: KnowledgeGraph) -> None:
+    e = await kg.upsert_entity_by_name(_entity("orders"))
+    d1 = Definition(entity_id=e.id, description="first", version=1, created_by="test")
+    d2 = Definition(entity_id=e.id, description="second", version=2, created_by="test")
+    await kg.upsert_definition(d1)
+    await kg.upsert_definition(d2)
+    latest = await kg.get_latest_definition(e.id)
+    assert latest is not None
+    assert latest.version == 2
+    assert latest.description == "second"
+
+
+@pytest.mark.asyncio
+async def test_get_latest_definition_missing_returns_none(kg: KnowledgeGraph) -> None:
+    assert await kg.get_latest_definition("no-entity") is None
+
+
+# ── project management ────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_get_projects(kg: KnowledgeGraph) -> None:
+    await kg.upsert_entity_by_name(_entity("orders", project="alpha"))
+    await kg.upsert_entity_by_name(_entity("revenue", project="beta"))
+    projects = await kg.get_projects()
+    assert "alpha" in projects
+    assert "beta" in projects
+
+
+@pytest.mark.asyncio
+async def test_purge_project_removes_entities_and_edges(kg: KnowledgeGraph) -> None:
+    a = await kg.upsert_entity_by_name(_entity("a", project="alpha"))
+    b = await kg.upsert_entity_by_name(_entity("b", project="beta"))
+    await kg.upsert_semantic_edge(_sedge(a.id, b.id))
+    deleted = await kg.purge_project("alpha")
+    assert deleted == 1
+    assert await kg.get_entity_by_id(a.id) is None
+    assert await kg.get_entity_by_id(b.id) is not None
+    edges = await kg.get_all_semantic_edges()
+    assert not any(e.from_entity_id == a.id for e in edges)
+
+
+@pytest.mark.asyncio
+async def test_purge_all(kg: KnowledgeGraph) -> None:
+    await kg.upsert_entity_by_name(_entity("x"))
+    await kg.upsert_entity_by_name(_entity("y"))
+    deleted = await kg.purge_all()
+    assert deleted == 2
+    assert await kg.get_all_entity_ids() == []
+
+
+# ── change events ─────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_save_change_event(kg: KnowledgeGraph) -> None:
+    event = ChangeEvent(
+        type=ChangeType.SEMANTIC,
+        source_entity_id="model.test.orders",
+        change={"description": "new meaning"},
+    )
+    await kg.save_change_event(event)
+    # Verify it's persisted by re-saving (upsert should not error)
+    await kg.save_change_event(event)
+
+
+# ── get_all_entities_with_definitions ─────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_get_all_entities_with_definitions(kg: KnowledgeGraph) -> None:
+    a = await kg.upsert_entity_by_name(_entity("a"))
+    b = await kg.upsert_entity_by_name(_entity("b"))
+    await kg.upsert_definition(Definition(entity_id=a.id, description="defined", version=1, created_by="test"))
+    pairs = await kg.get_all_entities_with_definitions()
+    d = {e.id: defn for e, defn in pairs}
+    assert d[a.id] is not None
+    assert d[b.id] is None
