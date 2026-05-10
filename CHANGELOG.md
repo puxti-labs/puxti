@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.7.0] — 2026-05-10
+
+### Changed
+
+- **Knowledge Graph backend replaced: Neo4j → SQLite.** The graph now lives in a local file at `~/.puxti/graph.db`. No Docker, no Neo4j, no external services required.
+- `neo4j` dependency removed; `aiosqlite` added.
+- `NEO4J_URI`, `NEO4J_USERNAME`, `NEO4J_PASSWORD` environment variables removed — no longer needed.
+- `puxti health` now shows the graph file path and whether it has been initialised.
+- `puxti config` now shows the graph file path instead of Neo4j connection details.
+- `docker-compose.yml` removed from the repository.
+- README updated: removed Docker requirement, Neo4j setup section, and Neo4j env vars.
+
+### Removed
+
+- `puxti.graph` package (`WorkspaceGraph`, `GraphDriver`) — internal multi-tenant API-era code, not part of the public interface.
+
+---
+
 ## [0.6.0] — 2026-05-09
 
 First open-source release under Apache 2.0.
