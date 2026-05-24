@@ -33,31 +33,28 @@ format: ## Format with ruff
 # ── Release ───────────────────────────────────────────────────────────────────
 
 # Files allowed in the sdist outside src/puxti/ — anything else triggers a prompt.
-SDIST_ALLOWED = pyproject.toml LICENSE NOTICE.md README.md SECURITY.md TELEMETRY.md .env.example .gitignore
+SDIST_ALLOWED = pyproject.toml LICENSE NOTICE.md README.md SECURITY.md TELEMETRY.md .env.example .gitignore PKG-INFO
 
 .PHONY: build
 build: ## Build wheel and sdist
 	uv build
 
 .PHONY: check-package
-check-package: ## Build sdist and flag any unexpected files (must confirm to continue)
+check-package: ## Build sdist and abort if any unexpected files are present
 	@uv build --no-sources -q
 	@SDIST=$$(ls -t dist/*.tar.gz | head -1); \
 	echo "Checking $$SDIST ..."; \
+	ALLOWED_PAT="^src/puxti/|^$$|^($(subst $(eval) ,|,$(SDIST_ALLOWED))$$)"; \
 	UNEXPECTED=$$(tar -tzf $$SDIST \
 	  | sed 's|^[^/]*/||' \
-	  | grep -v '^src/puxti/' \
-	  | grep -v '^$$' \
-	  | grep -vFf <(printf '%s\n' $(SDIST_ALLOWED))); \
+	  | grep -Ev "$$ALLOWED_PAT"); \
 	if [ -z "$$UNEXPECTED" ]; then \
 	  echo "  Package looks clean — only src/puxti/ and approved root files."; \
 	else \
 	  echo ""; \
-	  echo "  \033[33mUnexpected files in sdist:\033[0m"; \
+	  echo "  ERROR: unexpected files in sdist — add to pyproject.toml exclude list before tagging:"; \
 	  echo "$$UNEXPECTED" | sed 's/^/    /'; \
-	  echo ""; \
-	  printf "  Continue anyway? [y/N] "; read ans; \
-	  case "$$ans" in y|Y) echo "  Proceeding.";; *) echo "  Aborted."; exit 1;; esac; \
+	  exit 1; \
 	fi
 
 .PHONY: publish
