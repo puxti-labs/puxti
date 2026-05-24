@@ -33,7 +33,7 @@ format: ## Format with ruff
 # ── Release ───────────────────────────────────────────────────────────────────
 
 # Files allowed in the sdist outside src/puxti/ — anything else triggers a prompt.
-SDIST_ALLOWED = pyproject.toml LICENSE NOTICE.md README.md SECURITY.md .env.example .gitignore
+SDIST_ALLOWED = pyproject.toml LICENSE NOTICE.md README.md SECURITY.md TELEMETRY.md .env.example .gitignore
 
 .PHONY: build
 build: ## Build wheel and sdist
