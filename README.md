@@ -1,5 +1,11 @@
 # Puxti
 
+[![PyPI version](https://img.shields.io/pypi/v/puxti.svg)](https://pypi.org/project/puxti/)
+[![PyPI downloads](https://img.shields.io/pypi/dm/puxti.svg)](https://pypi.org/project/puxti/)
+[![Python versions](https://img.shields.io/pypi/pyversions/puxti.svg)](https://pypi.org/project/puxti/)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![Docs](https://img.shields.io/badge/docs-getpuxti.com-informational)](https://getpuxti.com/docs.html)
+
 Puxti helps data teams propagate schema and semantic changes across dbt and the downstream stack as reviewable PRs. Each change also captures business meaning, so future changes get cheaper and safer.
 
 ```bash
