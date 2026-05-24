@@ -449,6 +449,25 @@ class KnowledgeGraph:
             change_event_id=row["change_event_id"],
         )
 
+    async def get_definition_history(self, entity_id: str) -> list[Definition]:
+        """Return all definition versions for an entity, oldest first."""
+        async with self._db.execute(
+            "SELECT * FROM definitions WHERE entity_id=? ORDER BY version ASC",
+            (entity_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [
+            Definition(
+                id=row["id"],
+                entity_id=row["entity_id"],
+                description=row["description"],
+                version=row["version"],
+                created_by=row["created_by"],
+                change_event_id=row["change_event_id"],
+            )
+            for row in rows
+        ]
+
     # ── Change and correction events ──────────────────────────────────────────
 
     async def save_change_event(self, event: ChangeEvent) -> None:

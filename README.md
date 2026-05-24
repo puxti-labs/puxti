@@ -164,6 +164,35 @@ Puxti creates a `FEEDS` edge in the Knowledge Graph connecting the Airflow task 
 
 ---
 
+### Step 1c — Query impact before making a change (optional)
+
+Before running `capture` or `redefine`, you can see exactly what depends on an entity — no LLM calls, no changes made:
+
+```bash
+# Show all dependents of an entity
+puxti impact model.jaffle_shop.orders
+
+# Scope to a specific change type
+puxti impact model.jaffle_shop.orders --change-type rename
+puxti impact model.jaffle_shop.orders --change-type redefine
+puxti impact model.jaffle_shop.orders --change-type drop
+
+# JSON output (same shape as the MCP impact_of_change tool)
+puxti impact model.jaffle_shop.orders --json
+```
+
+Output shows each dependent entity, its hop distance from the target, and whether the relationship is semantic (concept-level) or structural (lineage/SQL reference). With `--change-type`, structural dependents are flagged as primary risk for `rename` and `drop`; semantic dependents for `redefine`.
+
+#### `impact` options
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `<entity>` | Yes | Entity ID to analyze (positional argument) |
+| `--change-type` | No | One of `rename`, `redefine`, `drop`, `type_change` — scopes the risk annotation |
+| `--json` | No | Output as JSON (same shape as the MCP `impact_of_change` tool) |
+
+---
+
 ### Step 2a — Capture a column rename
 
 ```bash
@@ -277,15 +306,47 @@ When you classify a correction as a "real change", Puxti prints the `redefine` c
 
 ---
 
-## Telemetry
+## Use with Claude Code / Cursor (MCP)
 
-Puxti v0.6.0 collects no telemetry. A future release will add anonymous, opt-in usage analytics with clear documentation and a one-command opt-out. Until then, the only signal we have is GitHub stars and PyPI download counts.
+Puxti ships an MCP server so coding agents can query your knowledge graph without leaving their context window.
+
+**Add to Claude Code** (`~/.claude/claude_code_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "puxti": {
+      "command": "puxti",
+      "args": ["mcp", "serve"]
+    }
+  }
+}
+```
+
+Once connected, four read-only tools are available:
+
+| Tool | What it answers |
+|---|---|
+| `impact_of_change` | Which entities depend on this one and would break? |
+| `consumers` | Which models directly read from this entity? |
+| `describe_entity` | What does this entity mean? What semantic edges does it have? |
+| `definition_history` | How has the meaning of this entity evolved over time? |
+
+Run `puxti scan` in your dbt project first to populate the graph.
 
 ---
 
-## What's next
+## Telemetry
 
-- **MCP server for coding agents (Claude Code, Cursor)** — query Puxti's knowledge graph from your AI assistant
+Puxti collects anonymous, opt-in usage analytics. Telemetry is **off by default**.
+
+```bash
+puxti telemetry on     # enable
+puxti telemetry off    # disable
+puxti telemetry show   # check current status
+```
+
+When enabled, each command reports: command name, duration, exit status (0 or 1), and a random install ID (no project data, no entity names, no SQL). Events go to PostHog EU (`eu.i.posthog.com`). See [`TELEMETRY.md`](TELEMETRY.md) for the full field list.
 
 ---
 

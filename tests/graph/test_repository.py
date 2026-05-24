@@ -201,6 +201,26 @@ async def test_get_latest_definition_missing_returns_none(kg: KnowledgeGraph) ->
     assert await kg.get_latest_definition("no-entity") is None
 
 
+@pytest.mark.asyncio
+async def test_get_definition_history_returns_versions_in_order(kg: KnowledgeGraph) -> None:
+    e = await kg.upsert_entity_by_name(_entity("orders"))
+    d1 = Definition(entity_id=e.id, description="first", version=1, created_by="llm")
+    d2 = Definition(entity_id=e.id, description="second", version=2, created_by="user")
+    d3 = Definition(entity_id=e.id, description="third", version=3, created_by="user")
+    for d in [d1, d2, d3]:
+        await kg.upsert_definition(d)
+    history = await kg.get_definition_history(e.id)
+    assert len(history) == 3
+    assert [h.version for h in history] == [1, 2, 3]
+    assert history[0].description == "first"
+    assert history[2].created_by == "user"
+
+
+@pytest.mark.asyncio
+async def test_get_definition_history_empty(kg: KnowledgeGraph) -> None:
+    assert await kg.get_definition_history("no-entity") == []
+
+
 # ── project management ────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio

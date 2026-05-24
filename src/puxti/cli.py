@@ -1,5 +1,6 @@
 import asyncio
 import threading
+import time
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -29,6 +30,20 @@ app = typer.Typer(
     help="Safe schema and semantic change propagation for data teams.",
     no_args_is_help=True,
 )
+
+telemetry_app = typer.Typer(
+    name="telemetry",
+    help="Manage anonymous usage telemetry.",
+    no_args_is_help=True,
+)
+app.add_typer(telemetry_app, name="telemetry")
+
+mcp_app = typer.Typer(
+    name="mcp",
+    help="MCP server for coding agents (Claude Code, Cursor, etc.).",
+    no_args_is_help=True,
+)
+app.add_typer(mcp_app, name="mcp")
 
 console = Console()
 err_console = Console(stderr=True)
@@ -88,15 +103,23 @@ def _check_for_update() -> None:
         pass  # never break the CLI over an update check
 
 
-def _run(coro) -> None:
+def _run(coro, *, command: str = "") -> None:
     """Run an async command, catching unexpected errors with actionable guidance."""
     updater = threading.Thread(target=_check_for_update, daemon=True)
     updater.start()
+    start = time.monotonic()
+    exit_status = 0
+    tel_thread: threading.Thread | None = None
     try:
         asyncio.run(coro)
-    except (typer.Exit, KeyboardInterrupt):
+    except typer.Exit as exc:
+        exit_status = getattr(exc, "exit_code", None) or getattr(exc, "code", 0) or 0
+        raise
+    except KeyboardInterrupt:
+        exit_status = 130
         raise
     except Exception as exc:
+        exit_status = 1
         err_console.print(f"\n[red bold]Unexpected error:[/red bold] {exc}")
         err_console.print(
             f"\n[yellow]Something went wrong. To report this bug:[/yellow]\n"
@@ -111,7 +134,13 @@ def _run(coro) -> None:
         err_console.print_exception(show_locals=False)
         raise typer.Exit(1)
     finally:
+        duration_ms = int((time.monotonic() - start) * 1000)
+        if command:
+            from puxti.telemetry import record_event as _record_event
+            tel_thread = _record_event(command=command, duration_ms=duration_ms, exit_status=exit_status)
         updater.join(timeout=4)
+        if tel_thread is not None:
+            tel_thread.join(timeout=3)
         if _update_notice:
             console.print(
                 f"\n[yellow]Update available:[/yellow] {__version__} → {_update_notice[0]}\n"
@@ -251,7 +280,8 @@ def capture(
             dbt_project_dir=resolved_project_dir,
             repo_subdir=resolved_repo_subdir,
             dry_run=dry_run,
-        )
+        ),
+        command="capture",
     )
 
 
@@ -284,7 +314,7 @@ def scan(
     """
     ws = _load_workspace()
     resolved_project_dir = dbt_project_dir or (ws.dbt.project_dir if ws.dbt else None)
-    _run(_run_scan(dbt_project_dir=resolved_project_dir, interactive=interactive, dry_run=dry_run))
+    _run(_run_scan(dbt_project_dir=resolved_project_dir, interactive=interactive, dry_run=dry_run), command="scan")
 
 
 @app.command()
@@ -320,7 +350,40 @@ def link(
     except ValueError as exc:
         err_console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(1)
-    _run(_run_link(from_entity=from_entity, to_entity=to_entity, description=description))
+    _run(_run_link(from_entity=from_entity, to_entity=to_entity, description=description), command="link")
+
+
+@app.command()
+def impact(
+    entity: str = typer.Argument(
+        ..., help="Entity ID to analyze (e.g. model.jaffle_shop.orders)"
+    ),
+    change_type: Optional[str] = typer.Option(
+        None, "--change-type",
+        help="Type of change to evaluate: rename, redefine, drop, type_change",
+    ),
+    as_json: bool = typer.Option(
+        False, "--json",
+        help="Output as JSON (same shape as the MCP impact_of_change tool).",
+    ),
+) -> None:
+    """Show what depends on an entity and what would be affected by a change.
+
+    Queries the Knowledge Graph for semantic and structural dependents without
+    making any LLM calls. Run `puxti scan` first to populate the graph.
+
+    Use --change-type to see which dependents are primary risk for a specific
+    type of change: rename (structural), redefine (semantic), drop or
+    type_change (both).
+    """
+    _VALID_CHANGE_TYPES = {"rename", "redefine", "drop", "type_change"}
+    if change_type and change_type not in _VALID_CHANGE_TYPES:
+        err_console.print(
+            f"[red]Error:[/red] Invalid --change-type '{change_type}'. "
+            f"Valid values: {', '.join(sorted(_VALID_CHANGE_TYPES))}"
+        )
+        raise typer.Exit(1)
+    _run(_run_impact(entity=entity, change_type=change_type, as_json=as_json), command="impact")
 
 
 @app.command()
@@ -374,7 +437,8 @@ def redefine(
             base_branch=resolved_base_branch,
             dbt_project_dir=resolved_project_dir,
             dry_run=dry_run,
-        )
+        ),
+        command="redefine",
     )
 
 
@@ -402,7 +466,7 @@ def correct(
     all affected semantic edges via LLM, and ask you to confirm each disposition
     before writing anything to the Knowledge Graph.
     """
-    _run(_run_correct(entity=entity, project=project))
+    _run(_run_correct(entity=entity, project=project), command="correct")
 
 
 @app.command()
@@ -431,7 +495,7 @@ def purge(
     if project and all_projects:
         err_console.print("[red]Error:[/red] --project and --all are mutually exclusive.")
         raise typer.Exit(1)
-    _run(_run_purge(project=project, all_projects=all_projects))
+    _run(_run_purge(project=project, all_projects=all_projects), command="purge")
 
 
 @app.command()
@@ -453,7 +517,7 @@ def describe(
     With --entity: shows full definition and all semantic edges
     (incoming and outgoing) for a single entity.
     """
-    _run(_run_describe(entity=entity, project=project))
+    _run(_run_describe(entity=entity, project=project), command="describe")
 
 
 @app.command()
@@ -513,7 +577,74 @@ def health(
     """Check connectivity to all configured services."""
     ws = _load_workspace()
     resolved_project_dir = dbt_project_dir or (ws.dbt.project_dir if ws.dbt else None)
-    _run(_run_health(dbt_project_dir=resolved_project_dir, workspace=ws))
+    _run(_run_health(dbt_project_dir=resolved_project_dir, workspace=ws), command="health")
+
+
+# ── MCP subcommands ───────────────────────────────────────────────────────────
+
+
+@mcp_app.command("serve")
+def mcp_serve() -> None:
+    """Start the puxti MCP server (stdio transport).
+
+    Exposes four read-only tools to any MCP-compatible agent:
+      impact_of_change  — what depends on an entity and what breaks
+      consumers         — direct structural consumers (1-hop lineage)
+      definition_history — full version history of an entity's definition
+      describe_entity   — type, connector, definition, and semantic edges
+
+    \b
+    Claude Code — add to your project's .claude/settings.json:
+      {
+        "mcpServers": {
+          "puxti": { "command": "puxti", "args": ["mcp", "serve"] }
+        }
+      }
+
+    Run `puxti scan` first to populate the Knowledge Graph.
+    """
+    from puxti.mcp_server import mcp as _mcp
+    _mcp.run(transport="stdio")
+
+
+# ── Telemetry subcommands ──────────────────────────────────────────────────────
+
+
+@telemetry_app.command("on")
+def telemetry_on() -> None:
+    """Enable anonymous usage telemetry."""
+    from puxti.telemetry import get_install_id, set_enabled
+    set_enabled(True)
+    install_id = get_install_id()
+    console.print("[green]✓[/green] Telemetry enabled.")
+    console.print(f"  Install ID:  [dim]{install_id}[/dim]")
+    console.print("  Events sent: command name, version, duration, exit status — nothing else.")
+    console.print("  See [bold]TELEMETRY.md[/bold] or run [bold]puxti telemetry show[/bold] for details.")
+
+
+@telemetry_app.command("off")
+def telemetry_off() -> None:
+    """Disable anonymous usage telemetry."""
+    from puxti.telemetry import set_enabled
+    set_enabled(False)
+    console.print("[green]✓[/green] Telemetry disabled. No events will be sent.")
+
+
+@telemetry_app.command("show")
+def telemetry_show() -> None:
+    """Show current telemetry state and install ID."""
+    from puxti.telemetry import get_install_id, is_enabled
+    enabled = is_enabled()
+    status = "[green]enabled[/green]" if enabled else "[dim]disabled (default)[/dim]"
+    console.print(f"[bold]Telemetry:[/bold]  {status}")
+    if enabled:
+        install_id = get_install_id()
+        console.print(f"[bold]Install ID:[/bold] [dim]{install_id}[/dim]")
+        console.print("\nWhat is sent per command: name, version, duration_ms, exit_status, python_version, platform.")
+        console.print("Nothing from your dbt project, graph, or environment is ever sent.")
+        console.print("See [bold]TELEMETRY.md[/bold] for the full event schema.")
+    else:
+        console.print("\nRun [bold]puxti telemetry on[/bold] to opt in.")
 
 
 # ── Async implementations ──────────────────────────────────────────────────────
@@ -1501,3 +1632,123 @@ async def _run_health(dbt_project_dir: str | None, workspace: WorkspaceConfig | 
 
     if not all_ok:
         raise typer.Exit(1)
+
+
+async def _run_impact(entity: str, change_type: str | None, as_json: bool) -> None:
+    import json as _json
+
+    graph = KnowledgeGraph()
+    try:
+        await graph.connect()
+
+        entity_obj = await graph.get_entity_by_id(entity)
+        if not entity_obj:
+            err_console.print(
+                f"[red]Error:[/red] Entity '{entity}' not found in the Knowledge Graph.\n"
+                "  Run [bold]puxti describe[/bold] to see available entity IDs, "
+                "or [bold]puxti scan[/bold] to populate the graph."
+            )
+            raise typer.Exit(1)
+
+        definition = await graph.get_latest_definition(entity)
+        semantic_deps = await graph.get_semantic_dependents_with_depth(entity)
+        structural_deps = await graph.get_structural_dependents(entity)
+
+        # Merge into a single map keyed by entity ID.
+        # An entity can appear in both semantic and structural — track both.
+        dep_map: dict[str, dict] = {}
+        for dep, hop in semantic_deps:
+            entry = dep_map.setdefault(dep.id, {"entity": dep, "hop": hop, "rels": set()})
+            entry["rels"].add("semantic")
+            entry["hop"] = min(entry["hop"], hop)
+        for dep in structural_deps:
+            entry = dep_map.setdefault(dep.id, {"entity": dep, "hop": 1, "rels": set()})
+            entry["rels"].add("structural")
+
+        rows = sorted(dep_map.values(), key=lambda r: (r["hop"], r["entity"].name))
+
+        if as_json:
+            payload = {
+                "entity_id": entity,
+                "change_type": change_type,
+                "dependents": [
+                    {
+                        "entity_id": r["entity"].id,
+                        "name": r["entity"].name,
+                        "type": r["entity"].type.value,
+                        "hop": r["hop"],
+                        "relationship": "+".join(sorted(r["rels"])),
+                    }
+                    for r in rows
+                ],
+                "total_count": len(rows),
+            }
+            console.print_json(_json.dumps(payload))
+            return
+
+        def_text = (
+            definition.description
+            if definition
+            else "[dim]no definition — run puxti scan[/dim]"
+        )
+        header_lines = (
+            f"[bold]Entity:[/bold]      {entity_obj.name}  [dim]({entity_obj.type.value})[/dim]\n"
+            f"[bold]Definition:[/bold]  {def_text}"
+        )
+        if change_type:
+            header_lines += f"\n[bold]Change type:[/bold] {change_type}"
+
+        console.print(Panel(header_lines, title=f"[bold]Impact: {entity}[/bold]", border_style="blue"))
+
+        if not rows:
+            console.print("[yellow]No dependents found.[/yellow] Nothing in the graph depends on this entity.")
+            return
+
+        table = Table(show_lines=False)
+        table.add_column("Entity", style="bold", no_wrap=True)
+        table.add_column("Type", style="dim", no_wrap=True)
+        table.add_column("Hop", justify="right", style="dim", no_wrap=True)
+        table.add_column("Relationship", no_wrap=True)
+
+        # Determine which relationships are primary risk for the given change type.
+        primary: set[str] = set()
+        if change_type == "rename":
+            primary = {"structural"}
+        elif change_type == "redefine":
+            primary = {"semantic"}
+        elif change_type in ("drop", "type_change"):
+            primary = {"semantic", "structural"}
+
+        for r in rows:
+            rel_label = "+".join(sorted(r["rels"]))
+            is_primary = bool(r["rels"] & primary) if primary else False
+            if is_primary:
+                rel_styled = f"[yellow bold]{rel_label}[/yellow bold]"
+            elif "semantic" in r["rels"] and "structural" not in r["rels"]:
+                rel_styled = f"[cyan]{rel_label}[/cyan]"
+            elif "structural" in r["rels"] and "semantic" not in r["rels"]:
+                rel_styled = f"[green]{rel_label}[/green]"
+            else:
+                rel_styled = f"[magenta]{rel_label}[/magenta]"
+            table.add_row(r["entity"].name, r["entity"].type.value, str(r["hop"]), rel_styled)
+
+        console.print(table)
+
+        sem_count = sum(1 for r in rows if "semantic" in r["rels"])
+        str_count = sum(1 for r in rows if "structural" in r["rels"])
+        console.print(
+            f"\n[dim]{len(rows)} dependent(s) — "
+            f"{sem_count} semantic, {str_count} structural[/dim]"
+        )
+
+        if change_type in ("rename", "drop", "type_change") and str_count:
+            console.print(
+                f"[yellow]⚠  {str_count} structural dependent(s) will need updating for a {change_type}.[/yellow]"
+            )
+        if change_type in ("redefine", "drop", "type_change") and sem_count:
+            console.print(
+                f"[yellow]⚠  {sem_count} semantic dependent(s) may need review for a {change_type}.[/yellow]"
+            )
+
+    finally:
+        await graph.close()
