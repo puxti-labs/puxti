@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.8.1] — 2026-07-13
 
 ### Fixed
 
@@ -17,6 +17,22 @@
 ### Changed
 
 - LLM model ID and pricing are centralized in `puxti.llm` (previously duplicated across five modules).
+
+---
+
+## [0.8.0] — 2026-05-24
+
+_Backfilled: this release shipped without a changelog entry._
+
+### Added
+
+- **`puxti impact`** — query what depends on an entity and what breaks, straight from the Knowledge Graph, with `--json` output for pipelines.
+- **MCP server** (`puxti mcp serve`, stdio transport) exposing four read-only tools to MCP-compatible agents: `impact_of_change`, `consumers`, `definition_history`, `describe_entity`.
+- **Opt-in anonymous telemetry** (`puxti telemetry on|off|show`) — command name, version, duration, and exit status only; disabled by default. See `TELEMETRY.md`.
+
+### Changed
+
+- Internal docs excluded from the sdist.
 
 ---
 
