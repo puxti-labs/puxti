@@ -46,7 +46,9 @@ jobs:
       - name: Check sdist contents
         run: |
           SDIST=$(ls dist/*.tar.gz)
-          UNEXPECTED=$(tar -tzf "$SDIST" | sed 's|^[^/]*/||' | grep -Ev '^src/puxti/|^$|^(pyproject\.toml|LICENSE|NOTICE\.md|README\.md|SECURITY\.md|TELEMETRY\.md|\.env\.example|\.gitignore|PKG-INFO)$')
+          # grep exits 1 when nothing is unexpected (the good case); without
+          # `|| true` that status reaches the assignment and `bash -e` aborts.
+          UNEXPECTED=$(tar -tzf "$SDIST" | sed 's|^[^/]*/||' | grep -Ev '^src/puxti/|^$|^(pyproject\.toml|LICENSE|NOTICE\.md|README\.md|SECURITY\.md|TELEMETRY\.md|\.env\.example|\.gitignore|PKG-INFO)$' || true)
           if [ -n "$UNEXPECTED" ]; then
             echo "ERROR: unexpected files in sdist:"
             echo "$UNEXPECTED" | sed 's/^/  /'
