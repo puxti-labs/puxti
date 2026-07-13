@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **`puxti scan` runs LLM calls in parallel.** Definition generation (auto mode), semantic-edge batches, and `--dry-run` token counting now run with bounded concurrency (default 4, tunable via the `LLM_CONCURRENCY` env var). Interactive mode stays sequential — each call is gated on user confirmation. The first API error cancels in-flight calls and propagates; no silent partial results.
+- Scan progress is now a live counter ("Generating definitions... 12/48") instead of a static spinner.
+
+### Fixed
+
+- `.env.example` no longer opens with a Neo4j block referencing `docker-compose.yml` — both were removed in 0.7.0.
+
+---
+
 ## [0.8.1] — 2026-07-13
 
 ### Fixed

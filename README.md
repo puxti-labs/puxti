@@ -68,6 +68,7 @@ cp .env.example .env
 | `GITHUB_TOKEN` | Personal access token with `repo` scope (Contents + Pull requests write) |
 | `DBT_PROJECT_DIR` | Path to your dbt project root (the directory containing `dbt_project.yml`) |
 | `DBT_PROFILES_DIR` | Path to your dbt profiles directory — usually `~/.dbt` |
+| `LLM_CONCURRENCY` | Max parallel LLM calls during `puxti scan` (optional, default 4) — raise only if your Anthropic rate-limit tier allows it |
 
 ---
 

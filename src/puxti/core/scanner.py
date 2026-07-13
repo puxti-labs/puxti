@@ -7,9 +7,11 @@ Two modes:
 Nothing is written to the Knowledge Graph without explicit user confirmation.
 """
 
+import asyncio
 import hashlib
 import json
 import logging
+from collections.abc import Awaitable, Callable
 
 import anthropic
 from rich.console import Console
@@ -31,6 +33,32 @@ _logger = logging.getLogger(__name__)
 _DEF_EST_OUTPUT_TOKENS = 80   # definitions are short
 _MAX_SQL_CHARS = 15_000       # cap SQL size to prevent injection via large model files
 _EDGES_EST_OUTPUT_TOKENS = 2048  # per batch call; actual total scales with entity count
+
+
+async def _bounded_gather(
+    jobs: list[Callable[[], Awaitable[None]]],
+    limit: int,
+) -> None:
+    """Run jobs concurrently with at most `limit` in flight, failing fast.
+
+    The first exception cancels the remaining jobs and propagates unwrapped,
+    so callers keep seeing the original error type rather than an
+    ExceptionGroup. Jobs are callables (not coroutines) so that cancelled
+    ones are simply never invoked instead of leaking never-awaited coroutines.
+    """
+    semaphore = asyncio.Semaphore(max(1, limit))
+
+    async def _run(job: Callable[[], Awaitable[None]]) -> None:
+        async with semaphore:
+            await job()
+
+    try:
+        async with asyncio.TaskGroup() as tg:
+            for job in jobs:
+                tg.create_task(_run(job))
+    except ExceptionGroup as eg:
+        raise eg.exceptions[0] from None
+
 
 _DEFINITION_SYSTEM_PROMPT = """You are Puxti's semantic scanner.
 
@@ -160,8 +188,20 @@ class SemanticScanner:
                     if e.id == edge.to_entity_id:
                         upstream_map[edge.from_entity_id].append(e.name)
 
-        # Count tokens for definition calls
-        def_input_tokens = 0
+        # Count tokens for definition calls — bounded-concurrent, like the scan itself
+        token_counts: list[int] = []
+
+        def _count_job(user_message: str) -> Callable[[], Awaitable[None]]:
+            async def _run() -> None:
+                response = await self._client.messages.count_tokens(
+                    model=LLM_MODEL,
+                    system=_DEFINITION_SYSTEM_PROMPT,
+                    messages=[{"role": "user", "content": user_message}],
+                )
+                token_counts.append(response.input_tokens)
+            return _run
+
+        count_jobs: list[Callable[[], Awaitable[None]]] = []
         for entity in model_entities:
             sql = sql_map.get(entity.id, "")
             if not sql:
@@ -179,12 +219,10 @@ class SemanticScanner:
                 f"{yml_context}\n\n"
                 f"SQL:\n{sql}"
             )
-            response = await self._client.messages.count_tokens(
-                model=LLM_MODEL,
-                system=_DEFINITION_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": user_message}],
-            )
-            def_input_tokens += response.input_tokens
+            count_jobs.append(_count_job(user_message))
+
+        await _bounded_gather(count_jobs, settings.llm_concurrency)
+        def_input_tokens = sum(token_counts)
 
         # Count tokens for edges — one representative call (source batch + full context)
         placeholder_defs = {e.id: f"<definition for {e.name}>" for e in model_entities}
@@ -245,13 +283,16 @@ class SemanticScanner:
         self,
         entities: list[Entity],
         definitions: dict[str, str],
+        on_batch_done: Callable[[int, int], None] | None = None,
     ) -> tuple[list[SemanticEdge], int]:
         """Propose semantic edges using bounded per-source-entity batching.
 
         For each small batch of source entities, the LLM receives the full entity
         list as one-line context and generates edges only FROM the source batch.
         Output size per call is O(source_batch × avg_edges) — bounded regardless
-        of total repo size. No cross-batch pass needed.
+        of total repo size. No cross-batch pass needed. Batches run concurrently
+        (capped by LLM_CONCURRENCY); results are merged in batch order so output
+        stays deterministic. `on_batch_done(done, total)` fires as batches finish.
 
         Returns:
             (edges, truncated_batches) — truncated_batches > 0 means at least one
@@ -275,10 +316,30 @@ class SemanticScanner:
             entities[i : i + self._EDGES_SOURCE_BATCH]
             for i in range(0, len(entities), self._EDGES_SOURCE_BATCH)
         ]
-        for source_batch in source_batches:
-            edges, was_truncated = await self._edges_for_sources(
-                source_batch, definitions, context_block, known_ids
-            )
+        results: list[tuple[list[SemanticEdge], bool]] = [
+            ([], False) for _ in source_batches
+        ]
+        completed = 0
+
+        def _batch_job(
+            index: int, source_batch: list[Entity]
+        ) -> Callable[[], Awaitable[None]]:
+            async def _run() -> None:
+                nonlocal completed
+                results[index] = await self._edges_for_sources(
+                    source_batch, definitions, context_block, known_ids
+                )
+                completed += 1
+                if on_batch_done:
+                    on_batch_done(completed, len(source_batches))
+            return _run
+
+        await _bounded_gather(
+            [_batch_job(i, b) for i, b in enumerate(source_batches)],
+            settings.llm_concurrency,
+        )
+
+        for edges, was_truncated in results:
             if was_truncated:
                 truncated += 1
             for edge in edges:
@@ -431,9 +492,14 @@ class SemanticScanner:
 
         truncated_batches = 0
         if defined_entities:
-            with console.status("[bold]Proposing semantic edges...[/bold]"):
+            status = console.status("[bold]Proposing semantic edges...[/bold]")
+            with status:
                 proposed_edges, truncated_batches = await self.propose_semantic_edges(
-                    defined_entities, definitions
+                    defined_entities,
+                    definitions,
+                    on_batch_done=lambda done, total: status.update(
+                        f"[bold]Proposing semantic edges... batch {done}/{total}[/bold]"
+                    ),
                 )
 
             if truncated_batches:
@@ -504,18 +570,30 @@ class SemanticScanner:
         console: Console,
     ) -> dict[str, str]:
         generated: dict[str, str] = {}
+        targets = [e for e in model_entities if sql_map.get(e.id)]
+        done = 0
 
-        with console.status(
-            f"[bold]Generating definitions for {len(model_entities)} models...[/bold]"
-        ):
-            for entity in model_entities:
-                sql = sql_map.get(entity.id, "")
-                if not sql:
-                    continue
+        status = console.status(
+            f"[bold]Generating definitions... 0/{len(targets)}[/bold]"
+        )
+
+        def _definition_job(entity: Entity) -> Callable[[], Awaitable[None]]:
+            async def _run() -> None:
+                nonlocal done
                 definition = await self.infer_definition(
-                    entity, sql, upstream_map.get(entity.id, [])
+                    entity, sql_map[entity.id], upstream_map.get(entity.id, [])
                 )
                 generated[entity.id] = definition
+                done += 1
+                status.update(
+                    f"[bold]Generating definitions... {done}/{len(targets)}[/bold]"
+                )
+            return _run
+
+        with status:
+            await _bounded_gather(
+                [_definition_job(e) for e in targets], settings.llm_concurrency
+            )
 
         # Show summary table
         table = Table(title="Proposed definitions")
