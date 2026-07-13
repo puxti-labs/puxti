@@ -377,11 +377,8 @@ async def test_estimate_cost_returns_token_counts_and_cost():
 
 
 async def test_estimate_cost_cost_is_sum_of_input_and_output():
-    from puxti.core.capture import (
-        _ESTIMATED_OUTPUT_TOKENS,
-        _INPUT_COST_PER_M,
-        _OUTPUT_COST_PER_M,
-    )
+    from puxti.core.capture import _ESTIMATED_OUTPUT_TOKENS
+    from puxti.llm import INPUT_COST_PER_MTOK, OUTPUT_COST_PER_MTOK
 
     count_response = MagicMock()
     count_response.input_tokens = 1_000_000  # 1M tokens for easy math
@@ -393,8 +390,8 @@ async def test_estimate_cost_cost_is_sum_of_input_and_output():
     capture = SemanticCapture(client=client)
     result = await capture.estimate_cost("some prompt")
 
-    expected_input_cost = _INPUT_COST_PER_M  # 1M tokens × rate
-    expected_output_cost = (_ESTIMATED_OUTPUT_TOKENS / 1_000_000) * _OUTPUT_COST_PER_M
+    expected_input_cost = INPUT_COST_PER_MTOK  # 1M tokens × rate
+    expected_output_cost = (_ESTIMATED_OUTPUT_TOKENS / 1_000_000) * OUTPUT_COST_PER_MTOK
     assert abs(result["estimated_cost_usd"] - (expected_input_cost + expected_output_cost)) < 0.0001
 
 

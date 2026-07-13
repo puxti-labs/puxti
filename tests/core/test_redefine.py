@@ -43,7 +43,8 @@ def _make_llm_response(payload: dict) -> MagicMock:
 
 def _make_connector(sql_map: dict | None = None, node_path: str = "models/orders.sql") -> MagicMock:
     connector = MagicMock()
-    connector.get_model_sql_map = MagicMock(return_value=sql_map or {
+    # `is None` — an explicitly-passed empty dict must mean "no SQL files"
+    connector.get_model_sql_map = MagicMock(return_value=sql_map if sql_map is not None else {
         ORDERS_ENTITY.id: ORDERS_SQL,
         CUSTOMERS_ENTITY.id: CUSTOMERS_SQL,
     })

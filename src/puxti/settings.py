@@ -7,7 +7,9 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     github_token: str = ""
 
-    dbt_project_dir: str = "./dbt"
+    # Empty default so "not configured" checks can trigger a helpful error
+    # instead of a confusing "manifest not found at ./dbt/..." message.
+    dbt_project_dir: str = ""
     dbt_profiles_dir: str = "~/.dbt"
 
 

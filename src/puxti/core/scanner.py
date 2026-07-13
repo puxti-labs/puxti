@@ -12,20 +12,22 @@ import json
 import logging
 
 import anthropic
-
-_logger = logging.getLogger(__name__)
 from rich.console import Console
 from rich.table import Table
 
 from puxti.connectors.dbt import DbtConnector
 from puxti.core.graph import KnowledgeGraph
-from puxti.models import Definition, Edge, Entity, SemanticEdge, EdgeType
+from puxti.llm import (
+    INPUT_COST_PER_MTOK,
+    LLM_MODEL,
+    OUTPUT_COST_PER_MTOK,
+    strip_markdown_fences,
+)
+from puxti.models import Definition, Edge, EdgeType, Entity, SemanticEdge
 from puxti.settings import settings
 
+_logger = logging.getLogger(__name__)
 
-_LLM_MODEL = "claude-sonnet-4-6"
-_INPUT_COST_PER_M = 3.00
-_OUTPUT_COST_PER_M = 15.00
 _DEF_EST_OUTPUT_TOKENS = 80   # definitions are short
 _MAX_SQL_CHARS = 15_000       # cap SQL size to prevent injection via large model files
 _EDGES_EST_OUTPUT_TOKENS = 2048  # per batch call; actual total scales with entity count
@@ -117,22 +119,17 @@ class SemanticScanner:
         )
         _logger.debug(
             "LLM call | model=%s prompt_chars=%d hash=%s",
-            _LLM_MODEL,
+            LLM_MODEL,
             len(user_message),
             hashlib.sha256(user_message.encode()).hexdigest()[:12],
         )
         response = await self._client.messages.create(
-            model=_LLM_MODEL,
+            model=LLM_MODEL,
             max_tokens=256,
             system=_DEFINITION_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_message}],
         )
-        raw = response.content[0].text.strip()
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-            raw = raw.strip()
+        raw = strip_markdown_fences(response.content[0].text)
         return json.loads(raw)["definition"]
 
     async def estimate_scan_cost(
@@ -183,7 +180,7 @@ class SemanticScanner:
                 f"SQL:\n{sql}"
             )
             response = await self._client.messages.count_tokens(
-                model=_LLM_MODEL,
+                model=LLM_MODEL,
                 system=_DEFINITION_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": user_message}],
             )
@@ -206,19 +203,23 @@ class SemanticScanner:
             f"You may reference any entity in the full list as a target."
         )
         edges_response = await self._client.messages.count_tokens(
-            model=_LLM_MODEL,
+            model=LLM_MODEL,
             system=_EDGES_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": edges_message}],
         )
-        n_batches = max(1, len(model_entities) // self._EDGES_SOURCE_BATCH)
+        # Ceiling division — a partial final batch is still one LLM call
+        n_batches = max(
+            1,
+            -(-len(model_entities) // self._EDGES_SOURCE_BATCH),
+        )
         edges_input_tokens = edges_response.input_tokens * n_batches
 
         total_input = def_input_tokens + edges_input_tokens
         def_output = len(model_entities) * _DEF_EST_OUTPUT_TOKENS
         total_output = def_output + _EDGES_EST_OUTPUT_TOKENS
         total_cost = (
-            (total_input / 1_000_000) * _INPUT_COST_PER_M
-            + (total_output / 1_000_000) * _OUTPUT_COST_PER_M
+            (total_input / 1_000_000) * INPUT_COST_PER_MTOK
+            + (total_output / 1_000_000) * OUTPUT_COST_PER_MTOK
         )
 
         return {
@@ -317,17 +318,12 @@ class SemanticScanner:
             f"You may reference any entity in the full list as a target."
         )
         response = await self._client.messages.create(
-            model=_LLM_MODEL,
+            model=LLM_MODEL,
             max_tokens=self._EDGES_MAX_TOKENS,
             system=_EDGES_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_message}],
         )
-        raw = response.content[0].text.strip()
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-            raw = raw.strip()
+        raw = strip_markdown_fences(response.content[0].text)
 
         try:
             edges_data = json.loads(raw).get("edges", [])

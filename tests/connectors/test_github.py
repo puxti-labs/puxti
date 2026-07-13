@@ -111,7 +111,7 @@ def _register_happy_path(httpx_mock, *, file_exists: bool = True) -> None:
     # 1. Get base branch SHA
     httpx_mock.add_response(
         method="GET",
-        url=f"https://api.github.com/repos/{REPO}/git/refs/heads/main",
+        url=f"https://api.github.com/repos/{REPO}/git/ref/heads/main",
         json={"object": {"sha": BASE_SHA}},
     )
     # 2. Create feature branch
@@ -245,7 +245,7 @@ async def test_open_pr_custom_base_branch(httpx_mock):
 
     httpx_mock.add_response(
         method="GET",
-        url=f"https://api.github.com/repos/{REPO}/git/refs/heads/develop",
+        url=f"https://api.github.com/repos/{REPO}/git/ref/heads/develop",
         json={"object": {"sha": BASE_SHA}},
     )
     httpx_mock.add_response(method="POST", url=f"https://api.github.com/repos/{REPO}/git/refs", status_code=201, json={})

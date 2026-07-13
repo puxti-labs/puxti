@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sys
 import threading
+import tomllib
 import uuid
 from pathlib import Path
 
@@ -19,13 +20,14 @@ POSTHOG_HOST = "https://eu.i.posthog.com"
 
 _CONFIG_PATH = Path.home() / ".puxti" / "config.toml"
 
+# Serialises read-modify-write cycles on the config file. The update-check
+# thread (cli._check_for_update) and the telemetry thread can both mutate
+# ~/.puxti/config.toml concurrently; without this an install ID or opt-in
+# choice can be silently clobbered by a lost update.
+_config_lock = threading.Lock()
+
 
 def _load_config() -> dict:
-    try:
-        import tomllib
-    except ImportError:
-        import tomli as tomllib  # type: ignore[no-redef]
-
     if not _CONFIG_PATH.exists():
         return {}
     try:
@@ -36,23 +38,27 @@ def _load_config() -> dict:
 
 
 def _save_config(data: dict) -> None:
+    """Write the config atomically so a concurrent reader never sees a partial file."""
     import tomli_w
 
     _CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(_CONFIG_PATH, "wb") as f:
+    tmp = _CONFIG_PATH.with_suffix(".toml.tmp")
+    with open(tmp, "wb") as f:
         tomli_w.dump(data, f)
+    tmp.replace(_CONFIG_PATH)
 
 
 def get_install_id() -> str:
     """Return the anonymous install ID, creating and persisting it if absent."""
-    data = _load_config()
-    existing = data.get("telemetry", {}).get("install_id")
-    if existing:
-        return existing
-    new_id = str(uuid.uuid4())
-    data.setdefault("telemetry", {})["install_id"] = new_id
-    _save_config(data)
-    return new_id
+    with _config_lock:
+        data = _load_config()
+        existing = data.get("telemetry", {}).get("install_id")
+        if existing:
+            return existing
+        new_id = str(uuid.uuid4())
+        data.setdefault("telemetry", {})["install_id"] = new_id
+        _save_config(data)
+        return new_id
 
 
 def is_enabled() -> bool:
@@ -62,11 +68,12 @@ def is_enabled() -> bool:
 
 def set_enabled(value: bool) -> None:
     """Persist the opt-in / opt-out choice. Creates an install ID on first opt-in."""
-    data = _load_config()
-    data.setdefault("telemetry", {})["enabled"] = value
-    if value:
-        data["telemetry"].setdefault("install_id", str(uuid.uuid4()))
-    _save_config(data)
+    with _config_lock:
+        data = _load_config()
+        data.setdefault("telemetry", {})["enabled"] = value
+        if value:
+            data["telemetry"].setdefault("install_id", str(uuid.uuid4()))
+        _save_config(data)
 
 
 def record_event(command: str, duration_ms: int, exit_status: int) -> threading.Thread | None:

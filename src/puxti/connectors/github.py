@@ -156,8 +156,11 @@ class GitHubConnector:
     # ── Private helpers ────────────────────────────────────────────────────────
 
     async def _get_branch_sha(self, branch: str) -> str:
+        # git/ref (singular) is the exact-match endpoint. git/refs does prefix
+        # matching and returns an array when several branches share the prefix
+        # (e.g. main and main-backup), which would break ["object"] below.
         response = await self._client.get(
-            f"{_BASE_URL}/repos/{self._repo}/git/refs/heads/{branch}",
+            f"{_BASE_URL}/repos/{self._repo}/git/ref/heads/{branch}",
             headers=self._headers,
         )
         _raise_for_status(response, f"get branch SHA: {branch}")
