@@ -12,5 +12,10 @@ class Settings(BaseSettings):
     dbt_project_dir: str = ""
     dbt_profiles_dir: str = "~/.dbt"
 
+    # Max concurrent LLM calls during `puxti scan` (definitions, edge batches,
+    # dry-run token counting). 4 stays well inside entry-tier Anthropic rate
+    # limits; raise it only if your tier allows.
+    llm_concurrency: int = 4
+
 
 settings = Settings()

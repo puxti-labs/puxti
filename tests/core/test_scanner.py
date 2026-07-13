@@ -418,3 +418,126 @@ async def test_scan_writes_confirmed_semantic_edges():
     result = await scanner.scan(connector, graph, interactive=False, console=console)
 
     assert result.semantic_edges_written == 1
+
+
+# ── concurrency ───────────────────────────────────────────────────────────────
+
+def _make_entities(n: int) -> list[Entity]:
+    return [
+        Entity(
+            id=f"model.demo_shop.m{i}",
+            name=f"m{i}",
+            type=EntityType.MODEL,
+            source_connector="dbt",
+        )
+        for i in range(n)
+    ]
+
+
+async def test_auto_definitions_respect_concurrency_cap(monkeypatch):
+    """Definition calls overlap, but never more than llm_concurrency in flight."""
+    import asyncio
+
+    from puxti.core import scanner as scanner_module
+
+    monkeypatch.setattr(scanner_module.settings, "llm_concurrency", 3)
+
+    in_flight = 0
+    max_in_flight = 0
+
+    async def _create(**kwargs):
+        nonlocal in_flight, max_in_flight
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        await asyncio.sleep(0.01)
+        in_flight -= 1
+        return _make_llm_response({"definition": "A definition."})
+
+    client = MagicMock()
+    client.messages = MagicMock()
+    client.messages.create = AsyncMock(side_effect=_create)
+    scanner = SemanticScanner(client=client)
+
+    entities = _make_entities(8)
+    sql_map = {e.id: f"select 1 as c{i}" for i, e in enumerate(entities)}
+    console = _make_console(inputs=["y"])
+
+    generated = await scanner._auto_definitions(entities, sql_map, {}, console)
+
+    assert len(generated) == 8
+    assert max_in_flight == 3  # parallel, but capped
+
+
+async def test_auto_definitions_fail_fast_with_original_error(monkeypatch):
+    """First API error propagates unwrapped (not as ExceptionGroup)."""
+    import asyncio
+
+    from puxti.core import scanner as scanner_module
+
+    monkeypatch.setattr(scanner_module.settings, "llm_concurrency", 4)
+
+    calls = 0
+
+    async def _create(**kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("boom")
+        await asyncio.sleep(0.05)
+        return _make_llm_response({"definition": "A definition."})
+
+    client = MagicMock()
+    client.messages = MagicMock()
+    client.messages.create = AsyncMock(side_effect=_create)
+    scanner = SemanticScanner(client=client)
+
+    entities = _make_entities(6)
+    sql_map = {e.id: "select 1" for e in entities}
+    console = _make_console(inputs=["y"])
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await scanner._auto_definitions(entities, sql_map, {}, console)
+
+
+async def test_propose_semantic_edges_merges_parallel_batches_in_batch_order(monkeypatch):
+    """With >_EDGES_SOURCE_BATCH entities, batches run in parallel but the
+    merged edge list follows batch order even when the second batch finishes first."""
+    import asyncio
+
+    from puxti.core import scanner as scanner_module
+
+    monkeypatch.setattr(scanner_module.settings, "llm_concurrency", 2)
+
+    entities = _make_entities(12)  # 2 batches: e0..e9, e10..e11
+    definitions = {e.id: "A definition." for e in entities}
+    batch1_edge = {
+        "from_entity_id": entities[0].id,
+        "to_entity_id": entities[1].id,
+        "type": "derived_from",
+        "description": "from batch 1",
+    }
+    batch2_edge = {
+        "from_entity_id": entities[10].id,
+        "to_entity_id": entities[0].id,
+        "type": "derived_from",
+        "description": "from batch 2",
+    }
+
+    async def _create(**kwargs):
+        content = kwargs["messages"][0]["content"]
+        # The FROM line names the source entities of this batch
+        if f"FROM these source entities only: {entities[0].id}" in content:
+            await asyncio.sleep(0.03)  # batch 1 finishes LAST
+            return _make_llm_response({"edges": [batch1_edge]})
+        return _make_llm_response({"edges": [batch2_edge]})
+
+    client = MagicMock()
+    client.messages = MagicMock()
+    client.messages.create = AsyncMock(side_effect=_create)
+    scanner = SemanticScanner(client=client)
+
+    edges, truncated = await scanner.propose_semantic_edges(entities, definitions)
+
+    assert truncated == 0
+    assert [e.description for e in edges] == ["from batch 1", "from batch 2"]
+    assert client.messages.create.await_count == 2
