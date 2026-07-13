@@ -303,14 +303,13 @@ def _rename_column_in_sql(sql: str, old_name: str, new_name: str) -> str:
     - bare column references:       old_name → new_name
     - aliased selections:           old_name as alias → new_name as alias
     - quoted identifiers:           `old_name`, "old_name" → `new_name`, "new_name"
-    - qualified refs (no alias):    alias.old_name → alias.old_name AS new_name
-    - qualified refs (has alias):   alias.old_name AS x → unchanged (already safe)
+    - qualified refs (alias.old_name): left completely unchanged
 
-    Qualified references are converted to alias form rather than renamed
-    in-place. This is the safe default: we cannot know at the SQL text level
-    which table alias maps to the source model, so we preserve the original
-    column reference and introduce the new name as an alias. Downstream
-    propagation then picks up the new name from there.
+    Qualified references are deliberately not touched: at the SQL text level
+    we cannot know which table alias maps to the source model, so renaming
+    them risks both wrong renames (s.type where s is a different table) and
+    broken SQL. A source model whose only references are qualified is instead
+    reported as unverified so the PR flags it for manual review.
 
     Uses word-boundary matching to avoid partial replacements
     (e.g. 'recorded_date' should not match 'date').

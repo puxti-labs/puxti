@@ -20,6 +20,7 @@ from puxti.core.corrector import SemanticCorrector
 from puxti.core.graph import KnowledgeGraph
 from puxti.core.redefine import SemanticRedefiner
 from puxti.core.scanner import SemanticScanner
+from puxti.llm import INPUT_COST_PER_MTOK, LLM_MODEL, OUTPUT_COST_PER_MTOK
 from puxti.models import ChangeEvent, ChangeStatus, ChangeType, CorrectionEvent, Definition, EdgeType, Entity, EntityType, SemanticEdge
 from puxti.propagation.engine import PropagationEngine
 from puxti.settings import settings
@@ -56,23 +57,11 @@ _update_notice: list[str] = []  # populated by background thread, read after com
 def _check_for_update() -> None:
     """Fetch latest version from PyPI and queue a notice if newer than installed."""
     try:
-        from pathlib import Path as _Path
         import json
-        import tomli_w
 
-        try:
-            import tomllib
-        except ImportError:
-            import tomli as tomllib  # type: ignore[no-redef]
+        from puxti.telemetry import _config_lock, _load_config, _save_config
 
-        config_path = _Path.home() / ".puxti" / "config.toml"
-        data: dict = {}
-        if config_path.exists():
-            with open(config_path, "rb") as f:
-                data = tomllib.load(f)
-
-        update = data.get("update", {})
-        last_checked_str = update.get("last_checked")
+        last_checked_str = _load_config().get("update", {}).get("last_checked")
         if last_checked_str:
             last_checked = datetime.fromisoformat(last_checked_str)
             if datetime.now(timezone.utc) - last_checked < _UPDATE_CHECK_INTERVAL:
@@ -81,11 +70,12 @@ def _check_for_update() -> None:
         with urllib.request.urlopen(_PYPI_URL, timeout=3) as resp:
             latest = json.loads(resp.read())["info"]["version"]
 
-        # Record check time
-        data.setdefault("update", {})["last_checked"] = datetime.now(timezone.utc).isoformat()
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(config_path, "wb") as f:
-            tomli_w.dump(data, f)
+        # Record check time. Re-read under the config lock so a concurrent
+        # telemetry write (e.g. install_id creation) is not clobbered.
+        with _config_lock:
+            data = _load_config()
+            data.setdefault("update", {})["last_checked"] = datetime.now(timezone.utc).isoformat()
+            _save_config(data)
 
         if __version__ == "dev" or latest == __version__:
             return
@@ -142,7 +132,8 @@ def _run(coro, *, command: str = "") -> None:
         if tel_thread is not None:
             tel_thread.join(timeout=3)
         if _update_notice:
-            console.print(
+            # stderr — stdout may carry machine-readable output (e.g. --json)
+            err_console.print(
                 f"\n[yellow]Update available:[/yellow] {__version__} → {_update_notice[0]}\n"
                 f"  Run: [bold]pip install --upgrade puxti[/bold]"
             )
@@ -185,15 +176,25 @@ async def _run_link(from_entity: str, to_entity: str, description: str) -> None:
     kg = KnowledgeGraph()
     await kg.connect()
     try:
-        from_ent = await kg.upsert_entity_by_name(
-            Entity(name=from_entity, type=from_type, source_connector=from_connector, project=from_project)
-        )
-        to_ent = await kg.upsert_entity_by_name(
-            Entity(name=to_entity, type=to_type, source_connector=to_connector, project=to_project)
-        )
+        # Entities are keyed by their canonical string ID — the same ID capture
+        # later passes to get_feeds_producers(). Creating them under a random
+        # UUID would make the FEEDS edge undiscoverable (and duplicate entities
+        # that scan already registered under the canonical ID).
+        for entity_id, entity_type, connector, project in (
+            (from_entity, from_type, from_connector, from_project),
+            (to_entity, to_type, to_connector, to_project),
+        ):
+            if not await kg.get_entity_by_id(entity_id):
+                await kg.upsert_entity(Entity(
+                    id=entity_id,
+                    name=entity_id.rsplit(".", 1)[-1],
+                    type=entity_type,
+                    source_connector=connector,
+                    project=project,
+                ))
         await kg.upsert_semantic_edge(SemanticEdge(
-            from_entity_id=from_ent.id,
-            to_entity_id=to_ent.id,
+            from_entity_id=from_entity,
+            to_entity_id=to_entity,
             type=EdgeType.FEEDS,
             description=description,
             created_by="user",
@@ -718,17 +719,21 @@ async def _run_capture(
 
         capture = SemanticCapture()
 
-        # --dry-run: count tokens and show cost estimate, then exit
+        # --dry-run: count tokens and show cost estimate, then exit.
+        # Build the same prompt the real capture sends — including the full
+        # known-entity-ID list — so the estimate matches what will be billed.
         if dry_run:
             existing_definition = await graph.get_latest_definition(event.source_entity_id)
             semantic_dependents = await graph.get_semantic_dependents(event.source_entity_id)
             structural_dependents = await graph.get_structural_dependents(event.source_entity_id)
+            all_entity_ids = await graph.get_all_entity_ids()
             user_message = _build_user_message(
                 event=event,
                 user_input=description,
                 existing_definition=existing_definition.description if existing_definition else None,
                 semantic_dependent_names=[e.name for e in semantic_dependents],
                 structural_dependent_names=[e.name for e in structural_dependents],
+                known_entity_ids=all_entity_ids,
             )
             with console.status("[bold]Counting tokens...[/bold]"):
                 estimate = await capture.estimate_cost(user_message)
@@ -806,12 +811,33 @@ async def _run_capture(
                 )
             return
 
-        # Apply repo subdir prefix when the dbt project is not at the repo root
+        # Apply repo subdir prefix when the dbt project is not at the repo root.
+        # dbt diffs only — repo_subdir describes the dbt repo's layout.
         if repo_subdir:
             subdir = repo_subdir.strip("/")
             for result in results:
+                if result.connector != "dbt":
+                    continue
                 for diff in result.diffs:
                     diff.file_path = f"{subdir}/{diff.file_path}"
+
+        # Airflow diff paths are relative to the dags dir — rebase them onto the
+        # airflow repo root so the PR updates dags/<file> instead of creating a
+        # new file at the repo root.
+        if ws_for_propagation.airflow and ws_for_propagation.airflow.project_dir:
+            dags_subdir = ws_for_propagation.airflow.extras.get("dags_dir", "dags")
+            prefix_parts = [
+                part.strip("/")
+                for part in (ws_for_propagation.airflow.repo_subdir, dags_subdir)
+                if part and part.strip("/")
+            ]
+            airflow_prefix = "/".join(prefix_parts)
+            if airflow_prefix:
+                for result in results:
+                    if result.connector != "airflow":
+                        continue
+                    for diff in result.diffs:
+                        diff.file_path = f"{airflow_prefix}/{diff.file_path}"
 
         total_files = sum(len(r.diffs) for r in results)
         console.print(
@@ -1194,8 +1220,7 @@ async def _run_redefine(
             # Count tokens for each LLM diff call (hop 1 and 2 only)
             dbt = DbtConnector(config={"project_dir": project_dir})
             sql_map = dbt.get_model_sql_map()
-            import anthropic as _anthropic
-            _client = _anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+            _client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
             from puxti.core.redefine import _REDEFINE_SYSTEM_PROMPT
 
             old_def_line = (
@@ -1221,7 +1246,7 @@ async def _run_redefine(
                     f"Current SQL:\n{model_sql}"
                 )
                 response = await _client.messages.count_tokens(
-                    model="claude-sonnet-4-6",
+                    model=LLM_MODEL,
                     system=_REDEFINE_SYSTEM_PROMPT,
                     messages=[{"role": "user", "content": user_message}],
                 )
@@ -1230,8 +1255,8 @@ async def _run_redefine(
 
             est_output_tokens = llm_calls * 512
             est_cost = (
-                (total_input_tokens / 1_000_000) * 3.00
-                + (est_output_tokens / 1_000_000) * 15.00
+                (total_input_tokens / 1_000_000) * INPUT_COST_PER_MTOK
+                + (est_output_tokens / 1_000_000) * OUTPUT_COST_PER_MTOK
             )
 
             depth_summary = "\n".join(
@@ -1272,22 +1297,26 @@ async def _run_redefine(
             for anc_entity, depth in model_ancestors:
                 console.print(f"  [dim]upstream hop {depth}[/dim]  {anc_entity.name}")
 
-        with console.status("[bold]Generating diffs...[/bold]"):
-            # Extract new attribute name from description for passthrough prompt
-            passthrough_diffs = await redefiner.generate_passthrough_diffs(
-                entity_id=entity,
-                new_attribute=description,
-                ancestors_with_depth=model_ancestors,
-                connector=dbt,
-                graph=graph,
-            )
-            semantic_diffs = await redefiner.generate_diffs(
-                entity_id=entity,
-                old_definition=existing_definition.description if existing_definition else None,
-                new_definition=description,
-                dependents_with_depth=all_dependents,
-                connector=dbt,
-            )
+        try:
+            with console.status("[bold]Generating diffs...[/bold]"):
+                # Extract new attribute name from description for passthrough prompt
+                passthrough_diffs = await redefiner.generate_passthrough_diffs(
+                    entity_id=entity,
+                    new_attribute=description,
+                    ancestors_with_depth=model_ancestors,
+                    connector=dbt,
+                    graph=graph,
+                )
+                semantic_diffs = await redefiner.generate_diffs(
+                    entity_id=entity,
+                    old_definition=existing_definition.description if existing_definition else None,
+                    new_definition=description,
+                    dependents_with_depth=all_dependents,
+                    connector=dbt,
+                )
+        except RuntimeError as exc:
+            err_console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(1) from exc
 
         # Deduplicate: semantic diffs take precedence over passthrough diffs for
         # the same file (semantic diff already incorporates the upstream change).
@@ -1555,7 +1584,7 @@ async def _run_health(dbt_project_dir: str | None, workspace: WorkspaceConfig | 
         try:
             client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
             await client.messages.count_tokens(
-                model="claude-sonnet-4-6",
+                model=LLM_MODEL,
                 messages=[{"role": "user", "content": "ping"}],
             )
             console.print("[green]✓[/green] Anthropic API key")

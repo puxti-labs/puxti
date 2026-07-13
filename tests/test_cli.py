@@ -325,6 +325,7 @@ def test_capture_dry_run_shows_cost_estimate():
     mock_graph.get_semantic_dependents = AsyncMock(return_value=[])
     mock_graph.get_structural_dependents = AsyncMock(return_value=[])
     mock_graph.get_structural_ancestors = AsyncMock(return_value=[])
+    mock_graph.get_all_entity_ids = AsyncMock(return_value=[])
     mock_graph.get_entity_by_id = AsyncMock(return_value=MagicMock())
 
     mock_capture = MagicMock()
@@ -367,6 +368,7 @@ def test_capture_dry_run_does_not_require_github_token():
     mock_graph.get_semantic_dependents = AsyncMock(return_value=[])
     mock_graph.get_structural_dependents = AsyncMock(return_value=[])
     mock_graph.get_structural_ancestors = AsyncMock(return_value=[])
+    mock_graph.get_all_entity_ids = AsyncMock(return_value=[])
     mock_graph.get_entity_by_id = AsyncMock(return_value=MagicMock())
 
     mock_capture = MagicMock()
@@ -1599,6 +1601,7 @@ def test_capture_dry_run_succeeds_without_repo():
     mock_graph.get_semantic_dependents = AsyncMock(return_value=[])
     mock_graph.get_structural_dependents = AsyncMock(return_value=[])
     mock_graph.get_structural_ancestors = AsyncMock(return_value=[])
+    mock_graph.get_all_entity_ids = AsyncMock(return_value=[])
     mock_graph.get_entity_by_id = AsyncMock(return_value=MagicMock())
 
     mock_capture = MagicMock()
@@ -1670,28 +1673,12 @@ def test_link_invalid_to_entity_exits_1():
 
 
 def test_link_happy_path_writes_feeds_edge():
-    """link creates both entities and a FEEDS semantic edge in the graph."""
-    from puxti.models import Entity, EntityType
-
-    stored_from = Entity(
-        id="id-from",
-        name="task.airflow.salesforce_sync.extract_opportunities",
-        type=EntityType.TASK,
-        source_connector="airflow",
-        project="salesforce_sync",
-    )
-    stored_to = Entity(
-        id="id-to",
-        name="source.clariva.raw_opportunities",
-        type=EntityType.TABLE,
-        source_connector="dbt",
-        project="clariva",
-    )
-
+    """link creates both entities under their canonical IDs and a FEEDS edge."""
     mock_graph = MagicMock()
     mock_graph.connect = AsyncMock()
     mock_graph.close = AsyncMock()
-    mock_graph.upsert_entity_by_name = AsyncMock(side_effect=[stored_from, stored_to])
+    mock_graph.get_entity_by_id = AsyncMock(return_value=None)
+    mock_graph.upsert_entity = AsyncMock()
     mock_graph.upsert_semantic_edge = AsyncMock()
 
     with patch("puxti.cli.KnowledgeGraph", return_value=mock_graph):
@@ -1706,15 +1693,79 @@ def test_link_happy_path_writes_feeds_edge():
     assert "FEEDS" in result.output
     assert "task.airflow.salesforce_sync.extract_opportunities" in result.output
     assert "source.clariva.raw_opportunities" in result.output
-    mock_graph.upsert_entity_by_name.assert_awaited()
-    mock_graph.upsert_semantic_edge.assert_awaited_once()
 
+    # Entities are created under their canonical string IDs — not random UUIDs —
+    # so get_feeds_producers() can find the edge during capture.
+    created = [call.args[0] for call in mock_graph.upsert_entity.await_args_list]
+    assert [e.id for e in created] == [
+        "task.airflow.salesforce_sync.extract_opportunities",
+        "source.clariva.raw_opportunities",
+    ]
+    assert [e.name for e in created] == ["extract_opportunities", "raw_opportunities"]
+
+    mock_graph.upsert_semantic_edge.assert_awaited_once()
     edge_call = mock_graph.upsert_semantic_edge.call_args[0][0]
     from puxti.models import EdgeType
     assert edge_call.type == EdgeType.FEEDS
-    assert edge_call.from_entity_id == "id-from"
-    assert edge_call.to_entity_id == "id-to"
+    assert edge_call.from_entity_id == "task.airflow.salesforce_sync.extract_opportunities"
+    assert edge_call.to_entity_id == "source.clariva.raw_opportunities"
     assert edge_call.created_by == "user"
+
+
+def test_link_reuses_scan_created_entity_and_feeds_edge_is_discoverable(tmp_path):
+    """Regression: the documented scan → link → capture flow must connect.
+
+    The FEEDS edge written by link must be discoverable by get_feeds_producers()
+    (what capture calls), and link must not duplicate scan-created entities.
+    """
+    import asyncio
+
+    from puxti.cli import _run_link
+    from puxti.core.graph import KnowledgeGraph
+    from puxti.models import Entity, EntityType
+
+    db_path = tmp_path / "graph.db"
+
+    async def scenario():
+        # Simulate `puxti scan`: dbt source entity under its manifest ID
+        kg = KnowledgeGraph(db_path=db_path)
+        await kg.connect()
+        await kg.upsert_entity(Entity(
+            id="source.clariva.raw_opportunities",
+            name="raw_opportunities",
+            type=EntityType.TABLE,
+            source_connector="dbt",
+            project="clariva",
+        ))
+        await kg.close()
+
+        with patch("puxti.cli.KnowledgeGraph", lambda: KnowledgeGraph(db_path=db_path)):
+            await _run_link(
+                from_entity="task.airflow.salesforce_sync.extract_opportunities",
+                to_entity="source.clariva.raw_opportunities",
+                description="Extracts Salesforce opportunities.",
+            )
+
+        kg = KnowledgeGraph(db_path=db_path)
+        await kg.connect()
+        try:
+            producers = await kg.get_feeds_producers("source.clariva.raw_opportunities.amount")
+            all_ids = await kg.get_all_entity_ids()
+            existing = await kg.get_entity_by_id("source.clariva.raw_opportunities")
+        finally:
+            await kg.close()
+        return producers, all_ids, existing
+
+    producers, all_ids, existing = asyncio.run(scenario())
+
+    # Capture can now find the Airflow producer through the FEEDS edge
+    assert [p.id for p in producers] == ["task.airflow.salesforce_sync.extract_opportunities"]
+    # No duplicate entity was created for the scan-registered source
+    assert sorted(all_ids) == [
+        "source.clariva.raw_opportunities",
+        "task.airflow.salesforce_sync.extract_opportunities",
+    ]
+    assert existing.name == "raw_opportunities"
 
 
 # ── impact ────────────────────────────────────────────────────────────────────

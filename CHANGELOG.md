@@ -1,5 +1,25 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **`puxti link` edges are now discoverable by `puxti capture`.** Link previously stored entities under random UUIDs, so the FEEDS edge could never be found by `get_feeds_producers()` and the documented scan → link → capture cross-system flow silently did nothing. Entities are now keyed by their canonical string ID, and link reuses entities that scan already registered instead of duplicating them.
+- **Airflow PR file paths.** Capture no longer applies the dbt `repo_subdir` prefix to Airflow diffs, and Airflow diff paths are now rebased onto the airflow repo root (`<repo_subdir>/<dags_dir>/<file>`), so the PR updates `dags/my_dag.py` instead of creating a new file at the repo root.
+- **`puxti redefine` no longer swallows API errors.** An invalid API key, exhausted credits, or a rate limit used to surface as "No diffs generated"; API errors now propagate with an actionable message, and only unparseable LLM responses are skipped (with a logged warning).
+- The "Update available" notice is printed to stderr so it can no longer corrupt `puxti impact --json` output consumed by pipes.
+- Concurrent writes to `~/.puxti/config.toml` (update check vs telemetry threads) are now serialized and atomic, preventing a clobbered install ID or opt-in setting.
+- `capture --dry-run` now builds the same prompt as the real run (including the known-entity-ID list), and `scan --dry-run` counts partial edge batches, so both cost estimates match what is actually billed.
+- `DBT_PROJECT_DIR` no longer defaults to `./dbt`, so a missing configuration produces the intended "not configured" error instead of "manifest not found at dbt/target/manifest.json".
+- GitHub branch lookup uses the exact-match `git/ref/heads/{branch}` endpoint; the previous prefix-matching endpoint could crash when another branch shared the base branch's name as a prefix.
+- `puxti purge --project` now also removes change events and correction events referencing the purged entities, matching `--all`.
+
+### Changed
+
+- LLM model ID and pricing are centralized in `puxti.llm` (previously duplicated across five modules).
+
+---
+
 ## [0.7.0] — 2026-05-10
 
 ### Changed

@@ -263,23 +263,28 @@ class KnowledgeGraph:
         if rows:
             return [_to_entity(r) for r in rows]
 
-        # Fallback: resolve by model name (e.g. "model.jaffle_shop.orders.amount" → "orders")
-        parts = entity_id.rsplit(".", 1)
-        model_name = parts[0].rsplit(".", 1)[-1] if len(parts) == 2 else entity_id
-        if not model_name:
-            return []
-
-        async with self._db.execute(
-            """
-            SELECT DISTINCT e.* FROM lineage_edges le
-            JOIN entities e ON e.id = le.from_id
-            JOIN entities src ON src.id = le.to_id
-            WHERE src.name=? AND src.type='model'
-            """,
-            (model_name,),
-        ) as cur:
-            rows = await cur.fetchall()
-        return [_to_entity(r) for r in rows]
+        # Fallback: resolve by model name. Column IDs put the model name
+        # second-to-last ("model.jaffle_shop.orders.amount" → "orders");
+        # model IDs put it last ("model.jaffle_shop.orders" → "orders").
+        # Try the column interpretation first, then the model one.
+        parts = entity_id.split(".")
+        candidates = ([parts[-2]] if len(parts) >= 2 else []) + [parts[-1]]
+        for model_name in candidates:
+            if not model_name:
+                continue
+            async with self._db.execute(
+                """
+                SELECT DISTINCT e.* FROM lineage_edges le
+                JOIN entities e ON e.id = le.from_id
+                JOIN entities src ON src.id = le.to_id
+                WHERE src.name=? AND src.type='model'
+                """,
+                (model_name,),
+            ) as cur:
+                rows = await cur.fetchall()
+            if rows:
+                return [_to_entity(r) for r in rows]
+        return []
 
     async def get_structural_ancestors(self, entity_id: str) -> list[tuple[Entity, int]]:
         """Return upstream model ancestors with hop depth via recursive CTE."""
@@ -548,6 +553,14 @@ class KnowledgeGraph:
             await self._db.execute(
                 f"DELETE FROM lineage_edges WHERE from_id IN ({ph}) OR to_id IN ({ph})",
                 ids + ids,
+            )
+            # Audit records referencing the purged entities go too — matching
+            # purge_all, which wipes both event tables.
+            await self._db.execute(
+                f"DELETE FROM change_events WHERE source_entity_id IN ({ph})", ids
+            )
+            await self._db.execute(
+                f"DELETE FROM correction_events WHERE entity_id IN ({ph})", ids
             )
             await self._db.execute("DELETE FROM entities WHERE project=?", (project,))
             await self._db.commit()

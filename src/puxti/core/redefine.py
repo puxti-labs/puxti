@@ -18,16 +18,15 @@ from typing import TYPE_CHECKING
 
 import anthropic
 
-_logger = logging.getLogger(__name__)
-
 from puxti.connectors.dbt import DbtConnector
+from puxti.llm import LLM_MODEL, strip_markdown_fences
 from puxti.models import Entity, FileDiff
 from puxti.settings import settings
 
 if TYPE_CHECKING:
     from puxti.core.graph import KnowledgeGraph
 
-_LLM_MODEL = "claude-sonnet-4-6"
+_logger = logging.getLogger(__name__)
 
 # SQL embedded in prompts is capped to prevent injection via large model files.
 _MAX_SQL_CHARS = 15_000
@@ -117,6 +116,24 @@ class SemanticRedefiner:
             api_key=settings.anthropic_api_key
         )
 
+    async def _call_llm(self, system_prompt: str, user_message: str):
+        """Call the LLM. API errors (auth, rate limit) propagate to the caller —
+        they must not be swallowed into a silent "No diffs generated"."""
+        try:
+            return await self._client.messages.create(
+                model=LLM_MODEL,
+                max_tokens=2048,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_message}],
+            )
+        except anthropic.BadRequestError as exc:
+            if "credit balance" in str(exc).lower():
+                raise RuntimeError(
+                    "Anthropic API credit balance is too low. "
+                    "Add credits at https://console.anthropic.com/settings/billing"
+                ) from exc
+            raise
+
     async def generate_passthrough_diffs(
         self,
         entity_id: str,
@@ -171,25 +188,19 @@ class SemanticRedefiner:
 
             _logger.debug(
                 "LLM call | model=%s prompt_chars=%d hash=%s",
-                _LLM_MODEL,
+                LLM_MODEL,
                 len(user_message),
                 hashlib.sha256(user_message.encode()).hexdigest()[:12],
             )
+            response = await self._call_llm(_PASSTHROUGH_SYSTEM_PROMPT, user_message)
+            raw = strip_markdown_fences(response.content[0].text)
             try:
-                response = await self._client.messages.create(
-                    model=_LLM_MODEL,
-                    max_tokens=2048,
-                    system=_PASSTHROUGH_SYSTEM_PROMPT,
-                    messages=[{"role": "user", "content": user_message}],
-                )
-                raw = response.content[0].text.strip()
-                if raw.startswith("```"):
-                    raw = raw.split("```")[1]
-                    if raw.startswith("json"):
-                        raw = raw[4:]
-                    raw = raw.strip()
                 result = json.loads(raw)
-            except Exception:
+            except json.JSONDecodeError:
+                _logger.warning(
+                    "Skipping %s: LLM returned invalid JSON (stop_reason=%r)",
+                    entity_name, response.stop_reason,
+                )
                 continue
 
             proposed_sql = result.get("proposed_sql")
@@ -297,25 +308,19 @@ class SemanticRedefiner:
 
         _logger.debug(
             "LLM call | model=%s prompt_chars=%d hash=%s",
-            _LLM_MODEL,
+            LLM_MODEL,
             len(user_message),
             hashlib.sha256(user_message.encode()).hexdigest()[:12],
         )
+        response = await self._call_llm(_REDEFINE_SYSTEM_PROMPT, user_message)
+        raw = strip_markdown_fences(response.content[0].text)
         try:
-            response = await self._client.messages.create(
-                model=_LLM_MODEL,
-                max_tokens=2048,
-                system=_REDEFINE_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": user_message}],
-            )
-            raw = response.content[0].text.strip()
-            if raw.startswith("```"):
-                raw = raw.split("```")[1]
-                if raw.startswith("json"):
-                    raw = raw[4:]
-                raw = raw.strip()
             result = json.loads(raw)
-        except Exception:
+        except json.JSONDecodeError:
+            _logger.warning(
+                "Skipping %s: LLM returned invalid JSON (stop_reason=%r)",
+                entity.name, response.stop_reason,
+            )
             return None
 
         proposed_sql = result.get("proposed_sql")

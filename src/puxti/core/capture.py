@@ -6,21 +6,23 @@ from collections.abc import Awaitable, Callable
 import anthropic
 
 from puxti.core.graph import KnowledgeGraph
-
-_logger = logging.getLogger(__name__)
+from puxti.llm import (
+    INPUT_COST_PER_MTOK,
+    LLM_MODEL,
+    OUTPUT_COST_PER_MTOK,
+    strip_markdown_fences,
+)
 from puxti.models import (
     ChangeEvent,
     ChangeStatus,
-    ChangeType,
     Definition,
+    EdgeType,
     SemanticChangeEvent,
     SemanticEdge,
-    EdgeType,
 )
 from puxti.settings import settings
 
-# Model used for semantic reasoning — never in the read path
-_LLM_MODEL = "claude-sonnet-4-6"
+_logger = logging.getLogger(__name__)
 
 # Maximum tokens for the enrichment response
 _MAX_TOKENS = 4096
@@ -30,10 +32,6 @@ _MAX_TOKENS = 4096
 # engineers should be able to attach a spec PDF/markdown as the change description
 # rather than typing a bounded string.
 _USER_INPUT_MAX_CHARS = 2000
-
-# Pricing for claude-sonnet-4-6 (USD per million tokens)
-_INPUT_COST_PER_M = 3.00
-_OUTPUT_COST_PER_M = 15.00
 
 # Typical output is ~60% of max_tokens (JSON responses are concise)
 _ESTIMATED_OUTPUT_TOKENS = int(_MAX_TOKENS * 0.6)
@@ -195,13 +193,13 @@ class SemanticCapture:
             dict with input_tokens, estimated_output_tokens, estimated_cost_usd.
         """
         response = await self._client.messages.count_tokens(
-            model=_LLM_MODEL,
+            model=LLM_MODEL,
             system=_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_message}],
         )
         input_tokens = response.input_tokens
-        input_cost = (input_tokens / 1_000_000) * _INPUT_COST_PER_M
-        output_cost = (_ESTIMATED_OUTPUT_TOKENS / 1_000_000) * _OUTPUT_COST_PER_M
+        input_cost = (input_tokens / 1_000_000) * INPUT_COST_PER_MTOK
+        output_cost = (_ESTIMATED_OUTPUT_TOKENS / 1_000_000) * OUTPUT_COST_PER_MTOK
         return {
             "input_tokens": input_tokens,
             "estimated_output_tokens": _ESTIMATED_OUTPUT_TOKENS,
@@ -212,13 +210,13 @@ class SemanticCapture:
         """Call the LLM and parse the structured JSON response."""
         _logger.debug(
             "LLM call | model=%s prompt_chars=%d hash=%s",
-            _LLM_MODEL,
+            LLM_MODEL,
             len(user_message),
             hashlib.sha256(user_message.encode()).hexdigest()[:12],
         )
         try:
             response = await self._client.messages.create(
-                model=_LLM_MODEL,
+                model=LLM_MODEL,
                 max_tokens=_MAX_TOKENS,
                 system=_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": user_message}],
@@ -231,14 +229,7 @@ class SemanticCapture:
                 ) from exc
             raise
 
-        raw = response.content[0].text.strip()
-
-        # Strip markdown code fences if the LLM wraps the JSON
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-            raw = raw.strip()
+        raw = strip_markdown_fences(response.content[0].text)
 
         try:
             return json.loads(raw)

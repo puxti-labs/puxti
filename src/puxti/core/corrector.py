@@ -19,12 +19,11 @@ import logging
 
 import anthropic
 
-_logger = logging.getLogger(__name__)
-
+from puxti.llm import LLM_MODEL, strip_markdown_fences
 from puxti.models import EdgeAssessment, EdgeType, SemanticEdge
 from puxti.settings import settings
 
-_LLM_MODEL = "claude-sonnet-4-6"
+_logger = logging.getLogger(__name__)
 
 _REASSESS_SYSTEM_PROMPT = """You are Puxti's semantic corrector.
 
@@ -95,22 +94,17 @@ class SemanticCorrector:
 
         _logger.debug(
             "LLM call | model=%s prompt_chars=%d hash=%s",
-            _LLM_MODEL,
+            LLM_MODEL,
             len(user_message),
             hashlib.sha256(user_message.encode()).hexdigest()[:12],
         )
         response = await self._client.messages.create(
-            model=_LLM_MODEL,
+            model=LLM_MODEL,
             max_tokens=2048,
             system=_REASSESS_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_message}],
         )
-        raw = response.content[0].text.strip()
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-            raw = raw.strip()
+        raw = strip_markdown_fences(response.content[0].text)
 
         try:
             data = json.loads(raw).get("assessments", [])
