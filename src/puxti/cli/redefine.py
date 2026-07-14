@@ -2,7 +2,6 @@
 
 from typing import Optional
 
-import anthropic
 import typer
 from rich.panel import Panel
 
@@ -12,7 +11,7 @@ from puxti.connectors.dbt import DbtConnector
 from puxti.connectors.github import GitHubConnector
 from puxti.core.graph import KnowledgeGraph
 from puxti.core.redefine import SemanticRedefiner
-from puxti.llm import INPUT_COST_PER_MTOK, LLM_MODEL, OUTPUT_COST_PER_MTOK
+from puxti.llm import get_backend
 from puxti.models import ChangeEvent, ChangeStatus, ChangeType
 from puxti.settings import settings
 
@@ -147,7 +146,7 @@ async def _run_redefine(
             # Count tokens for each LLM diff call (hop 1 and 2 only)
             dbt = DbtConnector(config={"project_dir": project_dir})
             sql_map = dbt.get_model_sql_map()
-            _client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+            backend = get_backend()
             from puxti.core.redefine import _REDEFINE_SYSTEM_PROMPT
 
             old_def_line = (
@@ -172,18 +171,16 @@ async def _run_redefine(
                     f"Downstream model: {dep_entity.name} (semantic hop depth: {depth})\n\n"
                     f"Current SQL:\n{model_sql}"
                 )
-                response = await _client.messages.count_tokens(
-                    model=LLM_MODEL,
-                    system=_REDEFINE_SYSTEM_PROMPT,
-                    messages=[{"role": "user", "content": user_message}],
+                count = await backend.count_input_tokens(
+                    user_message, system=_REDEFINE_SYSTEM_PROMPT
                 )
-                total_input_tokens += response.input_tokens
+                total_input_tokens += count.tokens
                 llm_calls += 1
 
             est_output_tokens = llm_calls * 512
             est_cost = (
-                (total_input_tokens / 1_000_000) * INPUT_COST_PER_MTOK
-                + (est_output_tokens / 1_000_000) * OUTPUT_COST_PER_MTOK
+                (total_input_tokens / 1_000_000) * backend.input_cost_per_mtok
+                + (est_output_tokens / 1_000_000) * backend.output_cost_per_mtok
             )
 
             depth_summary = "\n".join(

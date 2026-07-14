@@ -317,9 +317,8 @@ def test_cli_health_checks_workspace_repos():
     mock_graph.connect = AsyncMock()
     mock_graph.close = AsyncMock()
 
-    mock_anthropic_client = MagicMock()
-    mock_anthropic_client.messages = MagicMock()
-    mock_anthropic_client.messages.count_tokens = AsyncMock(return_value=MagicMock(input_tokens=10))
+    mock_backend = MagicMock()
+    mock_backend.auth_check = AsyncMock()
 
     mock_gh = MagicMock()
     mock_gh.health_check = AsyncMock(return_value=True)
@@ -331,7 +330,7 @@ def test_cli_health_checks_workspace_repos():
         # so this stays a harmless no-op, as it always was.
         patch("puxti.core.graph.KnowledgeGraph", return_value=mock_graph),
         patch("puxti.cli.health.DbtConnector"),
-        patch("puxti.cli.health.anthropic.AsyncAnthropic", return_value=mock_anthropic_client),
+        patch("puxti.cli.health.get_backend", return_value=mock_backend),
         patch("puxti.cli.health.GitHubConnector", return_value=mock_gh),
         patch("puxti.cli._shared.load_workspace", return_value=ws),
     ):

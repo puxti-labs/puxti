@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from puxti.core.corrector import SemanticCorrector
+from puxti.llm import LLMResponse
 from puxti.models import EdgeAssessment, EdgeType, Entity, EntityType, SemanticEdge
 
 
@@ -49,21 +50,19 @@ EDGE_CUSTOMERS_ORDERS = SemanticEdge(
 )
 
 
-def _mock_llm(payload: dict) -> MagicMock:
-    content = MagicMock()
-    content.text = json.dumps(payload)
-    response = MagicMock()
-    response.content = [content]
-    return response
+def _make_backend(payload: dict) -> MagicMock:
+    backend = MagicMock()
+    backend.complete = AsyncMock(
+        return_value=LLMResponse(text=json.dumps(payload), truncated=False)
+    )
+    return backend
 
 
 # ── reassess_edges ─────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_reassess_edges_returns_assessment_per_edge():
-    client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.create = AsyncMock(return_value=_mock_llm({
+    backend = _make_backend({
         "assessments": [
             {
                 "from_entity_id": ORDERS.id,
@@ -80,9 +79,9 @@ async def test_reassess_edges_returns_assessment_per_edge():
                 "reasoning": "New definition excludes refunds so description needs updating",
             },
         ]
-    }))
+    })
 
-    corrector = SemanticCorrector(client=client)
+    corrector = SemanticCorrector(backend=backend)
     assessments = await corrector.reassess_edges(
         entity_id=ORDERS.id,
         old_definition="orders includes all transactions",
@@ -101,8 +100,8 @@ async def test_reassess_edges_returns_assessment_per_edge():
 
 @pytest.mark.asyncio
 async def test_reassess_edges_returns_empty_for_no_edges():
-    client = MagicMock()
-    corrector = SemanticCorrector(client=client)
+    backend = MagicMock()
+    corrector = SemanticCorrector(backend=backend)
     assessments = await corrector.reassess_edges(
         entity_id=ORDERS.id,
         old_definition="old",
@@ -110,20 +109,17 @@ async def test_reassess_edges_returns_empty_for_no_edges():
         edges=[],
     )
     assert assessments == []
-    client.messages.create.assert_not_called()
+    backend.complete.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_reassess_edges_defaults_to_keep_on_json_error():
-    client = MagicMock()
-    content = MagicMock()
-    content.text = "not valid json {"
-    response = MagicMock()
-    response.content = [content]
-    client.messages = MagicMock()
-    client.messages.create = AsyncMock(return_value=response)
+    backend = MagicMock()
+    backend.complete = AsyncMock(
+        return_value=LLMResponse(text="not valid json {", truncated=False)
+    )
 
-    corrector = SemanticCorrector(client=client)
+    corrector = SemanticCorrector(backend=backend)
     assessments = await corrector.reassess_edges(
         entity_id=ORDERS.id,
         old_definition="old",
@@ -138,9 +134,7 @@ async def test_reassess_edges_defaults_to_keep_on_json_error():
 @pytest.mark.asyncio
 async def test_reassess_edges_defaults_unassessed_edges_to_keep():
     """LLM only returns one assessment — the other edge should default to keep."""
-    client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.create = AsyncMock(return_value=_mock_llm({
+    backend = _make_backend({
         "assessments": [
             {
                 "from_entity_id": ORDERS.id,
@@ -150,9 +144,9 @@ async def test_reassess_edges_defaults_unassessed_edges_to_keep():
                 "reasoning": "No longer relevant",
             }
         ]
-    }))
+    })
 
-    corrector = SemanticCorrector(client=client)
+    corrector = SemanticCorrector(backend=backend)
     assessments = await corrector.reassess_edges(
         entity_id=ORDERS.id,
         old_definition="old",
@@ -169,7 +163,7 @@ async def test_reassess_edges_defaults_unassessed_edges_to_keep():
 # ── apply_assessments ─────────────────────────────────────────────────────────
 
 def test_apply_assessments_keep():
-    corrector = SemanticCorrector(client=MagicMock())
+    corrector = SemanticCorrector(backend=MagicMock())
     assessments = [
         EdgeAssessment(
             from_entity_id=ORDERS.id,
@@ -188,7 +182,7 @@ def test_apply_assessments_keep():
 
 
 def test_apply_assessments_remove():
-    corrector = SemanticCorrector(client=MagicMock())
+    corrector = SemanticCorrector(backend=MagicMock())
     assessments = [
         EdgeAssessment(
             from_entity_id=ORDERS.id,
@@ -206,7 +200,7 @@ def test_apply_assessments_remove():
 
 
 def test_apply_assessments_update():
-    corrector = SemanticCorrector(client=MagicMock())
+    corrector = SemanticCorrector(backend=MagicMock())
     new_desc = "gross_revenue derived from settled orders only"
     assessments = [
         EdgeAssessment(
@@ -228,7 +222,7 @@ def test_apply_assessments_update():
 
 
 def test_apply_assessments_mixed():
-    corrector = SemanticCorrector(client=MagicMock())
+    corrector = SemanticCorrector(backend=MagicMock())
     assessments = [
         EdgeAssessment(
             from_entity_id=ORDERS.id,

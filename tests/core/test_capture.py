@@ -1,8 +1,10 @@
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from puxti.core.capture import SemanticCapture, _build_user_message
+from puxti.llm import INPUT_COST_PER_MTOK, OUTPUT_COST_PER_MTOK, LLMBillingError, LLMResponse, TokenCount
 from puxti.models import (
     ChangeEvent,
     ChangeStatus,
@@ -17,28 +19,18 @@ from puxti.models import (
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _make_llm_response(payload: dict) -> MagicMock:
-    """Build a fake Anthropic messages.create response."""
-    import json
-
-    content_block = MagicMock()
-    content_block.text = json.dumps(payload)
-
-    response = MagicMock()
-    response.content = [content_block]
-    return response
+def _make_backend_from(response: LLMResponse) -> MagicMock:
+    """Build a fake LLMBackend returning a fixed response."""
+    backend = MagicMock()
+    backend.input_cost_per_mtok = INPUT_COST_PER_MTOK
+    backend.output_cost_per_mtok = OUTPUT_COST_PER_MTOK
+    backend.complete = AsyncMock(return_value=response)
+    return backend
 
 
-def _make_llm_response_fenced(payload: dict) -> MagicMock:
-    """LLM response wrapped in markdown code fences."""
-    import json
-
-    content_block = MagicMock()
-    content_block.text = f"```json\n{json.dumps(payload)}\n```"
-
-    response = MagicMock()
-    response.content = [content_block]
-    return response
+def _make_backend(payload: dict) -> MagicMock:
+    """Fake LLMBackend whose completion is the payload as JSON."""
+    return _make_backend_from(LLMResponse(text=json.dumps(payload), truncated=False))
 
 
 ENRICHMENT_PAYLOAD = {
@@ -83,11 +75,9 @@ def _make_graph(
 # ── capture — happy path ───────────────────────────────────────────────────────
 
 async def test_capture_returns_semantic_change_event():
-    client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.create = AsyncMock(return_value=_make_llm_response(ENRICHMENT_PAYLOAD))
+    backend = _make_backend(ENRICHMENT_PAYLOAD)
 
-    capture = SemanticCapture(client=client)
+    capture = SemanticCapture(backend=backend)
     result, _ = await capture.capture(CHANGE_EVENT, "Renaming for clarity.", _make_graph())
 
     assert result.change_event_id == CHANGE_EVENT.id
@@ -100,12 +90,10 @@ async def test_capture_returns_semantic_change_event():
 
 
 async def test_capture_writes_definition_to_graph():
-    client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.create = AsyncMock(return_value=_make_llm_response(ENRICHMENT_PAYLOAD))
+    backend = _make_backend(ENRICHMENT_PAYLOAD)
 
     graph = _make_graph()
-    capture = SemanticCapture(client=client)
+    capture = SemanticCapture(backend=backend)
     _, commit = await capture.capture(CHANGE_EVENT, "Renaming for clarity.", graph)
     await commit()
 
@@ -125,12 +113,10 @@ async def test_capture_increments_version_when_existing_definition():
         version=3,
         created_by="user",
     )
-    client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.create = AsyncMock(return_value=_make_llm_response(ENRICHMENT_PAYLOAD))
+    backend = _make_backend(ENRICHMENT_PAYLOAD)
 
     graph = _make_graph(existing_definition=existing)
-    capture = SemanticCapture(client=client)
+    capture = SemanticCapture(backend=backend)
     _, commit = await capture.capture(CHANGE_EVENT, "Renaming for clarity.", graph)
     await commit()
 
@@ -139,12 +125,10 @@ async def test_capture_increments_version_when_existing_definition():
 
 
 async def test_capture_writes_semantic_edges():
-    client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.create = AsyncMock(return_value=_make_llm_response(ENRICHMENT_PAYLOAD))
+    backend = _make_backend(ENRICHMENT_PAYLOAD)
 
     graph = _make_graph()
-    capture = SemanticCapture(client=client)
+    capture = SemanticCapture(backend=backend)
     _, commit = await capture.capture(CHANGE_EVENT, "Renaming for clarity.", graph)
     await commit()
 
@@ -159,9 +143,7 @@ async def test_capture_writes_semantic_edges():
 
 
 async def test_capture_updates_change_event_status():
-    client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.create = AsyncMock(return_value=_make_llm_response(ENRICHMENT_PAYLOAD))
+    backend = _make_backend(ENRICHMENT_PAYLOAD)
 
     graph = _make_graph()
     event = ChangeEvent(
@@ -169,7 +151,7 @@ async def test_capture_updates_change_event_status():
         source_entity_id="model.jaffle_shop.orders.order_date",
         change={"before": {"name": "order_date"}, "after": {"name": "recorded_date"}},
     )
-    capture = SemanticCapture(client=client)
+    capture = SemanticCapture(backend=backend)
     _, commit = await capture.capture(event, "Renaming for clarity.", graph)
     await commit()
 
@@ -180,12 +162,10 @@ async def test_capture_updates_change_event_status():
 
 async def test_capture_no_semantic_edges_when_llm_returns_none():
     payload = {**ENRICHMENT_PAYLOAD, "suggested_semantic_edges": []}
-    client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.create = AsyncMock(return_value=_make_llm_response(payload))
+    backend = _make_backend(payload)
 
     graph = _make_graph()
-    capture = SemanticCapture(client=client)
+    capture = SemanticCapture(backend=backend)
     _, commit = await capture.capture(CHANGE_EVENT, "Renaming for clarity.", graph)
     await commit()
 
@@ -194,12 +174,10 @@ async def test_capture_no_semantic_edges_when_llm_returns_none():
 
 async def test_capture_does_not_write_to_graph_before_commit():
     """KG writes must be deferred — graph must not be touched until commit() is called."""
-    client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.create = AsyncMock(return_value=_make_llm_response(ENRICHMENT_PAYLOAD))
+    backend = _make_backend(ENRICHMENT_PAYLOAD)
 
     graph = _make_graph()
-    capture = SemanticCapture(client=client)
+    capture = SemanticCapture(backend=backend)
     _, _commit = await capture.capture(CHANGE_EVENT, "Renaming for clarity.", graph)
 
     graph.upsert_definition.assert_not_awaited()
@@ -210,24 +188,20 @@ async def test_capture_does_not_write_to_graph_before_commit():
 # ── _enrich — JSON parsing ────────────────────────────────────────────────────
 
 async def test_enrich_parses_plain_json():
-    client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.create = AsyncMock(return_value=_make_llm_response(ENRICHMENT_PAYLOAD))
+    backend = _make_backend(ENRICHMENT_PAYLOAD)
 
-    capture = SemanticCapture(client=client)
+    capture = SemanticCapture(backend=backend)
     result = await capture._enrich("some prompt")
 
     assert result["enriched_description"] == ENRICHMENT_PAYLOAD["enriched_description"]
 
 
 async def test_enrich_strips_markdown_code_fence():
-    client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.create = AsyncMock(
-        return_value=_make_llm_response_fenced(ENRICHMENT_PAYLOAD)
-    )
+    backend = _make_backend_from(LLMResponse(
+        text=f"```json\n{json.dumps(ENRICHMENT_PAYLOAD)}\n```", truncated=False,
+    ))
 
-    capture = SemanticCapture(client=client)
+    capture = SemanticCapture(backend=backend)
     result = await capture._enrich("some prompt")
 
     assert result["enriched_description"] == ENRICHMENT_PAYLOAD["enriched_description"]
@@ -235,18 +209,11 @@ async def test_enrich_strips_markdown_code_fence():
 
 async def test_enrich_strips_plain_code_fence():
     """Handles ``` without a language tag."""
-    import json
+    backend = _make_backend_from(LLMResponse(
+        text=f"```\n{json.dumps(ENRICHMENT_PAYLOAD)}\n```", truncated=False,
+    ))
 
-    content_block = MagicMock()
-    content_block.text = f"```\n{json.dumps(ENRICHMENT_PAYLOAD)}\n```"
-    response = MagicMock()
-    response.content = [content_block]
-
-    client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.create = AsyncMock(return_value=response)
-
-    capture = SemanticCapture(client=client)
+    capture = SemanticCapture(backend=backend)
     result = await capture._enrich("some prompt")
 
     assert result["enriched_description"] == ENRICHMENT_PAYLOAD["enriched_description"]
@@ -342,14 +309,13 @@ async def test_capture_includes_dependent_names_in_prompt():
     captured_messages = []
 
     async def capture_call(**kwargs):
-        captured_messages.append(kwargs["messages"][0]["content"])
-        return _make_llm_response(ENRICHMENT_PAYLOAD)
+        captured_messages.append(kwargs["user_message"])
+        return LLMResponse(text=json.dumps(ENRICHMENT_PAYLOAD), truncated=False)
 
-    client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.create = capture_call
+    backend = _make_backend(ENRICHMENT_PAYLOAD)
+    backend.complete = AsyncMock(side_effect=capture_call)
 
-    capture = SemanticCapture(client=client)
+    capture = SemanticCapture(backend=backend)
     await capture.capture(CHANGE_EVENT, "test", graph)  # no need to commit for this assertion
 
     assert len(captured_messages) == 1
@@ -361,14 +327,10 @@ async def test_capture_includes_dependent_names_in_prompt():
 # ── estimate_cost ─────────────────────────────────────────────────────────────
 
 async def test_estimate_cost_returns_token_counts_and_cost():
-    count_response = MagicMock()
-    count_response.input_tokens = 500
+    backend = _make_backend(ENRICHMENT_PAYLOAD)
+    backend.count_input_tokens = AsyncMock(return_value=TokenCount(tokens=500, exact=True))
 
-    client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.count_tokens = AsyncMock(return_value=count_response)
-
-    capture = SemanticCapture(client=client)
+    capture = SemanticCapture(backend=backend)
     result = await capture.estimate_cost("some prompt")
 
     assert result["input_tokens"] == 500
@@ -378,16 +340,13 @@ async def test_estimate_cost_returns_token_counts_and_cost():
 
 async def test_estimate_cost_cost_is_sum_of_input_and_output():
     from puxti.core.capture import _ESTIMATED_OUTPUT_TOKENS
-    from puxti.llm import INPUT_COST_PER_MTOK, OUTPUT_COST_PER_MTOK
 
-    count_response = MagicMock()
-    count_response.input_tokens = 1_000_000  # 1M tokens for easy math
+    backend = _make_backend(ENRICHMENT_PAYLOAD)
+    backend.count_input_tokens = AsyncMock(
+        return_value=TokenCount(tokens=1_000_000, exact=True)  # 1M tokens for easy math
+    )
 
-    client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.count_tokens = AsyncMock(return_value=count_response)
-
-    capture = SemanticCapture(client=client)
+    capture = SemanticCapture(backend=backend)
     result = await capture.estimate_cost("some prompt")
 
     expected_input_cost = INPUT_COST_PER_MTOK  # 1M tokens × rate
@@ -398,19 +357,13 @@ async def test_estimate_cost_cost_is_sum_of_input_and_output():
 # ── _enrich — credit error handling ──────────────────────────────────────────
 
 async def test_enrich_raises_runtime_error_on_credit_exhaustion():
-    import anthropic as anthropic_lib
+    backend = _make_backend(ENRICHMENT_PAYLOAD)
+    backend.complete = AsyncMock(side_effect=LLMBillingError(
+        "Anthropic API credit balance is too low. "
+        "Add credits at https://console.anthropic.com/settings/billing"
+    ))
 
-    credit_error = anthropic_lib.BadRequestError(
-        message="Your credit balance is too low to access the Anthropic API.",
-        response=MagicMock(status_code=400),
-        body={"type": "invalid_request_error"},
-    )
-
-    client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.create = AsyncMock(side_effect=credit_error)
-
-    capture = SemanticCapture(client=client)
+    capture = SemanticCapture(backend=backend)
     with pytest.raises(RuntimeError, match="credit balance"):
         await capture._enrich("some prompt")
 
@@ -425,12 +378,10 @@ async def test_capture_includes_feeds_producers_in_affected_ids():
         source_connector="airflow",
         project="salesforce_sync",
     )
-    client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.create = AsyncMock(return_value=_make_llm_response(ENRICHMENT_PAYLOAD))
+    backend = _make_backend(ENRICHMENT_PAYLOAD)
 
     graph = _make_graph(feeds_producers=[airflow_task])
-    capture = SemanticCapture(client=client)
+    capture = SemanticCapture(backend=backend)
     result, _ = await capture.capture(CHANGE_EVENT, "amount is now a roll-up.", graph)
 
     assert "task.airflow.salesforce_sync.extract_opportunities" in result.affected_entity_ids
@@ -444,24 +395,20 @@ async def test_capture_feeds_producers_not_duplicated():
         source_connector="dbt",
         project="jaffle_shop",
     )
-    client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.create = AsyncMock(return_value=_make_llm_response(ENRICHMENT_PAYLOAD))
+    backend = _make_backend(ENRICHMENT_PAYLOAD)
 
     graph = _make_graph(feeds_producers=[airflow_task])
-    capture = SemanticCapture(client=client)
+    capture = SemanticCapture(backend=backend)
     result, _ = await capture.capture(CHANGE_EVENT, "description.", graph)
 
     assert result.affected_entity_ids.count("model.jaffle_shop.orders") == 1
 
 
 async def test_capture_no_feeds_producers_unaffected():
-    client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.create = AsyncMock(return_value=_make_llm_response(ENRICHMENT_PAYLOAD))
+    backend = _make_backend(ENRICHMENT_PAYLOAD)
 
     graph = _make_graph(feeds_producers=[])
-    capture = SemanticCapture(client=client)
+    capture = SemanticCapture(backend=backend)
     result, _ = await capture.capture(CHANGE_EVENT, "description.", graph)
 
     assert result.affected_entity_ids == ENRICHMENT_PAYLOAD["affected_entity_ids"]

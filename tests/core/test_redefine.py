@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from puxti.core.redefine import SemanticRedefiner, _annotation_only_diff, _annotate_sql, _conflict_annotation_diff, _first_sentence, _ensure_newline
+from puxti.llm import LLMResponse
 from puxti.models import Entity, EntityType
 
 
@@ -33,12 +34,8 @@ OLD_DEF = "gross_revenue is total order value including refunds."
 NEW_DEF = "gross_revenue now excludes refunds — only settled transactions count."
 
 
-def _make_llm_response(payload: dict) -> MagicMock:
-    block = MagicMock()
-    block.text = json.dumps(payload)
-    response = MagicMock()
-    response.content = [block]
-    return response
+def _make_llm_response(payload: dict) -> LLMResponse:
+    return LLMResponse(text=json.dumps(payload), truncated=False)
 
 
 def _make_connector(sql_map: dict | None = None, node_path: str = "models/orders.sql") -> MagicMock:
@@ -73,11 +70,10 @@ def _make_connector(sql_map: dict | None = None, node_path: str = "models/orders
     return connector
 
 
-def _make_client(payload: dict) -> MagicMock:
-    client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.create = AsyncMock(return_value=_make_llm_response(payload))
-    return client
+def _make_backend(payload: dict) -> MagicMock:
+    backend = MagicMock()
+    backend.complete = AsyncMock(return_value=_make_llm_response(payload))
+    return backend
 
 
 # ── generate_diffs — depth-based confidence ───────────────────────────────────
@@ -97,8 +93,8 @@ async def test_hop1_generates_sql_diff(tmp_path):
         "proposed_sql": "select id, gross_revenue from stg_orders where not is_refund",
         "confidence": "high",
     }
-    client = _make_client(llm_payload)
-    redefiner = SemanticRedefiner(client=client)
+    backend = _make_backend(llm_payload)
+    redefiner = SemanticRedefiner(backend=backend)
 
     diffs = await redefiner.generate_diffs(
         entity_id="model.demo_shop.orders.gross_revenue",
@@ -128,8 +124,8 @@ async def test_hop2_generates_sql_with_verify_label(tmp_path):
         "proposed_sql": "select customer_id, sum(gross_revenue) as lifetime_value from orders where not is_refund group by 1",
         "confidence": "medium",
     }
-    client = _make_client(llm_payload)
-    redefiner = SemanticRedefiner(client=client)
+    backend = _make_backend(llm_payload)
+    redefiner = SemanticRedefiner(backend=backend)
 
     diffs = await redefiner.generate_diffs(
         entity_id="model.demo_shop.orders.gross_revenue",
@@ -170,8 +166,8 @@ async def test_hop3_returns_annotation_only(tmp_path):
         side_effect=lambda node: tmp_path / node["original_file_path"]
     )
 
-    client = MagicMock()
-    redefiner = SemanticRedefiner(client=client)
+    backend = MagicMock()
+    redefiner = SemanticRedefiner(backend=backend)
 
     diffs = await redefiner.generate_diffs(
         entity_id="model.demo_shop.orders.gross_revenue",
@@ -185,13 +181,13 @@ async def test_hop3_returns_annotation_only(tmp_path):
     assert "PUXTI [manual review required]" in diffs[0].after
     assert "too deep to generate SQL reliably" in diffs[0].after
     # LLM should NOT have been called for hop 3+
-    client.messages.create.assert_not_called()
+    backend.complete.assert_not_called()
 
 
 async def test_no_sql_file_returns_no_diff():
     connector = _make_connector(sql_map={})  # no SQL for this entity
-    client = MagicMock()
-    redefiner = SemanticRedefiner(client=client)
+    backend = MagicMock()
+    redefiner = SemanticRedefiner(backend=backend)
 
     diffs = await redefiner.generate_diffs(
         entity_id="model.demo_shop.orders.gross_revenue",
@@ -219,8 +215,8 @@ async def test_llm_null_proposed_sql_falls_back_to_annotation(tmp_path):
         "proposed_sql": None,
         "confidence": "low",
     }
-    client = _make_client(llm_payload)
-    redefiner = SemanticRedefiner(client=client)
+    backend = _make_backend(llm_payload)
+    redefiner = SemanticRedefiner(backend=backend)
 
     diffs = await redefiner.generate_diffs(
         entity_id="model.demo_shop.orders.gross_revenue",
@@ -297,8 +293,8 @@ async def test_llm_conflict_flag_produces_conflict_annotation(tmp_path):
             "silent breaking change."
         ),
     }
-    client = _make_client(llm_payload)
-    redefiner = SemanticRedefiner(client=client)
+    backend = _make_backend(llm_payload)
+    redefiner = SemanticRedefiner(backend=backend)
 
     diffs = await redefiner.generate_diffs(
         entity_id="model.demo_shop.customers",
@@ -405,11 +401,9 @@ def _make_passthrough_connector(tmp_path):
 
 async def test_passthrough_diffs_generates_diff_for_entity_and_ancestors(tmp_path):
     payload = {"reasoning": "Added order_segment to SELECT.", "proposed_sql": "select id, subtotal, order_segment from raw_orders", "confidence": "high"}
-    client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.create = AsyncMock(return_value=_make_llm_response(payload))
+    backend = _make_backend(payload)
 
-    redefiner = SemanticRedefiner(client=client)
+    redefiner = SemanticRedefiner(backend=backend)
     connector = _make_passthrough_connector(tmp_path)
 
     diffs = await redefiner.generate_passthrough_diffs(
@@ -420,7 +414,7 @@ async def test_passthrough_diffs_generates_diff_for_entity_and_ancestors(tmp_pat
     )
 
     # Entity itself (depth 0) + ancestor stg_orders (depth 1) = 2 LLM calls
-    assert client.messages.create.await_count == 2
+    assert backend.complete.await_count == 2
     assert len(diffs) == 2
     assert all("passthrough" in d.after for d in diffs)
 
@@ -428,11 +422,9 @@ async def test_passthrough_diffs_generates_diff_for_entity_and_ancestors(tmp_pat
 async def test_passthrough_diffs_skips_semantically_irrelevant_model(tmp_path):
     """When LLM returns no_change:true (model has no relation to attribute), skip it."""
     payload = {"reasoning": "stg_supplies has no customer dimension.", "proposed_sql": None, "no_change": True, "confidence": "high"}
-    client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.create = AsyncMock(return_value=_make_llm_response(payload))
+    backend = _make_backend(payload)
 
-    redefiner = SemanticRedefiner(client=client)
+    redefiner = SemanticRedefiner(backend=backend)
     connector = _make_passthrough_connector(tmp_path)
 
     diffs = await redefiner.generate_passthrough_diffs(
@@ -448,11 +440,9 @@ async def test_passthrough_diffs_skips_semantically_irrelevant_model(tmp_path):
 async def test_passthrough_diffs_skips_unchanged_sql(tmp_path):
     """If the LLM returns the same SQL (e.g. select * already passes it), no diff."""
     payload = {"reasoning": "select * already includes order_segment.", "proposed_sql": ORDERS_SQL, "confidence": "high"}
-    client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.create = AsyncMock(return_value=_make_llm_response(payload))
+    backend = _make_backend(payload)
 
-    redefiner = SemanticRedefiner(client=client)
+    redefiner = SemanticRedefiner(backend=backend)
     connector = _make_passthrough_connector(tmp_path)
 
     diffs = await redefiner.generate_passthrough_diffs(
@@ -468,9 +458,7 @@ async def test_passthrough_diffs_skips_unchanged_sql(tmp_path):
 async def test_passthrough_diffs_includes_graph_definition_in_prompt(tmp_path):
     """When graph is provided, definition is included in the LLM prompt."""
     payload = {"reasoning": "Added order_segment.", "proposed_sql": "select id, subtotal, order_segment from raw_orders", "confidence": "high"}
-    client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.create = AsyncMock(return_value=_make_llm_response(payload))
+    backend = _make_backend(payload)
 
     from puxti.models import Definition
     mock_definition = Definition(
@@ -482,7 +470,7 @@ async def test_passthrough_diffs_includes_graph_definition_in_prompt(tmp_path):
     mock_graph = MagicMock()
     mock_graph.get_latest_definition = AsyncMock(return_value=mock_definition)
 
-    redefiner = SemanticRedefiner(client=client)
+    redefiner = SemanticRedefiner(backend=backend)
     connector = _make_passthrough_connector(tmp_path)
 
     await redefiner.generate_passthrough_diffs(
@@ -493,7 +481,7 @@ async def test_passthrough_diffs_includes_graph_definition_in_prompt(tmp_path):
         graph=mock_graph,
     )
 
-    content = client.messages.create.call_args.kwargs["messages"][0]["content"]
+    content = backend.complete.call_args.kwargs["user_message"]
     assert "One row per order from the source system." in content
 
 
@@ -501,18 +489,14 @@ async def test_passthrough_diffs_includes_graph_definition_in_prompt(tmp_path):
 
 async def test_propose_semantic_edges_recovers_on_max_tokens_truncation():
     """max_tokens truncation returns empty edges rather than crashing the scan."""
-    block = MagicMock()
-    block.text = '{"edges": [{"from_entity_id": "a", "to'  # truncated
-    response = MagicMock()
-    response.content = [block]
-    response.stop_reason = "max_tokens"
-
-    client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.create = AsyncMock(return_value=response)
+    backend = MagicMock()
+    backend.complete = AsyncMock(return_value=LLMResponse(
+        text='{"edges": [{"from_entity_id": "a", "to',  # truncated
+        truncated=True,
+    ))
 
     from puxti.core.scanner import SemanticScanner
-    scanner = SemanticScanner(client=client)
+    scanner = SemanticScanner(backend=backend)
 
     edges, truncated = await scanner.propose_semantic_edges(
         [ORDERS_ENTITY, CUSTOMERS_ENTITY],

@@ -3,6 +3,7 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from puxti.cli import app
+from puxti.llm import LLMAuthError, LLMBillingError
 from tests.cli._helpers import runner
 
 
@@ -13,10 +14,10 @@ def test_health_shows_help():
 
 # ── health ────────────────────────────────────────────────────────────────────
 
-def _make_count_tokens_response(input_tokens: int = 10) -> MagicMock:
-    r = MagicMock()
-    r.input_tokens = input_tokens
-    return r
+def _make_ok_backend() -> MagicMock:
+    backend = MagicMock()
+    backend.auth_check = AsyncMock()
+    return backend
 
 
 def test_health_all_ok():
@@ -27,17 +28,13 @@ def test_health_all_ok():
     mock_dbt = MagicMock()
     mock_dbt.health_check = AsyncMock(return_value=True)
 
-    mock_anthropic_client = MagicMock()
-    mock_anthropic_client.messages = MagicMock()
-    mock_anthropic_client.messages.count_tokens = AsyncMock(
-        return_value=_make_count_tokens_response()
-    )
+    mock_backend = _make_ok_backend()
 
     with (
         patch("puxti.cli.health.settings") as mock_settings,
         patch("puxti.core.graph.KnowledgeGraph", return_value=mock_graph),
         patch("puxti.cli.health.DbtConnector", return_value=mock_dbt),
-        patch("puxti.cli.health.anthropic.AsyncAnthropic", return_value=mock_anthropic_client),
+        patch("puxti.cli.health.get_backend", return_value=mock_backend),
     ):
         mock_settings.dbt_project_dir = "/some/dbt"
         mock_settings.anthropic_api_key = "sk-ant-test"
@@ -51,26 +48,19 @@ def test_health_all_ok():
 
 
 def test_health_anthropic_invalid_key_exits_nonzero():
-    import anthropic as anthropic_lib
-
     mock_graph = MagicMock()
     mock_graph.connect = AsyncMock()
     mock_graph.close = AsyncMock()
 
-    mock_anthropic_client = MagicMock()
-    mock_anthropic_client.messages = MagicMock()
-    mock_anthropic_client.messages.count_tokens = AsyncMock(
-        side_effect=anthropic_lib.AuthenticationError(
-            message="Invalid API key",
-            response=MagicMock(status_code=401),
-            body={},
-        )
-    )
+    mock_backend = MagicMock()
+    mock_backend.auth_check = AsyncMock(side_effect=LLMAuthError(
+        "Anthropic API key is invalid or expired. Check ANTHROPIC_API_KEY."
+    ))
 
     with (
         patch("puxti.cli.health.settings") as mock_settings,
         patch("puxti.core.graph.KnowledgeGraph", return_value=mock_graph),
-        patch("puxti.cli.health.anthropic.AsyncAnthropic", return_value=mock_anthropic_client),
+        patch("puxti.cli.health.get_backend", return_value=mock_backend),
     ):
         mock_settings.dbt_project_dir = None
         mock_settings.anthropic_api_key = "sk-ant-bad"
@@ -82,26 +72,19 @@ def test_health_anthropic_invalid_key_exits_nonzero():
 
 
 def test_health_anthropic_credit_error_exits_nonzero():
-    import anthropic as anthropic_lib
-
     mock_graph = MagicMock()
     mock_graph.connect = AsyncMock()
     mock_graph.close = AsyncMock()
 
-    mock_anthropic_client = MagicMock()
-    mock_anthropic_client.messages = MagicMock()
-    mock_anthropic_client.messages.count_tokens = AsyncMock(
-        side_effect=anthropic_lib.BadRequestError(
-            message="Your credit balance is too low to access the Anthropic API.",
-            response=MagicMock(status_code=400),
-            body={"type": "invalid_request_error"},
-        )
-    )
+    mock_backend = MagicMock()
+    mock_backend.auth_check = AsyncMock(side_effect=LLMBillingError(
+        "Anthropic API credit balance is too low."
+    ))
 
     with (
         patch("puxti.cli.health.settings") as mock_settings,
         patch("puxti.core.graph.KnowledgeGraph", return_value=mock_graph),
-        patch("puxti.cli.health.anthropic.AsyncAnthropic", return_value=mock_anthropic_client),
+        patch("puxti.cli.health.get_backend", return_value=mock_backend),
     ):
         mock_settings.dbt_project_dir = None
         mock_settings.anthropic_api_key = "sk-ant-real-but-broke"
@@ -149,16 +132,12 @@ def test_health_dbt_not_configured_shows_dash():
     mock_graph.connect = AsyncMock()
     mock_graph.close = AsyncMock()
 
-    mock_anthropic_client = MagicMock()
-    mock_anthropic_client.messages = MagicMock()
-    mock_anthropic_client.messages.count_tokens = AsyncMock(
-        return_value=_make_count_tokens_response()
-    )
+    mock_backend = _make_ok_backend()
 
     with (
         patch("puxti.cli.health.settings") as mock_settings,
         patch("puxti.core.graph.KnowledgeGraph", return_value=mock_graph),
-        patch("puxti.cli.health.anthropic.AsyncAnthropic", return_value=mock_anthropic_client),
+        patch("puxti.cli.health.get_backend", return_value=mock_backend),
     ):
         mock_settings.dbt_project_dir = None
         mock_settings.anthropic_api_key = "sk-ant-test"
@@ -182,9 +161,7 @@ def test_health_airflow_dags_dir_ok(tmp_path):
     mock_airflow = MagicMock()
     mock_airflow.health_check = AsyncMock(return_value=True)
 
-    mock_anthropic_client = MagicMock()
-    mock_anthropic_client.messages = MagicMock()
-    mock_anthropic_client.messages.count_tokens = AsyncMock(return_value=_make_count_tokens_response())
+    mock_backend = _make_ok_backend()
 
     ws = WorkspaceConfig(
         dbt=ConnectorConfig(project_dir="/some/dbt"),
@@ -196,7 +173,7 @@ def test_health_airflow_dags_dir_ok(tmp_path):
         patch("puxti.core.graph.KnowledgeGraph", return_value=mock_graph),
         patch("puxti.cli.health.DbtConnector", return_value=mock_dbt),
         patch("puxti.cli.health.AirflowConnector", return_value=mock_airflow),
-        patch("puxti.cli.health.anthropic.AsyncAnthropic", return_value=mock_anthropic_client),
+        patch("puxti.cli.health.get_backend", return_value=mock_backend),
         patch("puxti.cli.health._load_workspace", return_value=ws),
     ):
         mock_settings.dbt_project_dir = "/some/dbt"
@@ -222,9 +199,7 @@ def test_health_airflow_dags_dir_missing_exits_nonzero(tmp_path):
     mock_airflow = MagicMock()
     mock_airflow.health_check = AsyncMock(return_value=False)
 
-    mock_anthropic_client = MagicMock()
-    mock_anthropic_client.messages = MagicMock()
-    mock_anthropic_client.messages.count_tokens = AsyncMock(return_value=_make_count_tokens_response())
+    mock_backend = _make_ok_backend()
 
     ws = WorkspaceConfig(
         dbt=ConnectorConfig(project_dir="/some/dbt"),
@@ -236,7 +211,7 @@ def test_health_airflow_dags_dir_missing_exits_nonzero(tmp_path):
         patch("puxti.core.graph.KnowledgeGraph", return_value=mock_graph),
         patch("puxti.cli.health.DbtConnector", return_value=mock_dbt),
         patch("puxti.cli.health.AirflowConnector", return_value=mock_airflow),
-        patch("puxti.cli.health.anthropic.AsyncAnthropic", return_value=mock_anthropic_client),
+        patch("puxti.cli.health.get_backend", return_value=mock_backend),
         patch("puxti.cli.health._load_workspace", return_value=ws),
     ):
         mock_settings.dbt_project_dir = "/some/dbt"
@@ -259,9 +234,7 @@ def test_health_airflow_not_configured_shows_dash():
     mock_dbt = MagicMock()
     mock_dbt.health_check = AsyncMock(return_value=True)
 
-    mock_anthropic_client = MagicMock()
-    mock_anthropic_client.messages = MagicMock()
-    mock_anthropic_client.messages.count_tokens = AsyncMock(return_value=_make_count_tokens_response())
+    mock_backend = _make_ok_backend()
 
     ws = WorkspaceConfig(dbt=ConnectorConfig(project_dir="/some/dbt"))
 
@@ -269,7 +242,7 @@ def test_health_airflow_not_configured_shows_dash():
         patch("puxti.cli.health.settings") as mock_settings,
         patch("puxti.core.graph.KnowledgeGraph", return_value=mock_graph),
         patch("puxti.cli.health.DbtConnector", return_value=mock_dbt),
-        patch("puxti.cli.health.anthropic.AsyncAnthropic", return_value=mock_anthropic_client),
+        patch("puxti.cli.health.get_backend", return_value=mock_backend),
         patch("puxti.cli.health._load_workspace", return_value=ws),
     ):
         mock_settings.dbt_project_dir = "/some/dbt"

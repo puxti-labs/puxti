@@ -11,17 +11,13 @@ SQL generation confidence degrades with traversal depth:
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 from typing import TYPE_CHECKING
 
-import anthropic
-
 from puxti.connectors.dbt import DbtConnector
-from puxti.llm import LLM_MODEL, strip_markdown_fences
+from puxti.llm import LLMBackend, LLMResponse, get_backend, strip_markdown_fences
 from puxti.models import Entity, FileDiff
-from puxti.settings import settings
 
 if TYPE_CHECKING:
     from puxti.core.graph import KnowledgeGraph
@@ -111,28 +107,18 @@ class SemanticRedefiner:
     SQL changes for each affected model, and annotates with confidence level.
     """
 
-    def __init__(self, client: anthropic.AsyncAnthropic | None = None) -> None:
-        self._client = client or anthropic.AsyncAnthropic(
-            api_key=settings.anthropic_api_key
-        )
+    def __init__(self, backend: LLMBackend | None = None) -> None:
+        self._backend = backend or get_backend()
 
-    async def _call_llm(self, system_prompt: str, user_message: str):
-        """Call the LLM. API errors (auth, rate limit) propagate to the caller —
-        they must not be swallowed into a silent "No diffs generated"."""
-        try:
-            return await self._client.messages.create(
-                model=LLM_MODEL,
-                max_tokens=2048,
-                system=system_prompt,
-                messages=[{"role": "user", "content": user_message}],
-            )
-        except anthropic.BadRequestError as exc:
-            if "credit balance" in str(exc).lower():
-                raise RuntimeError(
-                    "Anthropic API credit balance is too low. "
-                    "Add credits at https://console.anthropic.com/settings/billing"
-                ) from exc
-            raise
+    async def _call_llm(self, system_prompt: str, user_message: str) -> LLMResponse:
+        """Call the LLM. API errors (auth, billing, rate limit) propagate to the
+        caller as RuntimeError subclasses from the backend — they must not be
+        swallowed into a silent "No diffs generated"."""
+        return await self._backend.complete(
+            system=system_prompt,
+            user_message=user_message,
+            max_tokens=2048,
+        )
 
     async def generate_passthrough_diffs(
         self,
@@ -186,20 +172,14 @@ class SemanticRedefiner:
                 f"Current SQL:\n{sql_fragment}"
             )
 
-            _logger.debug(
-                "LLM call | model=%s prompt_chars=%d hash=%s",
-                LLM_MODEL,
-                len(user_message),
-                hashlib.sha256(user_message.encode()).hexdigest()[:12],
-            )
             response = await self._call_llm(_PASSTHROUGH_SYSTEM_PROMPT, user_message)
-            raw = strip_markdown_fences(response.content[0].text)
+            raw = strip_markdown_fences(response.text)
             try:
                 result = json.loads(raw)
             except json.JSONDecodeError:
                 _logger.warning(
-                    "Skipping %s: LLM returned invalid JSON (stop_reason=%r)",
-                    entity_name, response.stop_reason,
+                    "Skipping %s: LLM returned invalid JSON (truncated=%r)",
+                    entity_name, response.truncated,
                 )
                 continue
 
@@ -306,20 +286,14 @@ class SemanticRedefiner:
             f"Current SQL:\n{sql_fragment}"
         )
 
-        _logger.debug(
-            "LLM call | model=%s prompt_chars=%d hash=%s",
-            LLM_MODEL,
-            len(user_message),
-            hashlib.sha256(user_message.encode()).hexdigest()[:12],
-        )
         response = await self._call_llm(_REDEFINE_SYSTEM_PROMPT, user_message)
-        raw = strip_markdown_fences(response.content[0].text)
+        raw = strip_markdown_fences(response.text)
         try:
             result = json.loads(raw)
         except json.JSONDecodeError:
             _logger.warning(
-                "Skipping %s: LLM returned invalid JSON (stop_reason=%r)",
-                entity.name, response.stop_reason,
+                "Skipping %s: LLM returned invalid JSON (truncated=%r)",
+                entity.name, response.truncated,
             )
             return None
 
