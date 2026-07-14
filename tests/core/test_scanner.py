@@ -541,3 +541,47 @@ async def test_propose_semantic_edges_merges_parallel_batches_in_batch_order(mon
     assert truncated == 0
     assert [e.description for e in edges] == ["from batch 1", "from batch 2"]
     assert client.messages.create.await_count == 2
+
+
+# ── explicit confirmation — blank input never accepts ─────────────────────────
+
+async def test_auto_definitions_blank_input_cancels():
+    payload = {"definition": "Orders model."}
+    client = _make_client(payload)
+    scanner = SemanticScanner(client=client)
+    console = _make_console(inputs=[""])  # blank at "Confirm all definitions?"
+
+    confirmed = await scanner._auto_definitions(
+        [ORDERS_ENTITY], {ORDERS_ENTITY.id: ORDERS_SQL}, {}, console
+    )
+
+    assert confirmed == {}
+
+
+async def test_interactive_definitions_blank_input_skips():
+    payload = {"definition": "Orders model."}
+    client = _make_client(payload)
+    scanner = SemanticScanner(client=client)
+    console = _make_console(inputs=[""])  # blank at per-model "Confirm?"
+
+    confirmed = await scanner._interactive_definitions(
+        [ORDERS_ENTITY], {ORDERS_ENTITY.id: ORDERS_SQL}, {}, console
+    )
+
+    assert confirmed == {}
+
+
+async def test_confirm_edges_blank_input_cancels():
+    scanner = SemanticScanner(client=_make_client({}))
+    edge = SemanticEdge(
+        from_entity_id=CUSTOMERS_ENTITY.id,
+        to_entity_id=ORDERS_ENTITY.id,
+        type=EdgeType.DERIVED_FROM,
+        description="CLV from orders.",
+        created_by="scan",
+    )
+    console = _make_console(inputs=[""])  # blank at "Confirm all edges?"
+
+    confirmed = await scanner._confirm_edges([edge], console)
+
+    assert confirmed == []

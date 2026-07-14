@@ -290,3 +290,59 @@ def test_correct_cancels_at_final_confirm():
     mock_graph.upsert_definition.assert_not_called()
     mock_graph.write_correction.assert_not_called()
     assert "cancelled" in result.output.lower()
+
+
+def test_correct_blank_at_edge_assessment_keeps_edge_unchanged():
+    """Blank input at the edge-assessment prompt keeps the edge — it must not
+    silently apply the LLM's suggestion."""
+    from puxti.models import Definition, EdgeAssessment, EdgeType, SemanticEdge
+
+    definition = Definition(
+        entity_id="model.jaffle_shop.orders",
+        description="Old definition.",
+        version=1,
+        created_by="scan",
+    )
+    edge = SemanticEdge(
+        from_entity_id="model.jaffle_shop.revenue",
+        to_entity_id="model.jaffle_shop.orders",
+        type=EdgeType.DERIVED_FROM,
+        description="revenue derived from orders",
+        created_by="scan",
+    )
+
+    mock_graph = MagicMock()
+    mock_graph.connect = AsyncMock()
+    mock_graph.close = AsyncMock()
+    mock_graph.get_latest_definition = AsyncMock(return_value=definition)
+    mock_graph.get_entity_semantic_edges = AsyncMock(return_value=[edge])
+    mock_graph.upsert_definition = AsyncMock()
+    mock_graph.write_correction = AsyncMock()
+
+    # LLM suggests removing the edge — a destructive action
+    suggestion = EdgeAssessment(
+        from_entity_id="model.jaffle_shop.revenue",
+        to_entity_id="model.jaffle_shop.orders",
+        action="remove",
+        reasoning="No longer related.",
+    )
+    mock_corrector = MagicMock()
+    mock_corrector.reassess_edges = AsyncMock(return_value=[suggestion])
+    mock_corrector.apply_assessments = MagicMock(return_value=([edge], [], []))
+
+    with (
+        patch("puxti.cli.correct.KnowledgeGraph", return_value=mock_graph),
+        patch("puxti.cli.correct.SemanticCorrector", return_value=mock_corrector),
+    ):
+        result = runner.invoke(
+            app,
+            ["correct", "--entity", "model.jaffle_shop.orders"],
+            # new definition → BLANK at assessment → correction → confirm write
+            input="New definition.\n\nc\ny\n",
+        )
+
+    assert result.exit_code == 0, result.output
+    confirmed = mock_corrector.apply_assessments.call_args[0][1]
+    assert len(confirmed) == 1
+    assert confirmed[0].action == "keep"  # not the suggested "remove"
+    assert "kept unchanged" in confirmed[0].reasoning

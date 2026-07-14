@@ -123,19 +123,13 @@ async def _run_correct(entity: str, project: str | None = None) -> None:
                     console.print(f"  New description: {assessment.updated_description}")
 
                 choice = console.input(
-                    "  Accept? ([bold]y[/bold]=yes, k=keep, r=remove, blank=accept) > "
+                    "  Accept? ([bold]y[/bold]=yes, k=keep, r=remove) > "
                 ).strip().lower()
 
-                if choice in ("", "y"):
+                # Only an explicit "y" applies the LLM suggestion — blank or
+                # unrecognized input keeps the edge unchanged, never accepts.
+                if choice == "y":
                     confirmed_assessments.append(assessment)
-                elif choice == "k":
-                    from puxti.models import EdgeAssessment
-                    confirmed_assessments.append(EdgeAssessment(
-                        from_entity_id=assessment.from_entity_id,
-                        to_entity_id=assessment.to_entity_id,
-                        action="keep",
-                        reasoning="User overrode to keep",
-                    ))
                 elif choice == "r":
                     from puxti.models import EdgeAssessment
                     confirmed_assessments.append(EdgeAssessment(
@@ -145,7 +139,17 @@ async def _run_correct(entity: str, project: str | None = None) -> None:
                         reasoning="User overrode to remove",
                     ))
                 else:
-                    confirmed_assessments.append(assessment)
+                    from puxti.models import EdgeAssessment
+                    reasoning = (
+                        "User overrode to keep" if choice == "k"
+                        else "No explicit choice — edge kept unchanged"
+                    )
+                    confirmed_assessments.append(EdgeAssessment(
+                        from_entity_id=assessment.from_entity_id,
+                        to_entity_id=assessment.to_entity_id,
+                        action="keep",
+                        reasoning=reasoning,
+                    ))
                 console.print()
         else:
             confirmed_assessments = []
