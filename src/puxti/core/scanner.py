@@ -552,13 +552,14 @@ class SemanticScanner:
                 "[yellow]e[/yellow]=edit, [red]s[/red]=skip) > "
             ).strip().lower()
 
-            if choice == "y" or choice == "":
+            # Only an explicit "y" confirms — blank input skips, never accepts.
+            if choice == "y":
                 confirmed[entity.id] = definition
             elif choice == "e":
                 edited = console.input("  Enter definition: ").strip()
                 if edited:
                     confirmed[entity.id] = edited
-            # "s" or anything else = skip
+            # "s", blank, or anything else = skip
 
         return confirmed
 
@@ -609,7 +610,8 @@ class SemanticScanner:
             "([green]y[/green]=yes, [red]n[/red]=cancel) > "
         ).strip().lower()
 
-        if choice == "y" or choice == "":
+        # Only an explicit "y" confirms — blank input cancels, never accepts.
+        if choice == "y":
             return generated
         return {}
 
@@ -633,7 +635,8 @@ class SemanticScanner:
             "([green]y[/green]=yes, [red]n[/red]=cancel) > "
         ).strip().lower()
 
-        return proposed_edges if choice in ("y", "") else []
+        # Only an explicit "y" confirms — blank input cancels, never accepts.
+        return proposed_edges if choice == "y" else []
 
 
 class ScanResult:

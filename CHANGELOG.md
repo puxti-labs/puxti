@@ -4,6 +4,8 @@
 
 ### Changed
 
+- **Confirmation prompts now require an explicit answer — blank input never accepts.** Previously scan's "Confirm?" / "Confirm all definitions?" / "Confirm all edges?" treated Enter as yes, and correct's edge re-assessment applied the LLM suggestion on blank or unrecognized input. Blank now skips/cancels (scan) or keeps the edge unchanged (correct); only `y` confirms. Prompts that already required an explicit `y` or a typed `yes` are unchanged.
+
 - **`cli.py` split into a `puxti/cli/` package** — one module per command, `_app.py` for the Typer apps, `_shared.py` for the console/runner helpers. No behavior change: the `puxti.cli:app` entry point and all `--help` output are byte-identical. `tests/test_cli.py` split into `tests/cli/` to mirror the layout.
 
 - **`puxti scan` runs LLM calls in parallel.** Definition generation (auto mode), semantic-edge batches, and `--dry-run` token counting now run with bounded concurrency (default 4, tunable via the `LLM_CONCURRENCY` env var). Interactive mode stays sequential — each call is gated on user confirmation. The first API error cancels in-flight calls and propagates; no silent partial results.
