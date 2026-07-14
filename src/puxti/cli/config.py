@@ -29,7 +29,15 @@ def config() -> None:
     table.add_column("Value")
 
     from puxti.core.graph import DEFAULT_DB_PATH
+    from puxti.llm import LLM_MODEL
+    resolved_model = settings.llm_model or (
+        LLM_MODEL if settings.llm_provider == "anthropic" else "[dim]not set[/dim]"
+    )
     table.add_row("graph_db",          str(DEFAULT_DB_PATH))
+    table.add_row("llm_provider",      settings.llm_provider)
+    table.add_row("llm_model",         resolved_model)
+    table.add_row("llm_api_key",       _mask(settings.llm_api_key, secret=True))
+    table.add_row("llm_base_url",      _mask(settings.llm_base_url))
     table.add_row("anthropic_api_key", _mask(settings.anthropic_api_key, secret=True))
     table.add_row("github_token",      _mask(settings.github_token, secret=True))
     table.add_row("dbt_project_dir",   _mask(settings.dbt_project_dir))

@@ -12,6 +12,7 @@ from puxti.connectors.dbt import DbtConnector
 from puxti.connectors.github import GitHubConnector
 from puxti.core.capture import SemanticCapture, _build_user_message
 from puxti.core.graph import KnowledgeGraph
+from puxti.llm import COST_UNKNOWN_HINT
 from puxti.models import ChangeEvent, ChangeType
 from puxti.propagation.engine import PropagationEngine
 from puxti.settings import settings
@@ -167,11 +168,17 @@ async def _run_capture(
             )
             with console.status("[bold]Counting tokens...[/bold]"):
                 estimate = await capture.estimate_cost(user_message)
+            approx = "" if estimate["tokens_exact"] else " (approximate)"
+            cost_line = (
+                f"Est. cost:              ${estimate['estimated_cost_usd']:.4f} USD"
+                if estimate["estimated_cost_usd"] is not None
+                else f"Est. cost:              {COST_UNKNOWN_HINT}"
+            )
             console.print(
                 Panel(
-                    f"Input tokens:           {estimate['input_tokens']:,}\n"
+                    f"Input tokens:           {estimate['input_tokens']:,}{approx}\n"
                     f"Est. output tokens:     {estimate['estimated_output_tokens']:,}\n"
-                    f"Est. cost:              ${estimate['estimated_cost_usd']:.4f} USD",
+                    f"{cost_line}",
                     title="[bold]Dry run — cost estimate[/bold]",
                     border_style="yellow",
                 )

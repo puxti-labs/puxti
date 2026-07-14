@@ -558,3 +558,17 @@ async def test_confirm_edges_blank_input_cancels():
     confirmed = await scanner._confirm_edges([edge], console)
 
     assert confirmed == []
+
+
+async def test_estimate_scan_cost_omits_cost_when_pricing_unknown():
+    backend = _make_backend({})
+    backend.input_cost_per_mtok = None
+    backend.output_cost_per_mtok = None
+    backend.count_input_tokens = AsyncMock(return_value=TokenCount(tokens=200, exact=False))
+
+    scanner = SemanticScanner(backend=backend)
+    estimate = await scanner.estimate_scan_cost(_make_connector())
+
+    assert estimate["total_input_tokens"] > 0
+    assert estimate["tokens_exact"] is False
+    assert estimate["estimated_cost_usd"] is None

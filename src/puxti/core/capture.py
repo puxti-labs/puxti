@@ -176,19 +176,28 @@ class SemanticCapture:
     async def estimate_cost(self, user_message: str) -> dict:
         """Count tokens and return a cost estimate without running inference.
 
-        Uses the count_tokens API — no credits consumed.
+        Token counting is exact on Anthropic (free count_tokens API) and
+        approximate on OpenAI-compatible providers (tokens_exact=False).
 
         Returns:
-            dict with input_tokens, estimated_output_tokens, estimated_cost_usd.
+            dict with input_tokens, tokens_exact, estimated_output_tokens,
+            and estimated_cost_usd (None when the model's pricing is unknown).
         """
         count = await self._backend.count_input_tokens(user_message, system=_SYSTEM_PROMPT)
-        input_tokens = count.tokens
-        input_cost = (input_tokens / 1_000_000) * self._backend.input_cost_per_mtok
-        output_cost = (_ESTIMATED_OUTPUT_TOKENS / 1_000_000) * self._backend.output_cost_per_mtok
+        cost: float | None = None
+        if (
+            self._backend.input_cost_per_mtok is not None
+            and self._backend.output_cost_per_mtok is not None
+        ):
+            cost = (
+                (count.tokens / 1_000_000) * self._backend.input_cost_per_mtok
+                + (_ESTIMATED_OUTPUT_TOKENS / 1_000_000) * self._backend.output_cost_per_mtok
+            )
         return {
-            "input_tokens": input_tokens,
+            "input_tokens": count.tokens,
+            "tokens_exact": count.exact,
             "estimated_output_tokens": _ESTIMATED_OUTPUT_TOKENS,
-            "estimated_cost_usd": input_cost + output_cost,
+            "estimated_cost_usd": cost,
         }
 
     async def _enrich(self, user_message: str) -> dict:

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Provider-agnostic BYOK.** `puxti` now works with any LLM provider that speaks the OpenAI-compatible wire format, selected via `LLM_PROVIDER` + `LLM_MODEL` + `LLM_API_KEY`: OpenAI, Mistral, GLM/Zhipu, DeepSeek, Groq, OpenRouter, Gemini, AWS Bedrock (Mantle), local Ollama, or any custom endpoint (`LLM_BASE_URL`, e.g. vLLM). Anthropic remains the default and needs no new configuration.
+- `--dry-run` cost estimates are provider-aware: exact token counts on Anthropic, clearly-labeled approximate counts elsewhere; dollar costs appear only when pricing is known (built-in for the default model, or via `LLM_INPUT_COST_PER_MTOK` / `LLM_OUTPUT_COST_PER_MTOK`) — never a fabricated number.
+- `puxti health` validates the configured provider (free auth check per provider) and reports incomplete provider config with an actionable message; `puxti config` shows the provider, model, and masked key.
+
 ### Changed
 
 - All LLM access now goes through an internal provider backend (`puxti.llm.LLMBackend`); engines no longer touch the Anthropic SDK directly. No behavior change — groundwork for provider-agnostic BYOK. Auth and billing errors are normalized (`LLMAuthError` / `LLMBillingError`), so scan and capture now get the same actionable credit-balance message redefine already had.

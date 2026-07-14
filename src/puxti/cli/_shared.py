@@ -10,6 +10,7 @@ import typer
 from rich.console import Console
 
 from puxti import __version__
+from puxti.llm import LLMConfigError
 from puxti.models import EntityType
 from puxti.workspace import WorkspaceConfig, load_workspace
 
@@ -75,6 +76,12 @@ def _run(coro, *, command: str = "") -> None:
     except KeyboardInterrupt:
         exit_status = 130
         raise
+    except LLMConfigError as exc:
+        # Incomplete provider config is a user-fixable error, not a bug —
+        # print the actionable message without the bug-report boilerplate.
+        exit_status = 1
+        err_console.print(f"[red bold]Config error:[/red bold] {exc}")
+        raise typer.Exit(1)
     except Exception as exc:
         exit_status = 1
         err_console.print(f"\n[red bold]Unexpected error:[/red bold] {exc}")
