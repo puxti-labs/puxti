@@ -412,3 +412,19 @@ async def test_capture_no_feeds_producers_unaffected():
     result, _ = await capture.capture(CHANGE_EVENT, "description.", graph)
 
     assert result.affected_entity_ids == ENRICHMENT_PAYLOAD["affected_entity_ids"]
+
+
+async def test_estimate_cost_omits_cost_when_pricing_unknown():
+    """Approximate tokens from a non-Anthropic backend with unknown pricing:
+    report tokens, never a fabricated dollar figure."""
+    backend = _make_backend(ENRICHMENT_PAYLOAD)
+    backend.input_cost_per_mtok = None
+    backend.output_cost_per_mtok = None
+    backend.count_input_tokens = AsyncMock(return_value=TokenCount(tokens=800, exact=False))
+
+    capture = SemanticCapture(backend=backend)
+    result = await capture.estimate_cost("some prompt")
+
+    assert result["input_tokens"] == 800
+    assert result["tokens_exact"] is False
+    assert result["estimated_cost_usd"] is None

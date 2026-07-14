@@ -10,6 +10,7 @@ from puxti.cli._shared import _load_workspace, _run, console, err_console
 from puxti.connectors.dbt import DbtConnector
 from puxti.core.graph import KnowledgeGraph
 from puxti.core.scanner import SemanticScanner
+from puxti.llm import COST_UNKNOWN_HINT
 from puxti.settings import settings
 
 
@@ -60,6 +61,12 @@ async def _run_scan(dbt_project_dir: str | None, interactive: bool, dry_run: boo
     if dry_run:
         with console.status("[bold]Reading manifest and counting tokens...[/bold]"):
             estimate = await scanner.estimate_scan_cost(dbt)
+        approx = "" if estimate["tokens_exact"] else " (approximate)"
+        cost_line = (
+            f"Est. cost:              ${estimate['estimated_cost_usd']:.4f} USD"
+            if estimate["estimated_cost_usd"] is not None
+            else f"Est. cost:              {COST_UNKNOWN_HINT}"
+        )
         console.print(
             Panel(
                 f"Models to define:       {estimate['models']}\n"
@@ -73,9 +80,9 @@ async def _run_scan(dbt_project_dir: str | None, interactive: bool, dry_run: boo
                 f"  Input tokens:         {estimate['edges_input_tokens']:,}\n"
                 f"  Est. output tokens:   {estimate['edges_est_output_tokens']:,}\n"
                 f"\n"
-                f"Total input tokens:     {estimate['total_input_tokens']:,}\n"
+                f"Total input tokens:     {estimate['total_input_tokens']:,}{approx}\n"
                 f"Total est. output:      {estimate['total_est_output_tokens']:,}\n"
-                f"Est. cost:              ${estimate['estimated_cost_usd']:.4f} USD",
+                f"{cost_line}",
                 title="[bold]Dry run — cost estimate[/bold]",
                 border_style="yellow",
             )

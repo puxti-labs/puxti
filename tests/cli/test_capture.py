@@ -294,6 +294,7 @@ def test_capture_dry_run_shows_cost_estimate():
     mock_capture = MagicMock()
     mock_capture.estimate_cost = AsyncMock(return_value={
         "input_tokens": 450,
+        "tokens_exact": True,
         "estimated_output_tokens": 614,
         "estimated_cost_usd": 0.0108,
     })
@@ -337,6 +338,7 @@ def test_capture_dry_run_does_not_require_github_token():
     mock_capture = MagicMock()
     mock_capture.estimate_cost = AsyncMock(return_value={
         "input_tokens": 300,
+        "tokens_exact": True,
         "estimated_output_tokens": 614,
         "estimated_cost_usd": 0.0100,
     })
@@ -379,6 +381,7 @@ def test_capture_dry_run_succeeds_without_repo():
     mock_capture = MagicMock()
     mock_capture.estimate_cost = AsyncMock(return_value={
         "input_tokens": 350,
+        "tokens_exact": True,
         "estimated_output_tokens": 614,
         "estimated_cost_usd": 0.0105,
     })
@@ -404,3 +407,47 @@ def test_capture_dry_run_succeeds_without_repo():
     assert result.exit_code == 0, result.output
     assert "350" in result.output
     assert "PR opened" not in result.output
+
+
+def test_capture_dry_run_without_pricing_shows_hint_not_cost():
+    """Unknown model pricing → dry-run shows tokens and the override hint,
+    never a dollar figure."""
+    mock_graph = MagicMock()
+    mock_graph.connect = AsyncMock()
+    mock_graph.close = AsyncMock()
+    mock_graph.get_latest_definition = AsyncMock(return_value=None)
+    mock_graph.get_semantic_dependents = AsyncMock(return_value=[])
+    mock_graph.get_structural_dependents = AsyncMock(return_value=[])
+    mock_graph.get_all_entity_ids = AsyncMock(return_value=[])
+    mock_graph.get_entity_by_id = AsyncMock(return_value=MagicMock())
+
+    mock_capture = MagicMock()
+    mock_capture.estimate_cost = AsyncMock(return_value={
+        "input_tokens": 900,
+        "tokens_exact": False,
+        "estimated_output_tokens": 614,
+        "estimated_cost_usd": None,
+    })
+
+    with (
+        patch("puxti.cli.capture.settings") as mock_settings,
+        patch("puxti.cli.capture.KnowledgeGraph", return_value=mock_graph),
+        patch("puxti.cli.capture.SemanticCapture", return_value=mock_capture),
+    ):
+        mock_settings.dbt_project_dir = "/some/dbt"
+        mock_settings.github_token = None
+
+        result = runner.invoke(app, [
+            "capture",
+            "--entity", "model.jaffle_shop.orders.order_date",
+            "--before", "order_date",
+            "--after", "recorded_date",
+            "--description", "test",
+            "--dry-run",
+        ])
+
+    assert result.exit_code == 0, result.output
+    assert "900" in result.output
+    assert "approximate" in result.output
+    assert "LLM_INPUT_COST_PER_MTOK" in result.output
+    assert "$" not in result.output.replace("$0", "")  # no dollar figure rendered

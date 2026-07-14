@@ -11,7 +11,7 @@ from puxti.connectors.dbt import DbtConnector
 from puxti.connectors.github import GitHubConnector
 from puxti.core.graph import KnowledgeGraph
 from puxti.core.redefine import SemanticRedefiner
-from puxti.llm import get_backend
+from puxti.llm import COST_UNKNOWN_HINT, get_backend
 from puxti.models import ChangeEvent, ChangeStatus, ChangeType
 from puxti.settings import settings
 
@@ -154,6 +154,7 @@ async def _run_redefine(
                 if existing_definition else "No previous definition."
             )
             total_input_tokens = 0
+            tokens_exact = True
             llm_calls = 0
             skipped_deep = 0
 
@@ -175,12 +176,21 @@ async def _run_redefine(
                     user_message, system=_REDEFINE_SYSTEM_PROMPT
                 )
                 total_input_tokens += count.tokens
+                tokens_exact = tokens_exact and count.exact
                 llm_calls += 1
 
             est_output_tokens = llm_calls * 512
-            est_cost = (
-                (total_input_tokens / 1_000_000) * backend.input_cost_per_mtok
-                + (est_output_tokens / 1_000_000) * backend.output_cost_per_mtok
+            est_cost: float | None = None
+            if backend.input_cost_per_mtok is not None and backend.output_cost_per_mtok is not None:
+                est_cost = (
+                    (total_input_tokens / 1_000_000) * backend.input_cost_per_mtok
+                    + (est_output_tokens / 1_000_000) * backend.output_cost_per_mtok
+                )
+            approx = "" if tokens_exact else " (approximate)"
+            cost_line = (
+                f"Est. cost:              ${est_cost:.4f} USD"
+                if est_cost is not None
+                else f"Est. cost:              {COST_UNKNOWN_HINT}"
             )
 
             depth_summary = "\n".join(
@@ -198,9 +208,9 @@ async def _run_redefine(
                     f"LLM diff calls:         {llm_calls}  (hop 1–2 only)\n"
                     f"Annotation-only:        {skipped_deep}  (hop 3+, no LLM)\n"
                     f"\n"
-                    f"Input tokens:           {total_input_tokens:,}\n"
+                    f"Input tokens:           {total_input_tokens:,}{approx}\n"
                     f"Est. output tokens:     {est_output_tokens:,}\n"
-                    f"Est. cost:              ${est_cost:.4f} USD",
+                    f"{cost_line}",
                     title="[bold]Dry run — cost estimate[/bold]",
                     border_style="yellow",
                 )

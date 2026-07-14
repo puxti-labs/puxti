@@ -113,8 +113,9 @@ Before committing any change, check for:
   be able to override instructions, exfiltrate other context, or steer a tool call.
   Sanitise before it enters a prompt, and treat model output as untrusted input to
   the next stage — a suggested definition is a *claim to validate*, not a fact.
-- **Secret exposure.** This is the sharpest edge for a CLI. The Anthropic API key
-  and the GitHub token live in `Settings` and must never appear in logs, tracebacks,
+- **Secret exposure.** This is the sharpest edge for a CLI. The LLM API keys
+  (Anthropic or any BYOK provider) and the GitHub token live in `Settings` and
+  must never appear in logs, tracebacks,
   Rich output, a `config` dump, or — worst case — a generated PR body or commit
   message pushed to a user's repo. Redact by default; a `Settings` value is not
   printable. `health` and `config` report *presence and shape*, never values.

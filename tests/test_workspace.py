@@ -318,6 +318,8 @@ def test_cli_health_checks_workspace_repos():
     mock_graph.close = AsyncMock()
 
     mock_backend = MagicMock()
+    mock_backend.provider = "anthropic"
+    mock_backend.key_configured = True
     mock_backend.auth_check = AsyncMock()
 
     mock_gh = MagicMock()

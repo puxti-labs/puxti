@@ -51,3 +51,23 @@ def test_scan_happy_path_prints_summary():
     assert "12" in result.output   # entities
     assert "5" in result.output    # definitions
     assert "3" in result.output    # semantic edges
+
+
+def test_scan_llm_config_error_is_actionable_not_a_bug_report():
+    """LLMConfigError from backend construction prints the config message,
+    not the 'Unexpected error' bug-report boilerplate."""
+    from puxti.llm import LLMConfigError
+
+    with (
+        patch("puxti.cli.scan.settings") as mock_settings,
+        patch("puxti.cli.scan.SemanticScanner",
+              side_effect=LLMConfigError("LLM_API_KEY is required for provider 'mistral'.")),
+        patch("puxti.cli.scan.DbtConnector"),
+    ):
+        mock_settings.dbt_project_dir = "/some/dbt"
+
+        result = runner.invoke(app, ["scan"])
+
+    assert result.exit_code == 1
+    assert "LLM_API_KEY" in result.output
+    assert "report this bug" not in result.output

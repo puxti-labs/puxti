@@ -16,6 +16,8 @@ def test_health_shows_help():
 
 def _make_ok_backend() -> MagicMock:
     backend = MagicMock()
+    backend.provider = "anthropic"
+    backend.key_configured = True
     backend.auth_check = AsyncMock()
     return backend
 
@@ -52,7 +54,7 @@ def test_health_anthropic_invalid_key_exits_nonzero():
     mock_graph.connect = AsyncMock()
     mock_graph.close = AsyncMock()
 
-    mock_backend = MagicMock()
+    mock_backend = _make_ok_backend()
     mock_backend.auth_check = AsyncMock(side_effect=LLMAuthError(
         "Anthropic API key is invalid or expired. Check ANTHROPIC_API_KEY."
     ))
@@ -76,7 +78,7 @@ def test_health_anthropic_credit_error_exits_nonzero():
     mock_graph.connect = AsyncMock()
     mock_graph.close = AsyncMock()
 
-    mock_backend = MagicMock()
+    mock_backend = _make_ok_backend()
     mock_backend.auth_check = AsyncMock(side_effect=LLMBillingError(
         "Anthropic API credit balance is too low."
     ))
@@ -100,12 +102,15 @@ def test_health_anthropic_not_configured_exits_nonzero():
     mock_graph.connect = AsyncMock()
     mock_graph.close = AsyncMock()
 
+    mock_backend = _make_ok_backend()
+    mock_backend.key_configured = False
+
     with (
         patch("puxti.cli.health.settings") as mock_settings,
         patch("puxti.core.graph.KnowledgeGraph", return_value=mock_graph),
+        patch("puxti.cli.health.get_backend", return_value=mock_backend),
     ):
         mock_settings.dbt_project_dir = None
-        mock_settings.anthropic_api_key = None
 
         result = runner.invoke(app, ["health"])
 
@@ -114,13 +119,16 @@ def test_health_anthropic_not_configured_exits_nonzero():
 
 
 def test_health_graph_not_initialised_shows_dash():
+    mock_backend = _make_ok_backend()
+    mock_backend.key_configured = False
+
     with (
         patch("puxti.cli.health.settings") as mock_settings,
         patch("puxti.core.graph.DEFAULT_DB_PATH") as mock_path,
+        patch("puxti.cli.health.get_backend", return_value=mock_backend),
     ):
         mock_path.exists.return_value = False
         mock_settings.dbt_project_dir = None
-        mock_settings.anthropic_api_key = None
 
         result = runner.invoke(app, ["health"])
 
@@ -252,3 +260,35 @@ def test_health_airflow_not_configured_shows_dash():
         result = runner.invoke(app, ["health"])
 
     assert "not configured" in result.output
+
+
+def test_health_reports_llm_config_error():
+    """Incomplete provider config surfaces as a failing health line."""
+    from puxti.llm import LLMConfigError
+
+    with (
+        patch("puxti.cli.health.settings") as mock_settings,
+        patch("puxti.cli.health.get_backend",
+              side_effect=LLMConfigError("LLM_MODEL is required when LLM_PROVIDER='mistral'")),
+    ):
+        mock_settings.dbt_project_dir = None
+
+        result = runner.invoke(app, ["health"])
+
+    assert result.exit_code == 1
+    assert "LLM_MODEL" in result.output
+
+
+def test_health_labels_non_anthropic_provider():
+    mock_backend = _make_ok_backend()
+    mock_backend.provider = "mistral"
+
+    with (
+        patch("puxti.cli.health.settings") as mock_settings,
+        patch("puxti.cli.health.get_backend", return_value=mock_backend),
+    ):
+        mock_settings.dbt_project_dir = None
+
+        result = runner.invoke(app, ["health"])
+
+    assert "LLM API key (mistral)" in result.output

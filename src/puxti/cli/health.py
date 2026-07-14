@@ -9,7 +9,7 @@ from puxti.cli._shared import _load_workspace, _run, console
 from puxti.connectors.airflow import AirflowConnector
 from puxti.connectors.dbt import DbtConnector
 from puxti.connectors.github import GitHubConnector
-from puxti.llm import LLMAuthError, LLMBillingError, get_backend
+from puxti.llm import LLMAuthError, LLMBillingError, LLMConfigError, get_backend
 from puxti.settings import settings
 from puxti.workspace import WorkspaceConfig
 
@@ -37,22 +37,36 @@ async def _run_health(dbt_project_dir: str | None, workspace: WorkspaceConfig | 
         console.print(f"[yellow]–[/yellow] Knowledge Graph  (not initialised — run [bold]puxti scan[/bold])")
 
     # LLM API — the backend's auth check consumes no credits
-    if settings.anthropic_api_key:
-        try:
-            await get_backend().auth_check()
-            console.print("[green]✓[/green] Anthropic API key")
-        except LLMAuthError:
-            console.print("[red]✗[/red] Anthropic API key: invalid or expired")
-            all_ok = False
-        except LLMBillingError:
-            console.print("[red]✗[/red] Anthropic API key: valid but credit balance is too low")
-            all_ok = False
-        except Exception as exc:
-            console.print(f"[red]✗[/red] Anthropic API: {exc}")
-            all_ok = False
-    else:
-        console.print("[yellow]–[/yellow] Anthropic API key (ANTHROPIC_API_KEY not configured)")
+    backend = None
+    try:
+        backend = get_backend()
+    except LLMConfigError as exc:
+        console.print(f"[red]✗[/red] LLM provider: {exc}")
         all_ok = False
+
+    if backend is not None:
+        if backend.provider == "anthropic":
+            label = "Anthropic API key"
+            key_hint = "ANTHROPIC_API_KEY"
+        else:
+            label = f"LLM API key ({backend.provider})"
+            key_hint = "LLM_API_KEY"
+        if not backend.key_configured:
+            console.print(f"[yellow]–[/yellow] {label} ({key_hint} not configured)")
+            all_ok = False
+        else:
+            try:
+                await backend.auth_check()
+                console.print(f"[green]✓[/green] {label}")
+            except LLMAuthError:
+                console.print(f"[red]✗[/red] {label}: invalid or expired")
+                all_ok = False
+            except LLMBillingError:
+                console.print(f"[red]✗[/red] {label}: valid but credit balance is too low")
+                all_ok = False
+            except Exception as exc:
+                console.print(f"[red]✗[/red] LLM API ({backend.provider}): {exc}")
+                all_ok = False
 
     # dbt connector
     project_dir = dbt_project_dir or settings.dbt_project_dir

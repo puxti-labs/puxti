@@ -225,6 +225,7 @@ class SemanticScanner:
         edges_count = await self._backend.count_input_tokens(
             edges_message, system=_EDGES_SYSTEM_PROMPT
         )
+        tokens_exact = edges_count.exact
         # Ceiling division — a partial final batch is still one LLM call
         n_batches = max(
             1,
@@ -235,10 +236,15 @@ class SemanticScanner:
         total_input = def_input_tokens + edges_input_tokens
         def_output = len(model_entities) * _DEF_EST_OUTPUT_TOKENS
         total_output = def_output + _EDGES_EST_OUTPUT_TOKENS
-        total_cost = (
-            (total_input / 1_000_000) * self._backend.input_cost_per_mtok
-            + (total_output / 1_000_000) * self._backend.output_cost_per_mtok
-        )
+        total_cost: float | None = None
+        if (
+            self._backend.input_cost_per_mtok is not None
+            and self._backend.output_cost_per_mtok is not None
+        ):
+            total_cost = (
+                (total_input / 1_000_000) * self._backend.input_cost_per_mtok
+                + (total_output / 1_000_000) * self._backend.output_cost_per_mtok
+            )
 
         return {
             "models": len(model_entities),
@@ -249,6 +255,7 @@ class SemanticScanner:
             "edges_est_output_tokens": _EDGES_EST_OUTPUT_TOKENS,
             "total_input_tokens": total_input,
             "total_est_output_tokens": total_output,
+            "tokens_exact": tokens_exact,
             "estimated_cost_usd": total_cost,
         }
 
