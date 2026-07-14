@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- All LLM access now goes through an internal provider backend (`puxti.llm.LLMBackend`); engines no longer touch the Anthropic SDK directly. No behavior change — groundwork for provider-agnostic BYOK. Auth and billing errors are normalized (`LLMAuthError` / `LLMBillingError`), so scan and capture now get the same actionable credit-balance message redefine already had.
+
+---
+
 ## [0.9.0] — 2026-07-13
 
 ### Changed

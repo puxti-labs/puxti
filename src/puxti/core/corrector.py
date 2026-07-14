@@ -13,15 +13,11 @@ Flow:
 6. Write atomically to KG
 """
 
-import hashlib
 import json
 import logging
 
-import anthropic
-
-from puxti.llm import LLM_MODEL, strip_markdown_fences
+from puxti.llm import LLMBackend, get_backend, strip_markdown_fences
 from puxti.models import EdgeAssessment, EdgeType, SemanticEdge
-from puxti.settings import settings
 
 _logger = logging.getLogger(__name__)
 
@@ -60,10 +56,8 @@ Only flag "update" if the description is materially misleading, not just impreci
 class SemanticCorrector:
     """Reassesses semantic edges when an entity definition is corrected."""
 
-    def __init__(self, client: anthropic.AsyncAnthropic | None = None) -> None:
-        self._client = client or anthropic.AsyncAnthropic(
-            api_key=settings.anthropic_api_key
-        )
+    def __init__(self, backend: LLMBackend | None = None) -> None:
+        self._backend = backend or get_backend()
 
     async def reassess_edges(
         self,
@@ -92,19 +86,12 @@ class SemanticCorrector:
             f"For each edge, propose keep / update / remove."
         )
 
-        _logger.debug(
-            "LLM call | model=%s prompt_chars=%d hash=%s",
-            LLM_MODEL,
-            len(user_message),
-            hashlib.sha256(user_message.encode()).hexdigest()[:12],
-        )
-        response = await self._client.messages.create(
-            model=LLM_MODEL,
-            max_tokens=2048,
+        response = await self._backend.complete(
             system=_REASSESS_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_message}],
+            user_message=user_message,
+            max_tokens=2048,
         )
-        raw = strip_markdown_fences(response.content[0].text)
+        raw = strip_markdown_fences(response.text)
 
         try:
             data = json.loads(raw).get("assessments", [])

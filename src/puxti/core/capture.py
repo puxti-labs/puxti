@@ -1,17 +1,9 @@
-import hashlib
 import json
 import logging
 from collections.abc import Awaitable, Callable
 
-import anthropic
-
 from puxti.core.graph import KnowledgeGraph
-from puxti.llm import (
-    INPUT_COST_PER_MTOK,
-    LLM_MODEL,
-    OUTPUT_COST_PER_MTOK,
-    strip_markdown_fences,
-)
+from puxti.llm import LLMBackend, get_backend, strip_markdown_fences
 from puxti.models import (
     ChangeEvent,
     ChangeStatus,
@@ -20,7 +12,6 @@ from puxti.models import (
     SemanticChangeEvent,
     SemanticEdge,
 )
-from puxti.settings import settings
 
 _logger = logging.getLogger(__name__)
 
@@ -89,10 +80,8 @@ class SemanticCapture:
     5. Return a SemanticChangeEvent ready for the Propagation Engine
     """
 
-    def __init__(self, client: anthropic.AsyncAnthropic | None = None) -> None:
-        self._client = client or anthropic.AsyncAnthropic(
-            api_key=settings.anthropic_api_key
-        )
+    def __init__(self, backend: LLMBackend | None = None) -> None:
+        self._backend = backend or get_backend()
 
     async def capture(
         self,
@@ -192,14 +181,10 @@ class SemanticCapture:
         Returns:
             dict with input_tokens, estimated_output_tokens, estimated_cost_usd.
         """
-        response = await self._client.messages.count_tokens(
-            model=LLM_MODEL,
-            system=_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_message}],
-        )
-        input_tokens = response.input_tokens
-        input_cost = (input_tokens / 1_000_000) * INPUT_COST_PER_MTOK
-        output_cost = (_ESTIMATED_OUTPUT_TOKENS / 1_000_000) * OUTPUT_COST_PER_MTOK
+        count = await self._backend.count_input_tokens(user_message, system=_SYSTEM_PROMPT)
+        input_tokens = count.tokens
+        input_cost = (input_tokens / 1_000_000) * self._backend.input_cost_per_mtok
+        output_cost = (_ESTIMATED_OUTPUT_TOKENS / 1_000_000) * self._backend.output_cost_per_mtok
         return {
             "input_tokens": input_tokens,
             "estimated_output_tokens": _ESTIMATED_OUTPUT_TOKENS,
@@ -207,35 +192,23 @@ class SemanticCapture:
         }
 
     async def _enrich(self, user_message: str) -> dict:
-        """Call the LLM and parse the structured JSON response."""
-        _logger.debug(
-            "LLM call | model=%s prompt_chars=%d hash=%s",
-            LLM_MODEL,
-            len(user_message),
-            hashlib.sha256(user_message.encode()).hexdigest()[:12],
-        )
-        try:
-            response = await self._client.messages.create(
-                model=LLM_MODEL,
-                max_tokens=_MAX_TOKENS,
-                system=_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": user_message}],
-            )
-        except anthropic.BadRequestError as exc:
-            if "credit balance" in str(exc).lower():
-                raise RuntimeError(
-                    "Anthropic API credit balance is too low. "
-                    "Add credits at https://console.anthropic.com/settings/billing"
-                ) from exc
-            raise
+        """Call the LLM and parse the structured JSON response.
 
-        raw = strip_markdown_fences(response.content[0].text)
+        Auth and billing errors surface as LLMAuthError / LLMBillingError
+        (RuntimeError subclasses) from the backend — never swallowed."""
+        response = await self._backend.complete(
+            system=_SYSTEM_PROMPT,
+            user_message=user_message,
+            max_tokens=_MAX_TOKENS,
+        )
+
+        raw = strip_markdown_fences(response.text)
 
         try:
             return json.loads(raw)
         except json.JSONDecodeError as exc:
             raise RuntimeError(
-                f"LLM returned invalid JSON (stop_reason={response.stop_reason!r}). "
+                f"LLM returned invalid JSON (truncated={response.truncated}). "
                 f"Raw response ({len(raw)} chars):\n{raw[:500]}{'...' if len(raw) > 500 else ''}"
             ) from exc
 

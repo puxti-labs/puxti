@@ -2,7 +2,6 @@
 
 from typing import Optional
 
-import anthropic
 import typer
 
 from puxti.cli._app import app
@@ -10,7 +9,7 @@ from puxti.cli._shared import _load_workspace, _run, console
 from puxti.connectors.airflow import AirflowConnector
 from puxti.connectors.dbt import DbtConnector
 from puxti.connectors.github import GitHubConnector
-from puxti.llm import LLM_MODEL
+from puxti.llm import LLMAuthError, LLMBillingError, get_backend
 from puxti.settings import settings
 from puxti.workspace import WorkspaceConfig
 
@@ -37,23 +36,16 @@ async def _run_health(dbt_project_dir: str | None, workspace: WorkspaceConfig | 
     else:
         console.print(f"[yellow]–[/yellow] Knowledge Graph  (not initialised — run [bold]puxti scan[/bold])")
 
-    # Anthropic API — uses count_tokens (no credits consumed)
+    # LLM API — the backend's auth check consumes no credits
     if settings.anthropic_api_key:
         try:
-            client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
-            await client.messages.count_tokens(
-                model=LLM_MODEL,
-                messages=[{"role": "user", "content": "ping"}],
-            )
+            await get_backend().auth_check()
             console.print("[green]✓[/green] Anthropic API key")
-        except anthropic.AuthenticationError:
+        except LLMAuthError:
             console.print("[red]✗[/red] Anthropic API key: invalid or expired")
             all_ok = False
-        except anthropic.BadRequestError as exc:
-            if "credit balance" in str(exc).lower():
-                console.print("[red]✗[/red] Anthropic API key: valid but credit balance is too low")
-            else:
-                console.print(f"[red]✗[/red] Anthropic API: {exc}")
+        except LLMBillingError:
+            console.print("[red]✗[/red] Anthropic API key: valid but credit balance is too low")
             all_ok = False
         except Exception as exc:
             console.print(f"[red]✗[/red] Anthropic API: {exc}")

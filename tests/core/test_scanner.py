@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from puxti.core.scanner import SemanticScanner, ScanResult
+from puxti.llm import INPUT_COST_PER_MTOK, OUTPUT_COST_PER_MTOK, LLMResponse, TokenCount
 from puxti.models import Definition, Edge, EdgeType, Entity, EntityType, SemanticEdge
 
 
@@ -37,19 +38,16 @@ ORDERS_SQL = "select id, gross_revenue from stg_orders"
 CUSTOMERS_SQL = "select customer_id, sum(gross_revenue) as lifetime_value from orders group by 1"
 
 
-def _make_llm_response(payload: dict) -> MagicMock:
-    block = MagicMock()
-    block.text = json.dumps(payload)
-    response = MagicMock()
-    response.content = [block]
-    return response
+def _make_llm_response(payload: dict) -> LLMResponse:
+    return LLMResponse(text=json.dumps(payload), truncated=False)
 
 
-def _make_client(payload: dict) -> MagicMock:
-    client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.create = AsyncMock(return_value=_make_llm_response(payload))
-    return client
+def _make_backend(payload: dict) -> MagicMock:
+    backend = MagicMock()
+    backend.input_cost_per_mtok = INPUT_COST_PER_MTOK
+    backend.output_cost_per_mtok = OUTPUT_COST_PER_MTOK
+    backend.complete = AsyncMock(return_value=_make_llm_response(payload))
+    return backend
 
 
 def _make_graph() -> MagicMock:
@@ -91,60 +89,58 @@ def _make_console(inputs: list[str] | None = None) -> MagicMock:
 
 async def test_infer_definition_calls_llm_with_sql():
     payload = {"definition": "Orders mart with gross revenue per order."}
-    client = _make_client(payload)
-    scanner = SemanticScanner(client=client)
+    backend = _make_backend(payload)
+    scanner = SemanticScanner(backend=backend)
 
     result = await scanner.infer_definition(ORDERS_ENTITY, ORDERS_SQL, [])
 
     assert result == "Orders mart with gross revenue per order."
-    client.messages.create.assert_awaited_once()
-    call_kwargs = client.messages.create.call_args.kwargs
-    assert ORDERS_SQL in call_kwargs["messages"][0]["content"]
+    backend.complete.assert_awaited_once()
+    call_kwargs = backend.complete.call_args.kwargs
+    assert ORDERS_SQL in call_kwargs["user_message"]
 
 
 async def test_infer_definition_includes_upstream_context():
     payload = {"definition": "Customer LTV aggregated from orders."}
-    client = _make_client(payload)
-    scanner = SemanticScanner(client=client)
+    backend = _make_backend(payload)
+    scanner = SemanticScanner(backend=backend)
 
     await scanner.infer_definition(CUSTOMERS_ENTITY, CUSTOMERS_SQL, ["orders"])
 
-    content = client.messages.create.call_args.kwargs["messages"][0]["content"]
+    content = backend.complete.call_args.kwargs["user_message"]
     assert "orders" in content
 
 
 async def test_infer_definition_includes_yml_description():
     payload = {"definition": "Orders mart with gross revenue per order."}
-    client = _make_client(payload)
-    scanner = SemanticScanner(client=client)
+    backend = _make_backend(payload)
+    scanner = SemanticScanner(backend=backend)
 
     await scanner.infer_definition(ORDERS_ENTITY_WITH_YML_DESC, ORDERS_SQL, [])
 
-    content = client.messages.create.call_args.kwargs["messages"][0]["content"]
+    content = backend.complete.call_args.kwargs["user_message"]
     assert "One row per order placed by a customer." in content
 
 
 async def test_infer_definition_omits_yml_context_when_empty():
     payload = {"definition": "Orders mart."}
-    client = _make_client(payload)
-    scanner = SemanticScanner(client=client)
+    backend = _make_backend(payload)
+    scanner = SemanticScanner(backend=backend)
 
     await scanner.infer_definition(ORDERS_ENTITY, ORDERS_SQL, [])
 
-    content = client.messages.create.call_args.kwargs["messages"][0]["content"]
+    content = backend.complete.call_args.kwargs["user_message"]
     assert "dbt yml description" not in content
 
 
 async def test_infer_definition_strips_markdown_fence():
-    block = MagicMock()
-    block.text = f'```json\n{json.dumps({"definition": "Clean definition."})}\n```'
-    response = MagicMock()
-    response.content = [block]
-    client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.create = AsyncMock(return_value=response)
+    backend = MagicMock()
+    backend.complete = AsyncMock(return_value=LLMResponse(
+        text=f'```json\n{json.dumps({"definition": "Clean definition."})}\n```',
+        truncated=False,
+    ))
 
-    scanner = SemanticScanner(client=client)
+    scanner = SemanticScanner(backend=backend)
     result = await scanner.infer_definition(ORDERS_ENTITY, ORDERS_SQL, [])
     assert result == "Clean definition."
 
@@ -152,20 +148,16 @@ async def test_infer_definition_strips_markdown_fence():
 # ── estimate_scan_cost ────────────────────────────────────────────────────────
 
 async def test_estimate_scan_cost_returns_breakdown():
-    count_response = MagicMock()
-    count_response.input_tokens = 200
+    backend = _make_backend({})
+    backend.count_input_tokens = AsyncMock(return_value=TokenCount(tokens=200, exact=True))
 
-    client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.count_tokens = AsyncMock(return_value=count_response)
-
-    scanner = SemanticScanner(client=client)
+    scanner = SemanticScanner(backend=backend)
     connector = _make_connector()
 
     estimate = await scanner.estimate_scan_cost(connector)
 
     # count_tokens called once per model + once for edges = 3 calls
-    assert client.messages.count_tokens.await_count == 3
+    assert backend.count_input_tokens.await_count == 3
     assert estimate["models"] == 2
     assert estimate["def_input_tokens"] == 400  # 2 models × 200
     assert estimate["edges_input_tokens"] == 200
@@ -174,21 +166,17 @@ async def test_estimate_scan_cost_returns_breakdown():
 
 
 async def test_estimate_scan_cost_skips_models_with_no_sql():
-    count_response = MagicMock()
-    count_response.input_tokens = 150
+    backend = _make_backend({})
+    backend.count_input_tokens = AsyncMock(return_value=TokenCount(tokens=150, exact=True))
 
-    client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.count_tokens = AsyncMock(return_value=count_response)
-
-    scanner = SemanticScanner(client=client)
+    scanner = SemanticScanner(backend=backend)
     # connector returns one model with SQL, one without
     connector = _make_connector(sql_map={ORDERS_ENTITY.id: ORDERS_SQL})
 
     estimate = await scanner.estimate_scan_cost(connector)
 
     # 1 definition call + 1 edges call
-    assert client.messages.count_tokens.await_count == 2
+    assert backend.count_input_tokens.await_count == 2
     assert estimate["def_input_tokens"] == 150
 
 
@@ -201,8 +189,8 @@ async def test_propose_semantic_edges_returns_edges():
         "type": "derived_from",
         "description": "CLV is derived from gross_revenue in orders.",
     }]}
-    client = _make_client(payload)
-    scanner = SemanticScanner(client=client)
+    backend = _make_backend(payload)
+    scanner = SemanticScanner(backend=backend)
 
     definitions = {
         ORDERS_ENTITY.id: "Orders with gross revenue.",
@@ -226,8 +214,8 @@ async def test_propose_semantic_edges_drops_hallucinated_ids():
         "type": "derived_from",
         "description": "Hallucinated.",
     }]}
-    client = _make_client(payload)
-    scanner = SemanticScanner(client=client)
+    backend = _make_backend(payload)
+    scanner = SemanticScanner(backend=backend)
 
     edges, truncated = await scanner.propose_semantic_edges(
         [ORDERS_ENTITY, CUSTOMERS_ENTITY],
@@ -260,16 +248,12 @@ async def test_propose_semantic_edges_drops_edges_not_from_source_batch():
         },
     ]}
     # Simulate: source batch = [CUSTOMERS_ENTITY] only
-    block = MagicMock()
-    block.text = json.dumps(payload)
-    response = MagicMock()
-    response.content = [block]
-    response.stop_reason = "end_turn"
-    client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.create = AsyncMock(return_value=response)
+    backend = MagicMock()
+    backend.complete = AsyncMock(return_value=LLMResponse(
+        text=json.dumps(payload), truncated=False,
+    ))
 
-    scanner = SemanticScanner(client=client)
+    scanner = SemanticScanner(backend=backend)
     known_ids = {ORDERS_ENTITY.id, CUSTOMERS_ENTITY.id}
     context_block = f"- {ORDERS_ENTITY.id}: orders\n- {CUSTOMERS_ENTITY.id}: customers"
 
@@ -287,16 +271,13 @@ async def test_propose_semantic_edges_drops_edges_not_from_source_batch():
 
 async def test_propose_semantic_edges_recovers_from_max_tokens():
     """When a batch hits max_tokens, return empty for that batch and increment truncated count."""
-    block = MagicMock()
-    block.text = '{"edges": [{"from_entity_id": "model.demo_shop.customers", "to'  # truncated
-    response = MagicMock()
-    response.content = [block]
-    response.stop_reason = "max_tokens"
-    client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.create = AsyncMock(return_value=response)
+    backend = MagicMock()
+    backend.complete = AsyncMock(return_value=LLMResponse(
+        text='{"edges": [{"from_entity_id": "model.demo_shop.customers", "to',  # truncated
+        truncated=True,
+    ))
 
-    scanner = SemanticScanner(client=client)
+    scanner = SemanticScanner(backend=backend)
     edges, truncated = await scanner.propose_semantic_edges(
         [ORDERS_ENTITY, CUSTOMERS_ENTITY],
         {ORDERS_ENTITY.id: "def", CUSTOMERS_ENTITY.id: "def"},
@@ -309,14 +290,13 @@ async def test_propose_semantic_edges_recovers_from_max_tokens():
 # ── scan — auto mode ──────────────────────────────────────────────────────────
 
 async def test_scan_auto_upserts_entities_and_lineage():
-    client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.create = AsyncMock(side_effect=[
+    backend = _make_backend({})
+    backend.complete = AsyncMock(side_effect=[
         _make_llm_response({"definition": "Orders model."}),
         _make_llm_response({"definition": "Customers model."}),
         _make_llm_response({"edges": []}),
     ])
-    scanner = SemanticScanner(client=client)
+    scanner = SemanticScanner(backend=backend)
     graph = _make_graph()
     connector = _make_connector()
     console = _make_console(inputs=["y", "n"])  # confirm defs, skip edges
@@ -329,14 +309,13 @@ async def test_scan_auto_upserts_entities_and_lineage():
 
 
 async def test_scan_auto_writes_confirmed_definitions():
-    client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.create = AsyncMock(side_effect=[
+    backend = _make_backend({})
+    backend.complete = AsyncMock(side_effect=[
         _make_llm_response({"definition": "Orders model."}),
         _make_llm_response({"definition": "Customers model."}),
         _make_llm_response({"edges": []}),
     ])
-    scanner = SemanticScanner(client=client)
+    scanner = SemanticScanner(backend=backend)
     graph = _make_graph()
     connector = _make_connector()
     console = _make_console(inputs=["y", "n"])
@@ -348,13 +327,12 @@ async def test_scan_auto_writes_confirmed_definitions():
 
 
 async def test_scan_auto_writes_no_definitions_when_cancelled():
-    client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.create = AsyncMock(side_effect=[
+    backend = _make_backend({})
+    backend.complete = AsyncMock(side_effect=[
         _make_llm_response({"definition": "Orders model."}),
         _make_llm_response({"definition": "Customers model."}),
     ])
-    scanner = SemanticScanner(client=client)
+    scanner = SemanticScanner(backend=backend)
     graph = _make_graph()
     connector = _make_connector()
     console = _make_console(inputs=["n"])  # cancel
@@ -372,14 +350,13 @@ async def test_scan_auto_increments_version_for_existing_definition():
         version=2,
         created_by="user",
     )
-    client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.create = AsyncMock(side_effect=[
+    backend = _make_backend({})
+    backend.complete = AsyncMock(side_effect=[
         _make_llm_response({"definition": "Updated orders model."}),
         _make_llm_response({"definition": "Customers model."}),
         _make_llm_response({"edges": []}),
     ])
-    scanner = SemanticScanner(client=client)
+    scanner = SemanticScanner(backend=backend)
     graph = _make_graph()
     graph.get_latest_definition = AsyncMock(side_effect=lambda eid: existing if eid == ORDERS_ENTITY.id else None)
     connector = _make_connector()
@@ -403,14 +380,13 @@ async def test_scan_writes_confirmed_semantic_edges():
         "type": "derived_from",
         "description": "CLV from orders.",
     }]}
-    client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.create = AsyncMock(side_effect=[
+    backend = _make_backend({})
+    backend.complete = AsyncMock(side_effect=[
         _make_llm_response({"definition": "Orders."}),
         _make_llm_response({"definition": "Customers."}),
         _make_llm_response(edge_payload),
     ])
-    scanner = SemanticScanner(client=client)
+    scanner = SemanticScanner(backend=backend)
     graph = _make_graph()
     connector = _make_connector()
     console = _make_console(inputs=["y", "y"])  # confirm defs, confirm edges
@@ -453,10 +429,9 @@ async def test_auto_definitions_respect_concurrency_cap(monkeypatch):
         in_flight -= 1
         return _make_llm_response({"definition": "A definition."})
 
-    client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.create = AsyncMock(side_effect=_create)
-    scanner = SemanticScanner(client=client)
+    backend = _make_backend({})
+    backend.complete = AsyncMock(side_effect=_create)
+    scanner = SemanticScanner(backend=backend)
 
     entities = _make_entities(8)
     sql_map = {e.id: f"select 1 as c{i}" for i, e in enumerate(entities)}
@@ -486,10 +461,9 @@ async def test_auto_definitions_fail_fast_with_original_error(monkeypatch):
         await asyncio.sleep(0.05)
         return _make_llm_response({"definition": "A definition."})
 
-    client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.create = AsyncMock(side_effect=_create)
-    scanner = SemanticScanner(client=client)
+    backend = _make_backend({})
+    backend.complete = AsyncMock(side_effect=_create)
+    scanner = SemanticScanner(backend=backend)
 
     entities = _make_entities(6)
     sql_map = {e.id: "select 1" for e in entities}
@@ -524,31 +498,30 @@ async def test_propose_semantic_edges_merges_parallel_batches_in_batch_order(mon
     }
 
     async def _create(**kwargs):
-        content = kwargs["messages"][0]["content"]
+        content = kwargs["user_message"]
         # The FROM line names the source entities of this batch
         if f"FROM these source entities only: {entities[0].id}" in content:
             await asyncio.sleep(0.03)  # batch 1 finishes LAST
             return _make_llm_response({"edges": [batch1_edge]})
         return _make_llm_response({"edges": [batch2_edge]})
 
-    client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.create = AsyncMock(side_effect=_create)
-    scanner = SemanticScanner(client=client)
+    backend = _make_backend({})
+    backend.complete = AsyncMock(side_effect=_create)
+    scanner = SemanticScanner(backend=backend)
 
     edges, truncated = await scanner.propose_semantic_edges(entities, definitions)
 
     assert truncated == 0
     assert [e.description for e in edges] == ["from batch 1", "from batch 2"]
-    assert client.messages.create.await_count == 2
+    assert backend.complete.await_count == 2
 
 
 # ── explicit confirmation — blank input never accepts ─────────────────────────
 
 async def test_auto_definitions_blank_input_cancels():
     payload = {"definition": "Orders model."}
-    client = _make_client(payload)
-    scanner = SemanticScanner(client=client)
+    backend = _make_backend(payload)
+    scanner = SemanticScanner(backend=backend)
     console = _make_console(inputs=[""])  # blank at "Confirm all definitions?"
 
     confirmed = await scanner._auto_definitions(
@@ -560,8 +533,8 @@ async def test_auto_definitions_blank_input_cancels():
 
 async def test_interactive_definitions_blank_input_skips():
     payload = {"definition": "Orders model."}
-    client = _make_client(payload)
-    scanner = SemanticScanner(client=client)
+    backend = _make_backend(payload)
+    scanner = SemanticScanner(backend=backend)
     console = _make_console(inputs=[""])  # blank at per-model "Confirm?"
 
     confirmed = await scanner._interactive_definitions(
@@ -572,7 +545,7 @@ async def test_interactive_definitions_blank_input_skips():
 
 
 async def test_confirm_edges_blank_input_cancels():
-    scanner = SemanticScanner(client=_make_client({}))
+    scanner = SemanticScanner(backend=_make_backend({}))
     edge = SemanticEdge(
         from_entity_id=CUSTOMERS_ENTITY.id,
         to_entity_id=ORDERS_ENTITY.id,

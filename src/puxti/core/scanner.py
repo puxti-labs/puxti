@@ -8,23 +8,16 @@ Nothing is written to the Knowledge Graph without explicit user confirmation.
 """
 
 import asyncio
-import hashlib
 import json
 import logging
 from collections.abc import Awaitable, Callable
 
-import anthropic
 from rich.console import Console
 from rich.table import Table
 
 from puxti.connectors.dbt import DbtConnector
 from puxti.core.graph import KnowledgeGraph
-from puxti.llm import (
-    INPUT_COST_PER_MTOK,
-    LLM_MODEL,
-    OUTPUT_COST_PER_MTOK,
-    strip_markdown_fences,
-)
+from puxti.llm import LLMBackend, get_backend, strip_markdown_fences
 from puxti.models import Definition, Edge, EdgeType, Entity, SemanticEdge
 from puxti.settings import settings
 
@@ -118,10 +111,8 @@ class SemanticScanner:
     and proposes initial semantic edges. Nothing is written without confirmation.
     """
 
-    def __init__(self, client: anthropic.AsyncAnthropic | None = None) -> None:
-        self._client = client or anthropic.AsyncAnthropic(
-            api_key=settings.anthropic_api_key
-        )
+    def __init__(self, backend: LLMBackend | None = None) -> None:
+        self._backend = backend or get_backend()
 
     async def infer_definition(
         self,
@@ -145,19 +136,12 @@ class SemanticScanner:
             f"{yml_context}\n\n"
             f"SQL:\n{sql_fragment}"
         )
-        _logger.debug(
-            "LLM call | model=%s prompt_chars=%d hash=%s",
-            LLM_MODEL,
-            len(user_message),
-            hashlib.sha256(user_message.encode()).hexdigest()[:12],
-        )
-        response = await self._client.messages.create(
-            model=LLM_MODEL,
-            max_tokens=256,
+        response = await self._backend.complete(
             system=_DEFINITION_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_message}],
+            user_message=user_message,
+            max_tokens=256,
         )
-        raw = strip_markdown_fences(response.content[0].text)
+        raw = strip_markdown_fences(response.text)
         return json.loads(raw)["definition"]
 
     async def estimate_scan_cost(
@@ -193,12 +177,10 @@ class SemanticScanner:
 
         def _count_job(user_message: str) -> Callable[[], Awaitable[None]]:
             async def _run() -> None:
-                response = await self._client.messages.count_tokens(
-                    model=LLM_MODEL,
-                    system=_DEFINITION_SYSTEM_PROMPT,
-                    messages=[{"role": "user", "content": user_message}],
+                count = await self._backend.count_input_tokens(
+                    user_message, system=_DEFINITION_SYSTEM_PROMPT
                 )
-                token_counts.append(response.input_tokens)
+                token_counts.append(count.tokens)
             return _run
 
         count_jobs: list[Callable[[], Awaitable[None]]] = []
@@ -240,24 +222,22 @@ class SemanticScanner:
             f"Propose semantic edges FROM these source entities only: {source_ids}\n"
             f"You may reference any entity in the full list as a target."
         )
-        edges_response = await self._client.messages.count_tokens(
-            model=LLM_MODEL,
-            system=_EDGES_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": edges_message}],
+        edges_count = await self._backend.count_input_tokens(
+            edges_message, system=_EDGES_SYSTEM_PROMPT
         )
         # Ceiling division — a partial final batch is still one LLM call
         n_batches = max(
             1,
             -(-len(model_entities) // self._EDGES_SOURCE_BATCH),
         )
-        edges_input_tokens = edges_response.input_tokens * n_batches
+        edges_input_tokens = edges_count.tokens * n_batches
 
         total_input = def_input_tokens + edges_input_tokens
         def_output = len(model_entities) * _DEF_EST_OUTPUT_TOKENS
         total_output = def_output + _EDGES_EST_OUTPUT_TOKENS
         total_cost = (
-            (total_input / 1_000_000) * INPUT_COST_PER_MTOK
-            + (total_output / 1_000_000) * OUTPUT_COST_PER_MTOK
+            (total_input / 1_000_000) * self._backend.input_cost_per_mtok
+            + (total_output / 1_000_000) * self._backend.output_cost_per_mtok
         )
 
         return {
@@ -378,21 +358,20 @@ class SemanticScanner:
             f"Propose semantic edges FROM these source entities only: {source_ids}\n"
             f"You may reference any entity in the full list as a target."
         )
-        response = await self._client.messages.create(
-            model=LLM_MODEL,
-            max_tokens=self._EDGES_MAX_TOKENS,
+        response = await self._backend.complete(
             system=_EDGES_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_message}],
+            user_message=user_message,
+            max_tokens=self._EDGES_MAX_TOKENS,
         )
-        raw = strip_markdown_fences(response.content[0].text)
+        raw = strip_markdown_fences(response.text)
 
         try:
             edges_data = json.loads(raw).get("edges", [])
         except json.JSONDecodeError as exc:
-            if response.stop_reason == "max_tokens":
+            if response.truncated:
                 return [], True
             raise RuntimeError(
-                f"Failed to parse semantic edges JSON (stop_reason={response.stop_reason!r}). "
+                f"Failed to parse semantic edges JSON (truncated={response.truncated}). "
                 f"Raw response preview: {raw[:200]!r}"
             ) from exc
 
