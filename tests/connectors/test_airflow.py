@@ -86,13 +86,13 @@ def dags_dir(tmp_path: Path) -> Path:
 def test_health_check_existing_dir(dags_dir: Path) -> None:
     connector = AirflowConnector(config={"dags_dir": str(dags_dir)})
     import asyncio
-    assert asyncio.get_event_loop().run_until_complete(connector.health_check()) is True
+    assert asyncio.run(connector.health_check()) is True
 
 
 def test_health_check_missing_dir(tmp_path: Path) -> None:
     connector = AirflowConnector(config={"dags_dir": str(tmp_path / "nonexistent")})
     import asyncio
-    assert asyncio.get_event_loop().run_until_complete(connector.health_check()) is False
+    assert asyncio.run(connector.health_check()) is False
 
 
 # ── extract_entities ──────────────────────────────────────────────────────────

@@ -13,7 +13,9 @@ operational verbs (`config`, `health`).
 
 ## Repo layout
 
-- `src/puxti/cli.py` — entry point. All commands defined here using Typer.
+- `src/puxti/cli/` — entry point. One Typer command per module (`capture.py`,
+  `scan.py`, …); `_app.py` holds the Typer apps, `_shared.py` the console/runner
+  helpers, and `__init__.py` assembles `app` (import order = help listing order).
 - `src/puxti/core/` — engine. `scanner.py` populates the graph from a dbt
   manifest; `capture.py` and `redefine.py` propagate changes; `corrector.py`
   fixes inferred definitions; `graph.py` is the high-level graph interface.
@@ -35,7 +37,7 @@ operational verbs (`config`, `health`).
 - Format with `uv run ruff format src/`.
 - Pydantic for data models. No raw dicts crossing module boundaries.
 - Use the structured logger, not `print`. CLI output formatting is the
-  exception — Typer/Rich output is fine in `cli.py`.
+  exception — Typer/Rich output is fine in `puxti/cli/`.
 - Read environment via `Settings` in `settings.py`. Never read `os.environ`
   directly outside that file.
 - Never commit `.env`, credentials, or `__pycache__/` directories.

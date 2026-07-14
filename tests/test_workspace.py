@@ -218,12 +218,12 @@ def test_cli_capture_uses_workspace_repo(tmp_path):
 
     runner = CliRunner()
     with (
-        patch("puxti.cli.settings") as mock_settings,
-        patch("puxti.cli.KnowledgeGraph", return_value=mock_graph),
-        patch("puxti.cli.SemanticCapture", return_value=mock_capture),
-        patch("puxti.cli.PropagationEngine", return_value=mock_engine),
-        patch("puxti.cli.GitHubConnector", return_value=mock_gh),
-        patch("puxti.cli.load_workspace", return_value=load_workspace(start_dir=tmp_path)),
+        patch("puxti.cli.capture.settings") as mock_settings,
+        patch("puxti.cli.capture.KnowledgeGraph", return_value=mock_graph),
+        patch("puxti.cli.capture.SemanticCapture", return_value=mock_capture),
+        patch("puxti.cli.capture.PropagationEngine", return_value=mock_engine),
+        patch("puxti.cli.capture.GitHubConnector", return_value=mock_gh),
+        patch("puxti.cli._shared.load_workspace", return_value=load_workspace(start_dir=tmp_path)),
     ):
         mock_settings.dbt_project_dir = None
         mock_settings.github_token = "ghp_test"
@@ -255,8 +255,8 @@ def test_cli_capture_flag_overrides_workspace(tmp_path):
     runner = CliRunner()
 
     with (
-        patch("puxti.cli.settings") as mock_settings,
-        patch("puxti.cli.load_workspace", return_value=ws),
+        patch("puxti.cli.capture.settings") as mock_settings,
+        patch("puxti.cli._shared.load_workspace", return_value=ws),
     ):
         mock_settings.dbt_project_dir = "/some/dbt"
         mock_settings.github_token = "ghp_test"
@@ -267,7 +267,7 @@ def test_cli_capture_flag_overrides_workspace(tmp_path):
         async def fake_run_capture(**kwargs):
             received["repo"] = kwargs["repo"]
 
-        with patch("puxti.cli._run_capture", side_effect=fake_run_capture):
+        with patch("puxti.cli.capture._run_capture", side_effect=fake_run_capture):
             runner.invoke(app, [
                 "capture",
                 "--entity", "model.shop.orders.date",
@@ -287,7 +287,7 @@ def test_cli_capture_exits_when_no_repo_and_no_workspace():
 
     runner = CliRunner()
     with (
-        patch("puxti.cli.load_workspace", return_value=WorkspaceConfig()),
+        patch("puxti.cli._shared.load_workspace", return_value=WorkspaceConfig()),
     ):
         result = runner.invoke(app, [
             "capture",
@@ -326,12 +326,14 @@ def test_cli_health_checks_workspace_repos():
 
     runner = CliRunner()
     with (
-        patch("puxti.cli.settings") as mock_settings,
-        patch("puxti.cli.KnowledgeGraph", return_value=mock_graph),
-        patch("puxti.cli.DbtConnector"),
-        patch("puxti.cli.anthropic.AsyncAnthropic", return_value=mock_anthropic_client),
-        patch("puxti.cli.GitHubConnector", return_value=mock_gh),
-        patch("puxti.cli.load_workspace", return_value=ws),
+        patch("puxti.cli.health.settings") as mock_settings,
+        # health never touches the graph class — patch it in its home module
+        # so this stays a harmless no-op, as it always was.
+        patch("puxti.core.graph.KnowledgeGraph", return_value=mock_graph),
+        patch("puxti.cli.health.DbtConnector"),
+        patch("puxti.cli.health.anthropic.AsyncAnthropic", return_value=mock_anthropic_client),
+        patch("puxti.cli.health.GitHubConnector", return_value=mock_gh),
+        patch("puxti.cli._shared.load_workspace", return_value=ws),
     ):
         mock_settings.dbt_project_dir = None
         mock_settings.anthropic_api_key = "sk-ant-test"

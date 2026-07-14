@@ -393,7 +393,7 @@ uv sync --extra dev    # install runtime + dev dependencies (pytest, ruff, twine
 
 ```bash
 uv run pytest                       # run all tests
-uv run pytest tests/test_cli.py     # run CLI command tests only
+uv run pytest tests/cli            # run CLI command tests only
 uv run pytest -v                    # verbose output
 ```
 
@@ -410,7 +410,10 @@ uv run ruff format src/    # format
 
 ```
 src/puxti/
-├── cli.py                  # entry point — all commands
+├── cli/                    # entry point — one module per command
+│   ├── _app.py             # Typer apps + root callback
+│   ├── _shared.py          # consoles, async runner, workspace loading
+│   └── capture.py, scan.py, …   # one command each
 ├── models.py               # all data types (Pydantic)
 ├── settings.py             # config (reads from .env)
 ├── workspace.py            # .puxti.yml discovery and resolution
