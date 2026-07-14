@@ -18,7 +18,7 @@ test: ## Run all tests
 
 .PHONY: test-cli
 test-cli: ## Run CLI tests only
-	uv run pytest tests/test_cli.py -v
+	uv run pytest tests/cli -v
 
 # ── Code quality ──────────────────────────────────────────────────────────────
 

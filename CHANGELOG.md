@@ -4,6 +4,8 @@
 
 ### Changed
 
+- **`cli.py` split into a `puxti/cli/` package** — one module per command, `_app.py` for the Typer apps, `_shared.py` for the console/runner helpers. No behavior change: the `puxti.cli:app` entry point and all `--help` output are byte-identical. `tests/test_cli.py` split into `tests/cli/` to mirror the layout.
+
 - **`puxti scan` runs LLM calls in parallel.** Definition generation (auto mode), semantic-edge batches, and `--dry-run` token counting now run with bounded concurrency (default 4, tunable via the `LLM_CONCURRENCY` env var). Interactive mode stays sequential — each call is gated on user confirmation. The first API error cancels in-flight calls and propagates; no silent partial results.
 - Scan progress is now a live counter ("Generating definitions... 12/48") instead of a static spinner.
 
