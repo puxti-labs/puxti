@@ -293,3 +293,74 @@ def test_health_labels_non_anthropic_provider():
 
     # plain() — Rich bolds parentheses when FORCE_COLOR is present (CI)
     assert "LLM API key (mistral)" in plain(result.output)
+
+
+def test_health_checks_prisma_and_sql_views_when_configured(tmp_path):
+    """Configured prisma/sql_views connectors get their own health lines."""
+    from puxti.workspace import ConnectorConfig, WorkspaceConfig
+
+    schema = tmp_path / "prisma" / "schema.prisma"
+    schema.parent.mkdir()
+    schema.write_text("model User { id Int @id }\n")
+    views = tmp_path / "db" / "views"
+    views.mkdir(parents=True)
+
+    ws = WorkspaceConfig(
+        prisma=ConnectorConfig(project_dir=str(tmp_path)),
+        sql_views=ConnectorConfig(project_dir=str(tmp_path), extras={"views_dir": "db/views"}),
+    )
+
+    mock_backend = _make_ok_backend()
+
+    with (
+        patch("puxti.cli.health.settings") as mock_settings,
+        patch("puxti.cli.health.get_backend", return_value=mock_backend),
+        patch("puxti.cli._shared.load_workspace", return_value=ws),
+    ):
+        mock_settings.dbt_project_dir = None
+        mock_settings.github_token = None
+
+        result = runner.invoke(app, ["health"])
+
+    assert "Prisma schema" in plain(result.output)
+    assert "SQL views dir" in plain(result.output)
+
+
+def test_health_fails_when_prisma_schema_missing(tmp_path):
+    from puxti.workspace import ConnectorConfig, WorkspaceConfig
+
+    ws = WorkspaceConfig(prisma=ConnectorConfig(project_dir=str(tmp_path)))
+    mock_backend = _make_ok_backend()
+
+    with (
+        patch("puxti.cli.health.settings") as mock_settings,
+        patch("puxti.cli.health.get_backend", return_value=mock_backend),
+        patch("puxti.cli._shared.load_workspace", return_value=ws),
+    ):
+        mock_settings.dbt_project_dir = None
+        mock_settings.github_token = None
+
+        result = runner.invoke(app, ["health"])
+
+    assert result.exit_code == 1
+    assert "schema.prisma not found" in plain(result.output)
+
+
+def test_health_silent_for_unconfigured_prisma_and_sql_views():
+    """No prisma/sql_views section in .puxti.yml → no lines about them."""
+    from puxti.workspace import WorkspaceConfig
+
+    mock_backend = _make_ok_backend()
+
+    with (
+        patch("puxti.cli.health.settings") as mock_settings,
+        patch("puxti.cli.health.get_backend", return_value=mock_backend),
+        patch("puxti.cli._shared.load_workspace", return_value=WorkspaceConfig()),
+    ):
+        mock_settings.dbt_project_dir = None
+        mock_settings.github_token = None
+
+        result = runner.invoke(app, ["health"])
+
+    assert "Prisma" not in result.output
+    assert "SQL views" not in result.output

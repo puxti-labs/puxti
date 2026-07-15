@@ -17,6 +17,8 @@ class AirflowConnector(BaseConnector):
         dags_dir  - path to the directory containing DAG Python files
     """
 
+    name = "airflow"
+
     def __init__(self, config: dict) -> None:
         super().__init__(config)
         self.dags_dir = Path(config["dags_dir"])

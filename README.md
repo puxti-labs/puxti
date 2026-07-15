@@ -112,7 +112,7 @@ Notes:
 
 ## Workspace config (`.puxti.yml`)
 
-If your dbt and Airflow projects live in separate repos, add a `.puxti.yml` at the root of your workspace — the directory that contains both repo clones. Puxti discovers it by walking up from your current directory (git-style).
+If your projects live in separate repos, add a `.puxti.yml` at the root of your workspace — the directory that contains the repo clones. Puxti discovers it by walking up from your current directory (git-style).
 
 ```yaml
 version: 1
@@ -128,12 +128,36 @@ connectors:
     repo: your-org/your-airflow-repo
     dags_dir: dags/
     base_branch: main
+
+  # Application schema (Prisma ORM) — tables and fields become entities,
+  # relations become lineage. schema_path defaults to prisma/schema.prisma.
+  prisma:
+    project_dir: ./app
+    repo: your-org/your-app-repo
+    schema_path: prisma/schema.prisma
+
+  # Plain CREATE VIEW .sql files — views, their columns, and the tables they
+  # read from become entities and lineage. dialect is any sqlglot dialect name.
+  sql_views:
+    project_dir: ./app
+    repo: your-org/your-app-repo
+    views_dir: db/views
+    dialect: postgres
+    default_schema: public
 ```
 
 With this in place:
 - `--repo` is no longer required for `capture`, `redefine`, or `health`
 - `--dbt-project-dir` resolves from `connectors.dbt.project_dir` automatically
 - `puxti health` checks GitHub write access for each connector repo
+- `puxti scan` scans every configured producer (dbt, prisma, sql_views) and
+  links references across them — a view reading a Prisma-managed table gets a
+  real lineage edge
+- `puxti capture` propagates column renames through every configured connector
+  and opens one PR per repo
+
+Prisma rename diffs patch `schema.prisma` only — applying them still requires
+`prisma migrate dev` and `prisma generate`, and every generated PR says so.
 
 Run `puxti config` from anywhere inside the workspace to verify it was found:
 
@@ -460,12 +484,16 @@ src/puxti/
 │   ├── capture.py          # semantic capture — LLM enrichment + Knowledge Graph write
 │   ├── corrector.py        # puxti correct — definition correction without propagation
 │   ├── graph.py            # Knowledge Graph — SQLite backend (~/.puxti/graph.db)
-│   ├── scanner.py          # puxti scan — bootstraps KG from dbt manifest
+│   ├── scanner.py          # puxti scan — bootstraps KG from producer connectors
+│   ├── resolution.py       # cross-connector table-reference resolution
 │   └── redefine.py         # puxti redefine — semantic change propagation
 ├── connectors/
 │   ├── base.py             # connector interface
+│   ├── registry.py         # builds configured producers from .puxti.yml
 │   ├── airflow.py          # Airflow connector — DAG parsing + task diff generation
 │   ├── dbt.py              # dbt connector — entity extraction + diffs
+│   ├── prisma.py           # Prisma connector — schema.prisma models, relations, rename diffs
+│   ├── sql_views.py        # SQL views connector — CREATE VIEW files via sqlglot
 │   └── github.py           # GitHub connector — PR creation
 └── propagation/
     └── engine.py           # propagation engine — orchestrates connectors

@@ -7,9 +7,9 @@ from rich.panel import Panel
 
 from puxti.cli._app import app
 from puxti.cli._shared import _load_workspace, _run, console, err_console
-from puxti.connectors.airflow import AirflowConnector
 from puxti.connectors.dbt import DbtConnector
 from puxti.connectors.github import GitHubConnector
+from puxti.connectors.registry import build_configured_connectors
 from puxti.core.capture import SemanticCapture, _build_user_message
 from puxti.core.graph import KnowledgeGraph
 from puxti.llm import COST_UNKNOWN_HINT
@@ -212,27 +212,29 @@ async def _run_capture(
         else:
             console.print("[yellow]Skipping Knowledge Graph update.[/yellow]")
 
-        # Step 2 — propagation
+        # Step 2 — propagation. dbt is built here (its project_dir resolution
+        # is flag/env-driven); every other configured producer comes from the
+        # registry.
         with console.status("[bold]Generating diffs...[/bold]"):
-            dbt = DbtConnector(config={"project_dir": project_dir})
-            connectors: list = [dbt]
             ws_for_propagation = _load_workspace()
-            if ws_for_propagation.airflow and ws_for_propagation.airflow.project_dir:
-                dags_subdir = ws_for_propagation.airflow.extras.get("dags_dir", "dags")
-                from pathlib import Path as _Path
-                dags_dir_path = str(_Path(ws_for_propagation.airflow.project_dir) / dags_subdir)
-                connectors.append(AirflowConnector(config={"dags_dir": dags_dir_path}))
+            dbt = DbtConnector(config={"project_dir": project_dir})
+            connectors = [dbt] + [
+                c for c in build_configured_connectors(ws_for_propagation)
+                if c.name != "dbt"
+            ]
             results = await PropagationEngine(connectors=connectors).propagate(semantic_event)
 
         if not results:
             affected = semantic_event.affected_entity_ids or []
-            # Detect cross-project case: affected entities belong to a different
-            # dbt project than the one currently configured.
+            # Detect cross-project case: affected dbt entities belong to a
+            # different dbt project than the one currently configured. Only
+            # dbt-shaped IDs carry a project segment in position 1.
             current_project = dbt.get_project_name()
             foreign_projects = {
                 eid.split(".")[1]
                 for eid in affected
-                if len(eid.split(".")) >= 2 and eid.split(".")[1] != current_project
+                if eid.split(".")[0] in ("model", "source")
+                and len(eid.split(".")) >= 2 and eid.split(".")[1] != current_project
             }
             if foreign_projects:
                 projects_hint = ", ".join(f"`{p}`" for p in sorted(foreign_projects))
@@ -248,33 +250,30 @@ async def _run_capture(
                 )
             return
 
-        # Apply repo subdir prefix when the dbt project is not at the repo root.
-        # dbt diffs only — repo_subdir describes the dbt repo's layout.
-        if repo_subdir:
-            subdir = repo_subdir.strip("/")
-            for result in results:
-                if result.connector != "dbt":
-                    continue
-                for diff in result.diffs:
-                    diff.file_path = f"{subdir}/{diff.file_path}"
+        # Rebase diff paths onto each connector's repo layout. Diff paths come
+        # back relative to the connector's own project root; the PR needs them
+        # relative to the repo root.
+        def _repo_prefix(connector_name: str) -> str:
+            cfg = ws_for_propagation.get(connector_name)
+            if connector_name == "dbt":
+                # resolved at command level: flag beats .puxti.yml
+                parts = [repo_subdir]
+            elif connector_name == "airflow":
+                # airflow diff paths are relative to the dags dir
+                parts = [
+                    cfg.repo_subdir if cfg else None,
+                    cfg.extras.get("dags_dir", "dags") if cfg else "dags",
+                ]
+            else:
+                parts = [cfg.repo_subdir if cfg else None]
+            return "/".join(p.strip("/") for p in parts if p and p.strip("/"))
 
-        # Airflow diff paths are relative to the dags dir — rebase them onto the
-        # airflow repo root so the PR updates dags/<file> instead of creating a
-        # new file at the repo root.
-        if ws_for_propagation.airflow and ws_for_propagation.airflow.project_dir:
-            dags_subdir = ws_for_propagation.airflow.extras.get("dags_dir", "dags")
-            prefix_parts = [
-                part.strip("/")
-                for part in (ws_for_propagation.airflow.repo_subdir, dags_subdir)
-                if part and part.strip("/")
-            ]
-            airflow_prefix = "/".join(prefix_parts)
-            if airflow_prefix:
-                for result in results:
-                    if result.connector != "airflow":
-                        continue
-                    for diff in result.diffs:
-                        diff.file_path = f"{airflow_prefix}/{diff.file_path}"
+        for result in results:
+            prefix = _repo_prefix(result.connector)
+            if not prefix:
+                continue
+            for diff in result.diffs:
+                diff.file_path = f"{prefix}/{diff.file_path}"
 
         total_files = sum(len(r.diffs) for r in results)
         console.print(
@@ -290,7 +289,8 @@ async def _run_capture(
                 f"affected but could not be safely propagated.[/yellow]\n"
                 f"  Puxti could not confirm the `{semantic_event.change.get('before', {}).get('name', '')}` "
                 f"column in these models traces back to the renamed source — "
-                f"this can happen with non-standard dbt layering or shared column names.\n"
+                f"this can happen with non-standard dbt layering, shared column names, "
+                f"or table names that differ from their entity name (e.g. Prisma @@map).\n"
                 f"  Review manually:\n{unverified_list}"
             )
 
@@ -300,9 +300,12 @@ async def _run_capture(
 
         with console.status("[bold]Opening GitHub PR...[/bold]"):
             for result in results:
-                if result.connector == "airflow" and ws_for_propagation.airflow and ws_for_propagation.airflow.repo:
-                    pr_repo = ws_for_propagation.airflow.repo
-                    pr_base_branch = ws_for_propagation.airflow.base_branch
+                # Each connector PRs to its own configured repo; anything
+                # without one falls back to the dbt repo from --repo/.puxti.yml.
+                result_cfg = ws_for_propagation.get(result.connector)
+                if result.connector != "dbt" and result_cfg and result_cfg.repo:
+                    pr_repo = result_cfg.repo
+                    pr_base_branch = result_cfg.base_branch
                 else:
                     pr_repo = repo
                     pr_base_branch = base_branch

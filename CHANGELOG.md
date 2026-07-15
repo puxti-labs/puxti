@@ -2,13 +2,18 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Prisma connector** (`connectors.prisma` in `.puxti.yml`). Parses `schema.prisma` directly — no Node toolchain — turning models into table entities (`table.prisma.<Model>`), scalar/enum fields into columns, `@relation` foreign keys into lineage, and `///` doc comments into starter descriptions. `puxti capture` patches `schema.prisma` for column renames: `@map`-ed fields get the map string updated, unmapped fields get the identifier renamed including `references: [...]` lists in related models. Every Prisma diff description states that a `prisma migrate dev` + `prisma generate` is still required — the file edit alone does not change the database.
+- **SQL views connector** (`connectors.sql_views` in `.puxti.yml`). Reads a directory of `CREATE VIEW` .sql files via sqlglot (configurable `dialect`), turning views into entities (`view.<schema>.<name>`), projections into columns, and FROM/JOIN references into lineage. `puxti capture` renames columns in affected views under the same single-hop safety rule the dbt connector uses; views it cannot verify are flagged for manual review instead of blind-patched.
+- **Cross-connector reference resolution** (`core/resolution.py`). Producer connectors stay isolated; a view referencing `public.users` emits a `sqlref.` placeholder edge, and `puxti scan` resolves it against every configured producer's entities by database-level name (Prisma `@@map` names, dbt model/source names, view names). Ambiguous names are never resolved; unmatched references are kept dangling and reported.
+- **Connector registry** (`connectors/registry.py`). The CLI builds producer connectors from `.puxti.yml` through one seam; `scan` now scans every configured producer, `health` checks Prisma/SQL-views configs, `capture` propagates through all producers and opens one PR per connector repo (`repo`/`repo_subdir`/`base_branch` per connector). New dependency: `sqlglot`.
+- `CONTRIBUTING.md` — dev setup, test/lint commands, and PR expectations.
+
 ### Changed
 
 - Engines (scanner, redefine) now depend on the `BaseConnector` interface instead of `DbtConnector` concretely; file-location logic moved into the connector (`find_model_path`), removing the engines' access to private manifest internals. No behavior change — groundwork for non-dbt producer connectors. The entity ID grammar is now documented as puxti's own, connector-neutral scheme.
-
-### Added
-
-- `CONTRIBUTING.md` — dev setup, test/lint commands, and PR expectations.
+- The scanner decides which entities get LLM definitions by "connector exposes source text for it" (`get_model_sql_map`) instead of the hardcoded dbt `model` type — behavior-identical for dbt, and what lets Prisma models and SQL views get definitions.
 
 ---
 

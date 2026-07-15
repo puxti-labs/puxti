@@ -37,11 +37,14 @@ def test_scan_happy_path_prints_summary():
         semantic_edges_written=3,
     ))
 
+    mock_dbt = MagicMock()
+    mock_dbt.name = "dbt"
+
     with (
         patch("puxti.cli.scan.settings") as mock_settings,
         patch("puxti.cli.scan.KnowledgeGraph", return_value=mock_graph),
         patch("puxti.cli.scan.SemanticScanner", return_value=mock_scanner),
-        patch("puxti.cli.scan.DbtConnector"),
+        patch("puxti.cli.scan.build_configured_connectors", return_value=[mock_dbt]),
     ):
         mock_settings.dbt_project_dir = "/some/dbt"
 
@@ -58,11 +61,14 @@ def test_scan_llm_config_error_is_actionable_not_a_bug_report():
     not the 'Unexpected error' bug-report boilerplate."""
     from puxti.llm import LLMConfigError
 
+    mock_dbt = MagicMock()
+    mock_dbt.name = "dbt"
+
     with (
         patch("puxti.cli.scan.settings") as mock_settings,
         patch("puxti.cli.scan.SemanticScanner",
               side_effect=LLMConfigError("LLM_API_KEY is required for provider 'mistral'.")),
-        patch("puxti.cli.scan.DbtConnector"),
+        patch("puxti.cli.scan.build_configured_connectors", return_value=[mock_dbt]),
     ):
         mock_settings.dbt_project_dir = "/some/dbt"
 

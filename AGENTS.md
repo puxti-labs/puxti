@@ -16,12 +16,17 @@ operational verbs (`config`, `health`).
 - `src/puxti/cli/` — entry point. One Typer command per module (`capture.py`,
   `scan.py`, …); `_app.py` holds the Typer apps, `_shared.py` the console/runner
   helpers, and `__init__.py` assembles `app` (import order = help listing order).
-- `src/puxti/core/` — engine. `scanner.py` populates the graph from a dbt
-  manifest; `capture.py` and `redefine.py` propagate changes; `corrector.py`
-  fixes inferred definitions; `graph.py` is the high-level graph interface.
+- `src/puxti/core/` — engine. `scanner.py` populates the graph from producer
+  connectors; `capture.py` and `redefine.py` propagate changes; `corrector.py`
+  fixes inferred definitions; `graph.py` is the high-level graph interface;
+  `resolution.py` resolves cross-connector table references at scan time.
 - `src/puxti/connectors/` — integrations. `dbt.py` parses manifests and
-  generates SQL diffs; `github.py` opens PRs; `airflow.py` parses DAGs.
-  Each connector implements the interface in `base.py`.
+  generates SQL diffs; `github.py` opens PRs; `airflow.py` parses DAGs;
+  `prisma.py` parses schema.prisma; `sql_views.py` parses CREATE VIEW files
+  (sqlglot). Each connector implements the interface in `base.py`;
+  `registry.py` builds whatever `.puxti.yml` configures — the CLI never
+  constructs a producer class directly (except capture's dbt, whose
+  project_dir is flag/env-driven).
 - `src/puxti/models.py` — pydantic entity, edge, and event types shared
   across modules.
 - `src/puxti/propagation/engine.py` — orchestrates connectors during
@@ -232,7 +237,8 @@ does not imply permission to commit it. Show diffs and wait for confirmation.
 
 - Hosted or multi-tenant functionality — that's not part of the OSS package
 - Web UI or frontend code — Puxti is a CLI tool
-- Real-time/streaming connectors — batch-oriented dbt and Airflow only
+- Real-time/streaming connectors — batch/file-based producers only
+  (dbt, Airflow, Prisma schemas, SQL view files)
 - Auth, license validation, or backend services — removed in v0.6.0
 
 ## Further reading

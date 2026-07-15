@@ -121,6 +121,73 @@ def test_version_field_is_optional(tmp_path):
     assert result.dbt.repo == "acme/data"
 
 
+def test_parses_prisma_connector(tmp_path):
+    (tmp_path / ".puxti.yml").write_text("""
+version: 1
+connectors:
+  prisma:
+    project_dir: ./app
+    repo: acme/app
+    schema_path: prisma/schema.prisma
+""")
+    result = load_workspace(start_dir=tmp_path)
+    assert result.prisma is not None
+    assert result.prisma.project_dir == "./app"
+    assert result.prisma.repo == "acme/app"
+    assert result.prisma.extras.get("schema_path") == "prisma/schema.prisma"
+
+
+def test_parses_sql_views_connector(tmp_path):
+    (tmp_path / ".puxti.yml").write_text("""
+version: 1
+connectors:
+  sql_views:
+    project_dir: ./app
+    views_dir: db/views
+    dialect: postgres
+""")
+    result = load_workspace(start_dir=tmp_path)
+    assert result.sql_views is not None
+    assert result.sql_views.extras.get("views_dir") == "db/views"
+    assert result.sql_views.extras.get("dialect") == "postgres"
+
+
+def test_configured_returns_known_connectors_in_order(tmp_path):
+    (tmp_path / ".puxti.yml").write_text("""
+version: 1
+connectors:
+  sql_views:
+    project_dir: ./app
+  dbt:
+    repo: acme/data
+  prisma:
+    project_dir: ./app
+""")
+    ws = load_workspace(start_dir=tmp_path)
+    assert [name for name, _ in ws.configured()] == ["dbt", "prisma", "sql_views"]
+
+
+def test_get_returns_connector_config_by_name():
+    from puxti.workspace import ConnectorConfig
+    ws = WorkspaceConfig(prisma=ConnectorConfig(project_dir="./app"))
+    assert ws.get("prisma").project_dir == "./app"
+    assert ws.get("dbt") is None
+    assert ws.get("path") is None       # non-connector attribute is not reachable
+    assert ws.get("looker") is None
+
+
+def test_connector_repos_includes_new_connectors():
+    from puxti.workspace import ConnectorConfig
+    ws = WorkspaceConfig(
+        dbt=ConnectorConfig(repo="acme/data"),
+        prisma=ConnectorConfig(repo="acme/app"),
+        sql_views=ConnectorConfig(repo="acme/views"),
+    )
+    repos = ws.connector_repos()
+    assert ("acme/app", "prisma") in repos
+    assert ("acme/views", "sql_views") in repos
+
+
 # ── load_workspace — error cases ──────────────────────────────────────────────
 
 def test_raises_on_invalid_yaml(tmp_path):

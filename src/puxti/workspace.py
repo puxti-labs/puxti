@@ -6,6 +6,12 @@ from typing import Any
 
 import yaml
 
+# Connector names recognised under `connectors:` in .puxti.yml, in the order
+# they are health-checked, scanned, and propagated. dbt stays first — it is
+# the default producer and other CLI defaults (e.g. capture's PR repo) key
+# off it.
+KNOWN_CONNECTORS = ("dbt", "airflow", "prisma", "sql_views")
+
 
 @dataclass
 class ConnectorConfig:
@@ -20,16 +26,28 @@ class ConnectorConfig:
 class WorkspaceConfig:
     dbt: ConnectorConfig | None = None
     airflow: ConnectorConfig | None = None
+    prisma: ConnectorConfig | None = None
+    sql_views: ConnectorConfig | None = None
     path: Path | None = None
+
+    def get(self, name: str) -> ConnectorConfig | None:
+        """Config for a connector by its .puxti.yml name, or None."""
+        if name not in KNOWN_CONNECTORS:
+            return None
+        return getattr(self, name)
+
+    def configured(self) -> list[tuple[str, ConnectorConfig]]:
+        """All configured connectors as (name, config), in KNOWN_CONNECTORS order."""
+        result = []
+        for name in KNOWN_CONNECTORS:
+            cfg = self.get(name)
+            if cfg is not None:
+                result.append((name, cfg))
+        return result
 
     def connector_repos(self) -> list[tuple[str, str]]:
         """Return [(repo, connector_type)] for all connectors with a repo configured."""
-        result = []
-        if self.dbt and self.dbt.repo:
-            result.append((self.dbt.repo, "dbt"))
-        if self.airflow and self.airflow.repo:
-            result.append((self.airflow.repo, "airflow"))
-        return result
+        return [(cfg.repo, name) for name, cfg in self.configured() if cfg.repo]
 
 
 def load_workspace(start_dir: Path | None = None) -> WorkspaceConfig:
@@ -56,10 +74,13 @@ def load_workspace(start_dir: Path | None = None) -> WorkspaceConfig:
         raise ValueError(f"Unsupported .puxti.yml version. Expected: 1, got: {version}")
 
     connectors = data.get("connectors") or {}
-    dbt = _parse_connector(connectors.get("dbt")) if "dbt" in connectors else None
-    airflow = _parse_connector(connectors.get("airflow")) if "airflow" in connectors else None
+    parsed = {
+        name: _parse_connector(connectors.get(name))
+        for name in KNOWN_CONNECTORS
+        if name in connectors
+    }
 
-    return WorkspaceConfig(dbt=dbt, airflow=airflow, path=config_path)
+    return WorkspaceConfig(path=config_path, **parsed)
 
 
 def _find_config_file(start: Path) -> Path | None:
