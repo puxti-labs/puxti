@@ -210,6 +210,10 @@ async def _run_correct(entity: str, project: str | None = None) -> None:
                         "  Add it to .puxti.yml or run the printed command with --repo."
                     )
                     raise typer.Exit(1)
+                # _run_redefine opens its own KnowledgeGraph connection while this
+                # command's read-only connection is still open. SQLite tolerates
+                # this (no write transaction is held here), but if correct ever
+                # writes before this handoff, close `graph` first.
                 await _run_redefine(
                     entity=entity,
                     description=corrected,
