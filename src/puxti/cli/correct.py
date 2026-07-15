@@ -6,7 +6,8 @@ import typer
 from rich.panel import Panel
 
 from puxti.cli._app import app
-from puxti.cli._shared import _run, console, err_console
+from puxti.cli._shared import _load_workspace, _run, console, err_console
+from puxti.cli.redefine import _run_redefine
 from puxti.core.corrector import SemanticCorrector
 from puxti.core.graph import KnowledgeGraph
 from puxti.models import CorrectionEvent, Definition
@@ -172,12 +173,35 @@ async def _run_correct(entity: str, project: str | None = None) -> None:
         # audit trail with a "correct" record for something that belongs in redefine.
         if classified_as == "real_change":
             console.print(
-                "\n[bold]This is a real change — nothing written to the Knowledge Graph.[/bold]\n"
+                "\n[bold]This is a real change — correct will not write a "
+                "correction record.[/bold]\n"
                 "Run the following command to propagate it to your code stack:\n"
             )
             console.print(
                 f"  puxti redefine --entity {entity!r} "
                 f"--description {corrected!r} --repo <your-repo>"
+            )
+            run_now = console.input(
+                "Run it now? ([bold]y[/bold]=yes, [dim]N[/dim]=cancel) > "
+            ).strip().lower()
+            if run_now != "y":
+                return
+
+            workspace = _load_workspace()
+            if not workspace.dbt or not workspace.dbt.repo:
+                err_console.print(
+                    "[red]Error:[/red] Automatic handoff requires "
+                    "[bold]connectors.dbt.repo[/bold] in .puxti.yml. "
+                    "Run the command above with --repo instead."
+                )
+                return
+
+            await _run_redefine(
+                entity=entity,
+                description=corrected,
+                repo=workspace.dbt.repo,
+                base_branch=workspace.dbt.base_branch,
+                dbt_project_dir=workspace.dbt.project_dir,
             )
             return
 

@@ -314,8 +314,8 @@ Classification prompt:
       ├── Correction → write new definition version + edges,
       │                no PRs generated
       │
-      └── Real change → hand off to redefine flow with the
-                        new definition pre-filled
+      └── Real change → offer to start the redefine flow with the
+                        new definition pre-filled; only explicit y continues
 ```
 
 Atomic writes: a new definition version and all edge changes write together

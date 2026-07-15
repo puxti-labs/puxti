@@ -309,6 +309,11 @@ puxti correct --entity "model.jaffle_shop.orders"
 | `--entity` / `-e` | Yes | Entity ID to correct |
 | `--project` / `-p` | No | Validate the entity belongs to this project before proceeding |
 
+If you classify the definition as a real change, Puxti shows the matching
+`redefine` command and asks whether to run it. Only an explicit `y` starts the
+handoff; Enter or any other response leaves everything unchanged. Automatic
+handoff uses `connectors.dbt.repo` from `.puxti.yml`.
+
 ---
 
 ### Step 3 — Inspect the Knowledge Graph
@@ -345,9 +350,6 @@ puxti purge --all
 
 **Finding entity IDs**
 Commands like `capture`, `redefine`, and `correct` require a full entity ID (e.g. `model.jaffle_shop.orders.order_date`). If you are not sure of an entity's ID, run `puxti describe` first — it lists all entities with their full IDs.
-
-**The `correct` → `redefine` handoff**
-When you classify a correction as a "real change", Puxti prints the `redefine` command to run next but does not execute it automatically. You need to copy-paste and run it yourself.
 
 ---
 

@@ -6,6 +6,11 @@
 
 - `CONTRIBUTING.md` — dev setup, test/lint commands, and PR expectations.
 
+### Changed
+
+- `puxti correct` now offers to start `redefine` after a real change. Only an
+  explicit `y` continues, and automatic handoff uses the configured dbt repository.
+
 ---
 
 ## [0.10.0] — 2026-07-14

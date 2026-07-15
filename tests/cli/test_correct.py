@@ -196,7 +196,7 @@ def test_correct_happy_path_no_edges_classified_as_correction():
 
 
 def test_correct_real_change_does_not_write_to_kg():
-    """classified as real_change → no KG writes at all, prints redefine handoff command."""
+    """A declined real-change handoff writes nothing and never starts redefine."""
     from puxti.models import Definition, EdgeAssessment, EdgeType, SemanticEdge
 
     definition = Definition(
@@ -234,16 +234,18 @@ def test_correct_real_change_does_not_write_to_kg():
         [],       # removed_pairs
         [],       # updated_pairs
     ))
+    mock_run_redefine = AsyncMock()
 
     with (
         patch("puxti.cli.correct.KnowledgeGraph", return_value=mock_graph),
         patch("puxti.cli.correct.SemanticCorrector", return_value=mock_corrector),
+        patch("puxti.cli.correct._run_redefine", mock_run_redefine),
     ):
         result = runner.invoke(
             app,
             ["correct", "--entity", "model.jaffle_shop.orders"],
-            # new definition → accept edge assessment (blank=accept) → classify as real change
-            input="Orders excludes refunds.\n\nr\n",
+            # new definition → keep edge → classify as real change → decline handoff
+            input="Orders excludes refunds.\n\nr\nn\n",
         )
 
     assert result.exit_code == 0, result.output
@@ -251,6 +253,98 @@ def test_correct_real_change_does_not_write_to_kg():
     mock_graph.upsert_definition.assert_not_called()
     mock_graph.write_correction.assert_not_called()
     assert "redefine" in result.output.lower()
+    assert "run it now" in result.output.lower()
+    mock_run_redefine.assert_not_awaited()
+
+
+def test_correct_real_change_runs_redefine_on_explicit_confirmation():
+    """An explicit y starts redefine with the configured dbt repository."""
+    from puxti.models import Definition
+    from puxti.workspace import ConnectorConfig, WorkspaceConfig
+
+    definition = Definition(
+        entity_id="model.jaffle_shop.orders",
+        description="Orders includes all transactions.",
+        version=2,
+        created_by="scan",
+    )
+
+    mock_graph = MagicMock()
+    mock_graph.connect = AsyncMock()
+    mock_graph.close = AsyncMock()
+    mock_graph.get_latest_definition = AsyncMock(return_value=definition)
+    mock_graph.get_entity_semantic_edges = AsyncMock(return_value=[])
+    mock_graph.upsert_definition = AsyncMock()
+    mock_graph.write_correction = AsyncMock()
+    mock_run_redefine = AsyncMock()
+    workspace = WorkspaceConfig(
+        dbt=ConnectorConfig(
+            project_dir="/projects/jaffle_shop",
+            repo="acme/analytics",
+            base_branch="production",
+        )
+    )
+
+    with (
+        patch("puxti.cli.correct.KnowledgeGraph", return_value=mock_graph),
+        patch("puxti.cli.correct._load_workspace", return_value=workspace),
+        patch("puxti.cli.correct._run_redefine", mock_run_redefine),
+    ):
+        result = runner.invoke(
+            app,
+            ["correct", "--entity", "model.jaffle_shop.orders"],
+            input="Orders excludes refunds.\nr\ny\n",
+        )
+
+    assert result.exit_code == 0, result.output
+    mock_graph.upsert_definition.assert_not_called()
+    mock_graph.write_correction.assert_not_called()
+    mock_run_redefine.assert_awaited_once_with(
+        entity="model.jaffle_shop.orders",
+        description="Orders excludes refunds.",
+        repo="acme/analytics",
+        base_branch="production",
+        dbt_project_dir="/projects/jaffle_shop",
+    )
+
+
+def test_correct_real_change_needs_configured_repo_for_automatic_handoff():
+    """An explicit y without a configured repo never starts redefine."""
+    from puxti.models import Definition
+    from puxti.workspace import WorkspaceConfig
+
+    definition = Definition(
+        entity_id="model.jaffle_shop.orders",
+        description="Orders includes all transactions.",
+        version=2,
+        created_by="scan",
+    )
+
+    mock_graph = MagicMock()
+    mock_graph.connect = AsyncMock()
+    mock_graph.close = AsyncMock()
+    mock_graph.get_latest_definition = AsyncMock(return_value=definition)
+    mock_graph.get_entity_semantic_edges = AsyncMock(return_value=[])
+    mock_graph.upsert_definition = AsyncMock()
+    mock_graph.write_correction = AsyncMock()
+    mock_run_redefine = AsyncMock()
+
+    with (
+        patch("puxti.cli.correct.KnowledgeGraph", return_value=mock_graph),
+        patch("puxti.cli.correct._load_workspace", return_value=WorkspaceConfig()),
+        patch("puxti.cli.correct._run_redefine", mock_run_redefine),
+    ):
+        result = runner.invoke(
+            app,
+            ["correct", "--entity", "model.jaffle_shop.orders"],
+            input="Orders excludes refunds.\nr\ny\n",
+        )
+
+    assert result.exit_code == 0, result.output
+    assert "automatic handoff requires" in result.output.lower()
+    mock_graph.upsert_definition.assert_not_called()
+    mock_graph.write_correction.assert_not_called()
+    mock_run_redefine.assert_not_awaited()
 
 
 def test_correct_cancels_at_final_confirm():
