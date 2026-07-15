@@ -6,7 +6,8 @@ import typer
 from rich.panel import Panel
 
 from puxti.cli._app import app
-from puxti.cli._shared import _run, console, err_console
+from puxti.cli._shared import _load_workspace, _run, console, err_console
+from puxti.cli.redefine import _run_redefine
 from puxti.core.corrector import SemanticCorrector
 from puxti.core.graph import KnowledgeGraph
 from puxti.models import CorrectionEvent, Definition
@@ -15,11 +16,12 @@ from puxti.models import CorrectionEvent, Definition
 @app.command()
 def correct(
     entity: str = typer.Option(
-        ..., "--entity", "-e",
-        help="Entity ID to correct (e.g. model.jaffle_shop.orders)"
+        ..., "--entity", "-e", help="Entity ID to correct (e.g. model.jaffle_shop.orders)"
     ),
     project: Optional[str] = typer.Option(
-        None, "--project", "-p",
+        None,
+        "--project",
+        "-p",
         help="Scope to a project — validates the entity belongs to it before proceeding.",
     ),
 ) -> None:
@@ -58,7 +60,9 @@ async def _run_correct(entity: str, project: str | None = None) -> None:
         if project:
             entity_obj = await graph.get_entity_by_id(entity)
             if not entity_obj:
-                err_console.print(f"[red]Error:[/red] Entity '{entity}' not found in the Knowledge Graph.")
+                err_console.print(
+                    f"[red]Error:[/red] Entity '{entity}' not found in the Knowledge Graph."
+                )
                 raise typer.Exit(1)
             if entity_obj.project != project:
                 err_console.print(
@@ -85,7 +89,9 @@ async def _run_correct(entity: str, project: str | None = None) -> None:
             console.print("[dim]No semantic edges found for this entity.[/dim]\n")
 
         # 3. Collect corrected definition
-        corrected = console.input("[bold]Enter corrected definition[/bold] (blank to cancel) > ").strip()
+        corrected = console.input(
+            "[bold]Enter corrected definition[/bold] (blank to cancel) > "
+        ).strip()
         if not corrected:
             console.print("[yellow]Cancelled.[/yellow]")
             return
@@ -112,19 +118,25 @@ async def _run_correct(entity: str, project: str | None = None) -> None:
             for assessment in assessments:
                 key = (assessment.from_entity_id, assessment.to_entity_id)
                 direction = "→" if assessment.from_entity_id == entity else "←"
-                other = assessment.to_entity_id if assessment.from_entity_id == entity else assessment.from_entity_id
-                edge_obj = next(
-                    e for e in edges
-                    if (e.from_entity_id, e.to_entity_id) == key
+                other = (
+                    assessment.to_entity_id
+                    if assessment.from_entity_id == entity
+                    else assessment.from_entity_id
                 )
+                edge_obj = next(e for e in edges if (e.from_entity_id, e.to_entity_id) == key)
                 console.print(f"  {direction} ({edge_obj.type.value}) {other}")
-                console.print(f"  LLM suggests: [bold]{assessment.action.upper()}[/bold] — {assessment.reasoning}")
+                console.print(
+                    f"  LLM suggests: [bold]{assessment.action.upper()}[/bold] — "
+                    f"{assessment.reasoning}"
+                )
                 if assessment.action == "update":
                     console.print(f"  New description: {assessment.updated_description}")
 
-                choice = console.input(
-                    "  Accept? ([bold]y[/bold]=yes, k=keep, r=remove) > "
-                ).strip().lower()
+                choice = (
+                    console.input("  Accept? ([bold]y[/bold]=yes, k=keep, r=remove) > ")
+                    .strip()
+                    .lower()
+                )
 
                 # Only an explicit "y" applies the LLM suggestion — blank or
                 # unrecognized input keeps the edge unchanged, never accepts.
@@ -132,24 +144,31 @@ async def _run_correct(entity: str, project: str | None = None) -> None:
                     confirmed_assessments.append(assessment)
                 elif choice == "r":
                     from puxti.models import EdgeAssessment
-                    confirmed_assessments.append(EdgeAssessment(
-                        from_entity_id=assessment.from_entity_id,
-                        to_entity_id=assessment.to_entity_id,
-                        action="remove",
-                        reasoning="User overrode to remove",
-                    ))
+
+                    confirmed_assessments.append(
+                        EdgeAssessment(
+                            from_entity_id=assessment.from_entity_id,
+                            to_entity_id=assessment.to_entity_id,
+                            action="remove",
+                            reasoning="User overrode to remove",
+                        )
+                    )
                 else:
                     from puxti.models import EdgeAssessment
+
                     reasoning = (
-                        "User overrode to keep" if choice == "k"
+                        "User overrode to keep"
+                        if choice == "k"
                         else "No explicit choice — edge kept unchanged"
                     )
-                    confirmed_assessments.append(EdgeAssessment(
-                        from_entity_id=assessment.from_entity_id,
-                        to_entity_id=assessment.to_entity_id,
-                        action="keep",
-                        reasoning=reasoning,
-                    ))
+                    confirmed_assessments.append(
+                        EdgeAssessment(
+                            from_entity_id=assessment.from_entity_id,
+                            to_entity_id=assessment.to_entity_id,
+                            action="keep",
+                            reasoning=reasoning,
+                        )
+                    )
                 console.print()
         else:
             confirmed_assessments = []
@@ -179,6 +198,26 @@ async def _run_correct(entity: str, project: str | None = None) -> None:
                 f"  puxti redefine --entity {entity!r} "
                 f"--description {corrected!r} --repo <your-repo>"
             )
+            run_now = console.input("Run it now? ([bold]y[/bold]/N) > ").strip().lower()
+            if run_now == "y":
+                ws = _load_workspace()
+                resolved_repo = ws.dbt.repo if ws.dbt else None
+                resolved_project_dir = ws.dbt.project_dir if ws.dbt else None
+                resolved_base_branch = ws.dbt.base_branch if ws.dbt else "main"
+                if not resolved_repo:
+                    err_console.print(
+                        "[red]Error:[/red] connectors.dbt.repo is required to run redefine now.\n"
+                        "  Add it to .puxti.yml or run the printed command with --repo."
+                    )
+                    raise typer.Exit(1)
+                await _run_redefine(
+                    entity=entity,
+                    description=corrected,
+                    repo=resolved_repo,
+                    base_branch=resolved_base_branch,
+                    dbt_project_dir=resolved_project_dir,
+                    dry_run=False,
+                )
             return
 
         # 6. Final summary + confirmation before any write
@@ -202,7 +241,9 @@ async def _run_correct(entity: str, project: str | None = None) -> None:
                 border_style="yellow",
             )
         )
-        confirm = console.input("Write these changes? ([bold]y[/bold]=yes, n=cancel) > ").strip().lower()
+        confirm = (
+            console.input("Write these changes? ([bold]y[/bold]=yes, n=cancel) > ").strip().lower()
+        )
         if confirm != "y":
             console.print("[yellow]Cancelled — nothing written.[/yellow]")
             return
@@ -219,7 +260,11 @@ async def _run_correct(entity: str, project: str | None = None) -> None:
             entity_id=entity,
             old_definition_id=current.id,
             new_definition_id=new_def.id,
-            edges_kept=[(e.from_entity_id, e.to_entity_id) for e in updated_edges if (e.from_entity_id, e.to_entity_id) not in updated_pairs],
+            edges_kept=[
+                (e.from_entity_id, e.to_entity_id)
+                for e in updated_edges
+                if (e.from_entity_id, e.to_entity_id) not in updated_pairs
+            ],
             edges_updated=updated_pairs,
             edges_removed=removed_pairs,
             classified_as=classified_as,

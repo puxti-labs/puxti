@@ -7,6 +7,7 @@ from tests.cli._helpers import plain, runner
 
 # ── correct — help and error paths ───────────────────────────────────────────
 
+
 def test_correct_shows_help():
     result = runner.invoke(app, ["correct", "--help"])
     assert result.exit_code == 0
@@ -229,11 +230,13 @@ def test_correct_real_change_does_not_write_to_kg():
     )
     mock_corrector = MagicMock()
     mock_corrector.reassess_edges = AsyncMock(return_value=[assessment])
-    mock_corrector.apply_assessments = MagicMock(return_value=(
-        [edge],   # updated_edges (kept as-is)
-        [],       # removed_pairs
-        [],       # updated_pairs
-    ))
+    mock_corrector.apply_assessments = MagicMock(
+        return_value=(
+            [edge],  # updated_edges (kept as-is)
+            [],  # removed_pairs
+            [],  # updated_pairs
+        )
+    )
 
     with (
         patch("puxti.cli.correct.KnowledgeGraph", return_value=mock_graph),
@@ -242,8 +245,7 @@ def test_correct_real_change_does_not_write_to_kg():
         result = runner.invoke(
             app,
             ["correct", "--entity", "model.jaffle_shop.orders"],
-            # new definition → accept edge assessment (blank=accept) → classify as real change
-            input="Orders excludes refunds.\n\nr\n",
+            input="Orders excludes refunds.\n\nr\n\n",
         )
 
     assert result.exit_code == 0, result.output
@@ -253,8 +255,97 @@ def test_correct_real_change_does_not_write_to_kg():
     assert "redefine" in result.output.lower()
 
 
+def test_correct_real_change_runs_redefine_after_explicit_confirmation():
+    from puxti.models import Definition
+
+    definition = Definition(
+        entity_id="model.jaffle_shop.orders",
+        description="Orders includes all transactions.",
+        version=2,
+        created_by="scan",
+    )
+
+    mock_graph = MagicMock()
+    mock_graph.connect = AsyncMock()
+    mock_graph.close = AsyncMock()
+    mock_graph.get_latest_definition = AsyncMock(return_value=definition)
+    mock_graph.get_entity_semantic_edges = AsyncMock(return_value=[])
+    mock_graph.upsert_definition = AsyncMock()
+    mock_graph.write_correction = AsyncMock()
+
+    workspace = MagicMock()
+    workspace.dbt.repo = "example/jaffle-shop"
+    workspace.dbt.project_dir = "/workspace/dbt"
+    workspace.dbt.base_branch = "develop"
+
+    mock_redefine = AsyncMock()
+
+    with (
+        patch("puxti.cli.correct.KnowledgeGraph", return_value=mock_graph),
+        patch("puxti.cli.correct._load_workspace", return_value=workspace),
+        patch("puxti.cli.correct._run_redefine", mock_redefine),
+    ):
+        result = runner.invoke(
+            app,
+            ["correct", "--entity", "model.jaffle_shop.orders"],
+            input="Orders excludes refunds.\nr\ny\n",
+        )
+
+    assert result.exit_code == 0, result.output
+    mock_graph.upsert_definition.assert_not_called()
+    mock_graph.write_correction.assert_not_called()
+    mock_redefine.assert_awaited_once_with(
+        entity="model.jaffle_shop.orders",
+        description="Orders excludes refunds.",
+        repo="example/jaffle-shop",
+        base_branch="develop",
+        dbt_project_dir="/workspace/dbt",
+        dry_run=False,
+    )
+
+
+def test_correct_real_change_requires_repo_to_run_redefine_now():
+    from puxti.models import Definition
+
+    definition = Definition(
+        entity_id="model.jaffle_shop.orders",
+        description="Orders includes all transactions.",
+        version=2,
+        created_by="scan",
+    )
+
+    mock_graph = MagicMock()
+    mock_graph.connect = AsyncMock()
+    mock_graph.close = AsyncMock()
+    mock_graph.get_latest_definition = AsyncMock(return_value=definition)
+    mock_graph.get_entity_semantic_edges = AsyncMock(return_value=[])
+    mock_graph.upsert_definition = AsyncMock()
+    mock_graph.write_correction = AsyncMock()
+
+    workspace = MagicMock()
+    workspace.dbt = None
+
+    mock_redefine = AsyncMock()
+
+    with (
+        patch("puxti.cli.correct.KnowledgeGraph", return_value=mock_graph),
+        patch("puxti.cli.correct._load_workspace", return_value=workspace),
+        patch("puxti.cli.correct._run_redefine", mock_redefine),
+    ):
+        result = runner.invoke(
+            app,
+            ["correct", "--entity", "model.jaffle_shop.orders"],
+            input="Orders excludes refunds.\nr\ny\n",
+        )
+
+    assert result.exit_code == 1, result.output
+    mock_graph.upsert_definition.assert_not_called()
+    mock_graph.write_correction.assert_not_called()
+    mock_redefine.assert_not_awaited()
+    assert "--repo" in result.output
+
+
 def test_correct_cancels_at_final_confirm():
-    """User enters a new definition and classifies it, but cancels at the final confirm → nothing written."""
     from puxti.models import Definition
 
     definition = Definition(
