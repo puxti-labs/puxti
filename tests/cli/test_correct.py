@@ -196,7 +196,7 @@ def test_correct_happy_path_no_edges_classified_as_correction():
 
 
 def test_correct_real_change_does_not_write_to_kg():
-    """classified as real_change → no KG writes at all, prints redefine handoff command."""
+    """classified as real_change → no KG writes at all, prints redefine handoff command. — offer to run the suggested command"""
     from puxti.models import Definition, EdgeAssessment, EdgeType, SemanticEdge
 
     definition = Definition(
