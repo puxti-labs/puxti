@@ -245,6 +245,8 @@ def test_correct_real_change_does_not_write_to_kg():
         result = runner.invoke(
             app,
             ["correct", "--entity", "model.jaffle_shop.orders"],
+            # new definition → blank keeps edge unchanged → classify as real change
+            # → blank declines the run-now handoff
             input="Orders excludes refunds.\n\nr\n\n",
         )
 
@@ -346,6 +348,8 @@ def test_correct_real_change_requires_repo_to_run_redefine_now():
 
 
 def test_correct_cancels_at_final_confirm():
+    """User enters a new definition and classifies it, but cancels at the final
+    confirm → nothing written."""
     from puxti.models import Definition
 
     definition = Definition(
