@@ -408,8 +408,9 @@ approach, and how it interacts with the rest of the codebase. PRs whose
 authors can't engage with review feedback won't be merged regardless of
 how they were produced.
 
-There's no formal contributor guide yet. For non-trivial changes, open an
-issue first to discuss the approach before writing code.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup and what a good PR
+looks like. For non-trivial changes, open an issue first to discuss the
+approach before writing code.
 
 ---
 
