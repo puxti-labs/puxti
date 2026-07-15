@@ -35,8 +35,13 @@ REVENUE_DIFF = FileDiff(
 )
 
 
-def _make_connector(diffs: list[FileDiff], unverified: list[str] | None = None) -> MagicMock:
+def _make_connector(
+    diffs: list[FileDiff], unverified: list[str] | None = None, name: str = ""
+) -> MagicMock:
     connector = MagicMock()
+    # MagicMock reserves `name` at construction time — set it explicitly, like
+    # BaseConnector subclasses do as a class attribute.
+    connector.name = name
     connector.generate_changes = AsyncMock(return_value=(diffs, unverified or []))
     return connector
 
@@ -128,3 +133,16 @@ async def test_propagate_result_has_pending_status_by_default():
 
     assert results[0].status == "pending"
     assert results[0].pr_url is None
+
+
+async def test_propagate_uses_connector_name_for_unverified_only_results():
+    """A connector returning only unverified entities (no diffs) is attributed
+    by its own name — not the old hardcoded dbt fallback."""
+    engine = PropagationEngine(
+        connectors=[_make_connector([], unverified=["view.public.user_stats"], name="sql_views")]
+    )
+    results = await engine.propagate(EVENT)
+
+    assert len(results) == 1
+    assert results[0].connector == "sql_views"
+    assert results[0].unverified_entity_ids == ["view.public.user_stats"]

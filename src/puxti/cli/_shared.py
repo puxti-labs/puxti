@@ -130,9 +130,11 @@ def _parse_entity_id(entity_id: str) -> tuple[EntityType, str, str]:
     node IDs are valid puxti IDs as-is; the grammar itself is connector-neutral,
     and each producer connector claims its prefixes here:
 
-      task.airflow.<dag_id>.<task_id>  → TASK,  airflow, dag_id
-      source.<project>.<table>         → TABLE, dbt,     project
-      model.<project>.<name>           → MODEL, dbt,     project
+      task.airflow.<dag_id>.<task_id>  → TASK,  airflow,   dag_id
+      source.<project>.<table>         → TABLE, dbt,       project
+      model.<project>.<name>           → MODEL, dbt,       project
+      table.prisma.<model>[.<field>]   → TABLE, prisma,    prisma
+      view.<schema>.<name>[.<column>]  → VIEW,  sql_views, schema
     """
     parts = entity_id.split(".")
     if parts[0] == "task" and len(parts) >= 4 and parts[1] == "airflow":
@@ -141,7 +143,15 @@ def _parse_entity_id(entity_id: str) -> tuple[EntityType, str, str]:
         return EntityType.TABLE, "dbt", parts[1]
     if parts[0] == "model" and len(parts) >= 3:
         return EntityType.MODEL, "dbt", parts[1]
+    if parts[0] == "table" and len(parts) >= 3 and parts[1] == "prisma":
+        return EntityType.TABLE, "prisma", "prisma"
+    if parts[0] == "view" and len(parts) >= 3:
+        return EntityType.VIEW, "sql_views", parts[1]
     raise ValueError(
         f"Unrecognized entity ID: {entity_id!r}\n"
-        "  Expected: task.airflow.<dag>.<task>  or  source.<project>.<table>  or  model.<project>.<name>"
+        "  Expected one of:\n"
+        "    task.airflow.<dag>.<task>\n"
+        "    source.<project>.<table>  or  model.<project>.<name>\n"
+        "    table.prisma.<model>[.<field>]\n"
+        "    view.<schema>.<name>[.<column>]"
     )

@@ -572,3 +572,68 @@ async def test_estimate_scan_cost_omits_cost_when_pricing_unknown():
     assert estimate["total_input_tokens"] > 0
     assert estimate["tokens_exact"] is False
     assert estimate["estimated_cost_usd"] is None
+
+
+# ── scan — cross-connector reference resolution ───────────────────────────────
+
+VIEW_ENTITY = Entity(
+    id="view.public.user_stats",
+    name="user_stats",
+    type=EntityType.VIEW,
+    source_connector="sql_views",
+)
+
+def _sqlref_edge() -> Edge:
+    # resolve_edges rewrites edges in place — each test needs a fresh one.
+    return Edge(
+        from_entity_id="view.public.user_stats",
+        to_entity_id="sqlref.users",
+        type=EdgeType.DEPENDS_ON,
+        connector="sql_views",
+        metadata={"raw_reference": "users"},
+    )
+
+
+async def test_scan_resolves_sqlref_edges_with_reference_index():
+    scanner = SemanticScanner(backend=_make_backend({}))
+    graph = _make_graph()
+    connector = _make_connector(entities=[VIEW_ENTITY], lineage=[_sqlref_edge()], sql_map={})
+    console = _make_console()
+
+    await scanner.scan(
+        connector, graph, interactive=False, console=console,
+        reference_index={"users": "table.prisma.User"},
+    )
+
+    upserted = graph.upsert_edge.await_args_list[0].args[0]
+    assert upserted.to_entity_id == "table.prisma.User"
+    assert upserted.metadata["resolved_from"] == "users"
+
+
+async def test_scan_keeps_and_reports_unresolved_sqlref_edges():
+    scanner = SemanticScanner(backend=_make_backend({}))
+    graph = _make_graph()
+    connector = _make_connector(entities=[VIEW_ENTITY], lineage=[_sqlref_edge()], sql_map={})
+    console = _make_console()
+
+    await scanner.scan(
+        connector, graph, interactive=False, console=console,
+        reference_index={},
+    )
+
+    upserted = graph.upsert_edge.await_args_list[0].args[0]
+    assert upserted.to_entity_id == "sqlref.users"
+    printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
+    assert "users" in printed and "unresolved" in printed
+
+
+async def test_scan_without_reference_index_leaves_edges_untouched():
+    scanner = SemanticScanner(backend=_make_backend({}))
+    graph = _make_graph()
+    connector = _make_connector(entities=[VIEW_ENTITY], lineage=[_sqlref_edge()], sql_map={})
+    console = _make_console()
+
+    await scanner.scan(connector, graph, interactive=False, console=console)
+
+    upserted = graph.upsert_edge.await_args_list[0].args[0]
+    assert upserted.to_entity_id == "sqlref.users"

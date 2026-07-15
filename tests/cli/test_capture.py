@@ -451,3 +451,105 @@ def test_capture_dry_run_without_pricing_shows_hint_not_cost():
     assert "approximate" in result.output
     assert "LLM_INPUT_COST_PER_MTOK" in result.output
     assert "$" not in result.output.replace("$0", "")  # no dollar figure rendered
+
+
+def test_capture_rebases_and_routes_sql_views_diffs_to_their_repo():
+    """sql_views diffs get the connector's repo_subdir prefix and PR to the
+    connector's own repo; dbt diffs keep the --repo destination."""
+    from puxti.models import ChangeType, FileDiff, PropagationResult, SemanticChangeEvent
+    from puxti.workspace import ConnectorConfig, WorkspaceConfig
+
+    semantic_event = SemanticChangeEvent(
+        change_event_id="evt-multi",
+        entity_id="model.jaffle_shop.users.email",
+        change_type=ChangeType.STRUCTURAL,
+        semantic_context="email renamed to contact_email.",
+        affected_entity_ids=["view.public.user_stats"],
+        reasoning="",
+        change={"before": {"name": "email"}, "after": {"name": "contact_email"}},
+    )
+
+    dbt_result = PropagationResult(
+        change_event_id="evt-multi",
+        connector="dbt",
+        target_entity_id=semantic_event.entity_id,
+        diffs=[FileDiff(
+            file_path="models/users.sql", before="a", after="b",
+            connector="dbt", description="dbt diff",
+        )],
+        pr_url="https://github.com/acme/data/pull/7",
+        status="opened",
+    )
+    views_result = PropagationResult(
+        change_event_id="evt-multi",
+        connector="sql_views",
+        target_entity_id=semantic_event.entity_id,
+        diffs=[FileDiff(
+            file_path="views/user_stats.sql", before="a", after="b",
+            connector="sql_views", description="view diff",
+        )],
+        pr_url="https://github.com/acme/app/pull/8",
+        status="opened",
+    )
+
+    ws = WorkspaceConfig(
+        dbt=ConnectorConfig(project_dir="/some/dbt", repo="acme/data"),
+        sql_views=ConnectorConfig(
+            project_dir="/some/app", repo="acme/app", repo_subdir="backend",
+            extras={"views_dir": "views"},
+        ),
+    )
+
+    mock_graph = MagicMock()
+    mock_graph.connect = AsyncMock()
+    mock_graph.close = AsyncMock()
+    mock_graph.get_latest_definition = AsyncMock(return_value=None)
+    mock_graph.get_semantic_dependents = AsyncMock(return_value=[])
+    mock_graph.get_structural_dependents = AsyncMock(return_value=[])
+    mock_graph.get_entity_by_id = AsyncMock(return_value=MagicMock())
+
+    mock_capture = MagicMock()
+    mock_capture.capture = AsyncMock(return_value=(semantic_event, AsyncMock()))
+
+    mock_engine = MagicMock()
+    mock_engine.propagate = AsyncMock(return_value=[dbt_result, views_result])
+
+    gh_configs: list[dict] = []
+
+    def _make_gh(config):
+        gh_configs.append(config)
+        gh = MagicMock()
+        gh.health_check = AsyncMock(return_value=True)
+        gh.open_pr = AsyncMock(
+            side_effect=lambda result, event, companions=None: result
+        )
+        gh.add_companion_note = AsyncMock()
+        return gh
+
+    with (
+        patch("puxti.cli.capture.settings") as mock_settings,
+        patch("puxti.cli.capture.KnowledgeGraph", return_value=mock_graph),
+        patch("puxti.cli.capture.SemanticCapture", return_value=mock_capture),
+        patch("puxti.cli.capture.PropagationEngine", return_value=mock_engine),
+        patch("puxti.cli.capture.GitHubConnector", side_effect=_make_gh),
+        patch("puxti.cli._shared.load_workspace", return_value=ws),
+    ):
+        mock_settings.dbt_project_dir = None
+        mock_settings.github_token = "ghp_test"
+
+        result = runner.invoke(app, [
+            "capture",
+            "--entity", "model.jaffle_shop.users.email",
+            "--before", "email",
+            "--after", "contact_email",
+            "--description", "renamed",
+        ], input="y\n")
+
+    assert result.exit_code == 0, result.output
+    # sql_views diff was rebased onto the connector's repo_subdir
+    assert views_result.diffs[0].file_path == "backend/views/user_stats.sql"
+    # dbt diff untouched (no repo_subdir configured)
+    assert dbt_result.diffs[0].file_path == "models/users.sql"
+    # one PR per connector, each to its own repo
+    pr_repos = [c["repo"] for c in gh_configs if "base_branch" in c]
+    assert pr_repos == ["acme/data", "acme/app"]

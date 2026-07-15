@@ -186,15 +186,17 @@ CorrectionEvent
 puxti scan --dbt-project-dir <path> [--interactive | --auto]
       │
       ▼
-Read dbt manifest
+For each configured producer (dbt, prisma, sql_views):
+Read its sources (dbt manifest, schema.prisma, CREATE VIEW files)
       │
       ▼
-Extract entities (models, columns, sources)
+Extract entities (models, columns, sources, tables, views)
 Extract structural lineage edges
+Resolve cross-connector table references (see 6.4)
       │
       ▼
 LLM infers starter definitions from
-SQL + upstream context + any dbt yml descriptions
+source text + upstream context + any descriptions
       │
       ▼
 User confirms (interactive: one at a time)
@@ -374,12 +376,14 @@ class BaseConnector(ABC):
         Must NOT write anything — returns diffs only."""
 ```
 
-### 6.2 Connectors in v0.6.0
+### 6.2 Connectors
 
 | Connector | Read (schema + lineage) | Write (generate diff) |
 |---|---|---|
 | `dbt` | yes — parses manifest.json | yes — produces SQL diffs |
 | `airflow` | yes — parses DAG files | yes — produces docstring annotations |
+| `prisma` | yes — parses schema.prisma (no Node toolchain) | yes — schema.prisma rename diffs (migration still required, PRs say so) |
+| `sql_views` | yes — parses CREATE VIEW .sql files via sqlglot | yes — produces SQL rename diffs |
 | `github` | yes — repo metadata | yes — opens PRs |
 
 Additional connectors (Dagster, Looker, Superset, Mode, BI tools generally)
@@ -404,11 +408,38 @@ connectors:
     repo: your-org/your-airflow-repo
     dags_dir: dags/
     base_branch: main
+
+  prisma:
+    project_dir: ./app
+    repo: your-org/your-app-repo
+    schema_path: prisma/schema.prisma   # default
+
+  sql_views:
+    project_dir: ./app
+    repo: your-org/your-app-repo
+    views_dir: db/views
+    dialect: postgres                   # any sqlglot dialect
+    default_schema: public              # schema for unqualified names
 ```
 
 Workspace discovery walks up from the current directory, git-style, until
 either a `.puxti.yml` is found or filesystem root is reached. CLI flags
 override `.puxti.yml` values, which override environment variables.
+
+The CLI builds producer connectors through `connectors/registry.py` — adding
+a producer means adding its class there, not touching each command.
+
+### 6.4 Cross-connector reference resolution
+
+Connectors are isolated: a SQL view that reads `public.users` cannot know that
+the Prisma connector owns that table. Instead of guessing, the views connector
+emits lineage edges with a `sqlref.<name>` placeholder target. At scan time,
+`core/resolution.py` builds an index of database-level names from every
+configured producer's entities (Prisma `@@map` names, dbt model/source names,
+view names — schema-qualified and bare) and rewrites the placeholders it can
+match. Ambiguous names (two owners) are never resolved, and unmatched
+placeholders are kept and reported — a visible dangling edge beats a silently
+wrong one.
 
 ---
 

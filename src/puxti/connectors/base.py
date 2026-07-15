@@ -10,6 +10,10 @@ class BaseConnector(ABC):
     Connectors are isolated modules: no connector knows about another connector.
     """
 
+    #: Connector name as used in .puxti.yml, Entity.source_connector, and
+    #: FileDiff.connector. Producer connectors must override this.
+    name: str = ""
+
     def __init__(self, config: dict) -> None:
         self.config = config
 

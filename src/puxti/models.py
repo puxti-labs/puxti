@@ -12,6 +12,7 @@ class EntityType(str, Enum):
     TABLE = "table"
     COLUMN = "column"
     MODEL = "model"          # dbt model
+    VIEW = "view"            # SQL view
     DAG = "dag"              # Airflow DAG
     TASK = "task"            # Airflow task
     DASHBOARD = "dashboard"

@@ -51,11 +51,10 @@ def config() -> None:
 
     ws = _load_workspace()
     if ws.path:
-        parts = []
-        if ws.dbt:
-            parts.append(f"dbt ({ws.dbt.repo or '(no repo)'} · {ws.dbt.project_dir or '(no dir)'})")
-        if ws.airflow:
-            parts.append(f"airflow ({ws.airflow.repo or '(no repo)'} · {ws.airflow.project_dir or '(no dir)'})")
+        parts = [
+            f"{name} ({cfg.repo or '(no repo)'} · {cfg.project_dir or '(no dir)'})"
+            for name, cfg in ws.configured()
+        ]
         connectors_summary = ", ".join(parts) if parts else "(no connectors configured)"
         console.print(f"[bold].puxti.yml:[/bold]  {ws.path}  [green]found[/green]")
         console.print(f"  connectors: {connectors_summary}")

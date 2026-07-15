@@ -9,6 +9,7 @@ from puxti.cli._shared import _load_workspace, _run, console
 from puxti.connectors.airflow import AirflowConnector
 from puxti.connectors.dbt import DbtConnector
 from puxti.connectors.github import GitHubConnector
+from puxti.connectors.registry import build_connector
 from puxti.llm import LLMAuthError, LLMBillingError, LLMConfigError, get_backend
 from puxti.settings import settings
 from puxti.workspace import WorkspaceConfig
@@ -103,6 +104,27 @@ async def _run_health(dbt_project_dir: str | None, workspace: WorkspaceConfig | 
         console.print("[yellow]–[/yellow] Airflow (project_dir not set in .puxti.yml)")
     else:
         console.print("[yellow]–[/yellow] Airflow (not configured in .puxti.yml)")
+
+    # Prisma and SQL views connectors — configured via .puxti.yml only
+    for conn_name, label, missing_hint in (
+        ("prisma", "Prisma schema", "schema.prisma not found"),
+        ("sql_views", "SQL views dir", "views directory not found"),
+    ):
+        cfg = workspace.get(conn_name) if workspace else None
+        if cfg and cfg.project_dir:
+            try:
+                connector = build_connector(conn_name, cfg)
+                ok = connector is not None and await connector.health_check()
+                if ok:
+                    console.print(f"[green]✓[/green] {label}")
+                else:
+                    console.print(f"[red]✗[/red] {label}: {missing_hint}")
+                    all_ok = False
+            except Exception as exc:
+                console.print(f"[red]✗[/red] {label}: {exc}")
+                all_ok = False
+        elif cfg:
+            console.print(f"[yellow]–[/yellow] {label} (project_dir not set in .puxti.yml)")
 
     # GitHub write access — one check per connector with a repo configured
     if workspace:
