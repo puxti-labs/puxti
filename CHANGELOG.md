@@ -5,6 +5,7 @@
 ### Added
 
 - `CONTRIBUTING.md` — dev setup, test/lint commands, and PR expectations.
+- `puxti correct` now offers to run the printed `puxti redefine` handoff when a correction is classified as a real change, while keeping the existing copy-paste behavior unless the user explicitly confirms.
 
 ---
 
