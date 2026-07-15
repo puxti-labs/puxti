@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from puxti.cli import app
 from puxti.llm import LLMAuthError, LLMBillingError
-from tests.cli._helpers import runner
+from tests.cli._helpers import plain, runner
 
 
 def test_health_shows_help():
@@ -291,4 +291,5 @@ def test_health_labels_non_anthropic_provider():
 
         result = runner.invoke(app, ["health"])
 
-    assert "LLM API key (mistral)" in result.output
+    # plain() — Rich bolds parentheses when FORCE_COLOR is present (CI)
+    assert "LLM API key (mistral)" in plain(result.output)
