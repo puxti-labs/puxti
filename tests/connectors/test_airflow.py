@@ -312,3 +312,14 @@ def test_find_dag_file(dags_dir: Path) -> None:
 
 def test_find_dag_file_missing(dags_dir: Path) -> None:
     assert _find_dag_file(dags_dir, "nonexistent") is None
+
+
+# ── BaseConnector optional capabilities — defaults for non-producer methods ───
+
+def test_optional_capabilities_have_safe_defaults(tmp_path: Path) -> None:
+    """Connectors that don't own patchable SQL sources inherit no-op defaults
+    from BaseConnector — engines treat them as 'nothing to patch', not errors."""
+    connector = AirflowConnector(config={"dags_dir": str(tmp_path)})
+    assert connector.get_model_sql_map() == {}
+    assert connector.find_model_path("task.airflow.some_dag.some_task") is None
+    assert connector.get_project_name() == ""

@@ -403,3 +403,38 @@ def test_rename_preserves_alias():
     sql = "select order_date as order_date from orders"
     result = _rename_column_in_sql(sql, "order_date", "recorded_date")
     assert "recorded_date as recorded_date" in result
+
+
+# ── find_model_path — the public seam engines use to locate sources ───────────
+
+def _manifest_connector(tmp_path, nodes: dict) -> DbtConnector:
+    import json
+    (tmp_path / "target").mkdir()
+    (tmp_path / "target" / "manifest.json").write_text(json.dumps({"nodes": nodes}))
+    return DbtConnector(config={"project_dir": str(tmp_path)})
+
+
+def test_find_model_path_returns_repo_relative_path(tmp_path):
+    (tmp_path / "models").mkdir()
+    (tmp_path / "models" / "orders.sql").write_text("select 1")
+    connector = _manifest_connector(tmp_path, {
+        "model.shop.orders": {"resource_type": "model", "original_file_path": "models/orders.sql"},
+    })
+    assert connector.find_model_path("model.shop.orders") == "models/orders.sql"
+
+
+def test_find_model_path_unknown_entity_returns_none(tmp_path):
+    connector = _manifest_connector(tmp_path, {})
+    assert connector.find_model_path("model.shop.missing") is None
+
+
+def test_find_model_path_missing_file_returns_none(tmp_path):
+    connector = _manifest_connector(tmp_path, {
+        "model.shop.orders": {"resource_type": "model", "original_file_path": "models/orders.sql"},
+    })
+    assert connector.find_model_path("model.shop.orders") is None
+
+
+def test_find_model_path_missing_manifest_returns_none(tmp_path):
+    connector = DbtConnector(config={"project_dir": str(tmp_path)})
+    assert connector.find_model_path("model.shop.orders") is None

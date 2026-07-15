@@ -148,6 +148,20 @@ class DbtConnector(BaseConnector):
         """Return the dbt project name from the manifest metadata."""
         return self._load_manifest().get("metadata", {}).get("project_name", "")
 
+    def find_model_path(self, entity_id: str) -> str | None:
+        """Repo-relative path of a model's SQL file, or None if unknown."""
+        try:
+            manifest = self._load_manifest()
+        except FileNotFoundError:
+            return None
+        node = manifest.get("nodes", {}).get(entity_id)
+        if not node:
+            return None
+        model_path = self._model_file_path(node)
+        if not model_path.exists():
+            return None
+        return str(model_path.relative_to(self.project_dir))
+
     def get_model_sql_map(self) -> dict[str, str]:
         """Return {node_id: sql_content} for all model nodes.
 

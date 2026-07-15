@@ -1,7 +1,6 @@
 """Tests for SemanticRedefiner — Case 3: definition redefinition."""
 
 import json
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -45,28 +44,9 @@ def _make_connector(sql_map: dict | None = None, node_path: str = "models/orders
         ORDERS_ENTITY.id: ORDERS_SQL,
         CUSTOMERS_ENTITY.id: CUSTOMERS_SQL,
     })
-    # _load_manifest and _model_file_path used by _find_model_path
-    manifest = {
-        "nodes": {
-            ORDERS_ENTITY.id: {
-                "resource_type": "model",
-                "name": "orders",
-                "original_file_path": node_path,
-            },
-            CUSTOMERS_ENTITY.id: {
-                "resource_type": "model",
-                "name": "customers",
-                "original_file_path": "models/customers.sql",
-            },
-        }
-    }
-    connector._load_manifest = MagicMock(return_value=manifest)
-    connector.project_dir = Path("/fake/project")
-
-    def fake_model_file_path(node):
-        return Path("/fake/project") / node["original_file_path"]
-
-    connector._model_file_path = MagicMock(side_effect=fake_model_file_path)
+    # engines resolve file locations only through the public connector seam
+    paths = {ORDERS_ENTITY.id: node_path, CUSTOMERS_ENTITY.id: "models/customers.sql"}
+    connector.find_model_path = MagicMock(side_effect=paths.get)
     return connector
 
 
@@ -81,13 +61,6 @@ def _make_backend(payload: dict) -> MagicMock:
 async def test_hop1_generates_sql_diff(tmp_path):
     connector = _make_connector(node_path="models/orders.sql")
     # Make the file exist
-    (tmp_path / "models").mkdir()
-    (tmp_path / "models" / "orders.sql").write_text(ORDERS_SQL)
-    connector.project_dir = tmp_path
-    connector._model_file_path = MagicMock(
-        side_effect=lambda node: tmp_path / node["original_file_path"]
-    )
-
     llm_payload = {
         "reasoning": "gross_revenue now excludes refunds so filter needed.",
         "proposed_sql": "select id, gross_revenue from stg_orders where not is_refund",
@@ -112,13 +85,6 @@ async def test_hop1_generates_sql_diff(tmp_path):
 
 async def test_hop2_generates_sql_with_verify_label(tmp_path):
     connector = _make_connector(node_path="models/customers.sql")
-    (tmp_path / "models").mkdir()
-    (tmp_path / "models" / "customers.sql").write_text(CUSTOMERS_SQL)
-    connector.project_dir = tmp_path
-    connector._model_file_path = MagicMock(
-        side_effect=lambda node: tmp_path / node["original_file_path"]
-    )
-
     llm_payload = {
         "reasoning": "CLV uses gross_revenue, now excludes refunds.",
         "proposed_sql": "select customer_id, sum(gross_revenue) as lifetime_value from orders where not is_refund group by 1",
@@ -147,23 +113,9 @@ async def test_hop3_returns_annotation_only(tmp_path):
         type=EntityType.MODEL,
         source_connector="dbt",
     )
-    (tmp_path / "models").mkdir()
-    (tmp_path / "models" / "board.sql").write_text("select * from customers")
-
     connector = _make_connector(sql_map={deep_entity.id: "select * from customers"})
-    manifest = {
-        "nodes": {
-            deep_entity.id: {
-                "resource_type": "model",
-                "name": "board_dashboard",
-                "original_file_path": "models/board.sql",
-            }
-        }
-    }
-    connector._load_manifest = MagicMock(return_value=manifest)
-    connector.project_dir = tmp_path
-    connector._model_file_path = MagicMock(
-        side_effect=lambda node: tmp_path / node["original_file_path"]
+    connector.find_model_path = MagicMock(
+        side_effect={deep_entity.id: "models/board.sql"}.get
     )
 
     backend = MagicMock()
@@ -203,13 +155,6 @@ async def test_no_sql_file_returns_no_diff():
 async def test_llm_null_proposed_sql_falls_back_to_annotation(tmp_path):
     """When LLM cannot determine the SQL change, fall back to annotation only."""
     connector = _make_connector(node_path="models/orders.sql")
-    (tmp_path / "models").mkdir()
-    (tmp_path / "models" / "orders.sql").write_text(ORDERS_SQL)
-    connector.project_dir = tmp_path
-    connector._model_file_path = MagicMock(
-        side_effect=lambda node: tmp_path / node["original_file_path"]
-    )
-
     llm_payload = {
         "reasoning": "Cannot determine the exact change needed.",
         "proposed_sql": None,
@@ -246,13 +191,6 @@ def test_annotate_sql_prepends_comment_block():
 
 def test_annotation_only_diff_prepends_review_block(tmp_path):
     connector = _make_connector(node_path="models/orders.sql")
-    (tmp_path / "models").mkdir()
-    (tmp_path / "models" / "orders.sql").write_text(ORDERS_SQL)
-    connector.project_dir = tmp_path
-    connector._model_file_path = MagicMock(
-        side_effect=lambda node: tmp_path / node["original_file_path"]
-    )
-
     diff = _annotation_only_diff(
         entity=ORDERS_ENTITY,
         model_sql=ORDERS_SQL,
@@ -273,13 +211,6 @@ def test_annotation_only_diff_prepends_review_block(tmp_path):
 async def test_llm_conflict_flag_produces_conflict_annotation(tmp_path):
     """When LLM returns conflict:true, produce a conflict annotation without changing SQL."""
     connector = _make_connector(node_path="models/orders.sql")
-    (tmp_path / "models").mkdir()
-    (tmp_path / "models" / "orders.sql").write_text(ORDERS_SQL)
-    connector.project_dir = tmp_path
-    connector._model_file_path = MagicMock(
-        side_effect=lambda node: tmp_path / node["original_file_path"]
-    )
-
     llm_payload = {
         "reasoning": "The model has an existing customer_type column computed differently.",
         "proposed_sql": None,
@@ -318,13 +249,6 @@ async def test_llm_conflict_flag_produces_conflict_annotation(tmp_path):
 def test_conflict_annotation_diff_preserves_original_sql(tmp_path):
     """_conflict_annotation_diff must not alter the model SQL."""
     connector = _make_connector(node_path="models/orders.sql")
-    (tmp_path / "models").mkdir()
-    (tmp_path / "models" / "orders.sql").write_text(ORDERS_SQL)
-    connector.project_dir = tmp_path
-    connector._model_file_path = MagicMock(
-        side_effect=lambda node: tmp_path / node["original_file_path"]
-    )
-
     diff = _conflict_annotation_diff(
         entity=ORDERS_ENTITY,
         model_sql=ORDERS_SQL,
@@ -377,25 +301,17 @@ STG_ORDERS_ENTITY = Entity(
 STG_ORDERS_SQL = "select id, subtotal from raw_orders"
 
 
-def _make_passthrough_connector(tmp_path):
+def _make_passthrough_connector():
     connector = MagicMock()
     connector.get_model_sql_map = MagicMock(return_value={
         ORDERS_ENTITY.id: ORDERS_SQL,
         STG_ORDERS_ENTITY.id: STG_ORDERS_SQL,
     })
-    manifest = {
-        "nodes": {
-            ORDERS_ENTITY.id: {"resource_type": "model", "name": "orders", "original_file_path": "models/orders.sql"},
-            STG_ORDERS_ENTITY.id: {"resource_type": "model", "name": "stg_orders", "original_file_path": "models/staging/stg_orders.sql"},
-        }
+    paths = {
+        ORDERS_ENTITY.id: "models/orders.sql",
+        STG_ORDERS_ENTITY.id: "models/staging/stg_orders.sql",
     }
-    connector._load_manifest = MagicMock(return_value=manifest)
-    connector._model_file_path = MagicMock(side_effect=lambda node: tmp_path / node["original_file_path"])
-    connector.project_dir = tmp_path
-    (tmp_path / "models").mkdir()
-    (tmp_path / "models" / "orders.sql").write_text(ORDERS_SQL)
-    (tmp_path / "models" / "staging").mkdir()
-    (tmp_path / "models" / "staging" / "stg_orders.sql").write_text(STG_ORDERS_SQL)
+    connector.find_model_path = MagicMock(side_effect=paths.get)
     return connector
 
 
@@ -404,7 +320,7 @@ async def test_passthrough_diffs_generates_diff_for_entity_and_ancestors(tmp_pat
     backend = _make_backend(payload)
 
     redefiner = SemanticRedefiner(backend=backend)
-    connector = _make_passthrough_connector(tmp_path)
+    connector = _make_passthrough_connector()
 
     diffs = await redefiner.generate_passthrough_diffs(
         entity_id=ORDERS_ENTITY.id,
@@ -425,7 +341,7 @@ async def test_passthrough_diffs_skips_semantically_irrelevant_model(tmp_path):
     backend = _make_backend(payload)
 
     redefiner = SemanticRedefiner(backend=backend)
-    connector = _make_passthrough_connector(tmp_path)
+    connector = _make_passthrough_connector()
 
     diffs = await redefiner.generate_passthrough_diffs(
         entity_id=ORDERS_ENTITY.id,
@@ -443,7 +359,7 @@ async def test_passthrough_diffs_skips_unchanged_sql(tmp_path):
     backend = _make_backend(payload)
 
     redefiner = SemanticRedefiner(backend=backend)
-    connector = _make_passthrough_connector(tmp_path)
+    connector = _make_passthrough_connector()
 
     diffs = await redefiner.generate_passthrough_diffs(
         entity_id=ORDERS_ENTITY.id,
@@ -471,7 +387,7 @@ async def test_passthrough_diffs_includes_graph_definition_in_prompt(tmp_path):
     mock_graph.get_latest_definition = AsyncMock(return_value=mock_definition)
 
     redefiner = SemanticRedefiner(backend=backend)
-    connector = _make_passthrough_connector(tmp_path)
+    connector = _make_passthrough_connector()
 
     await redefiner.generate_passthrough_diffs(
         entity_id=ORDERS_ENTITY.id,

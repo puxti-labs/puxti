@@ -47,3 +47,27 @@ class BaseConnector(ABC):
     def supports_change_type(self, change_type: str) -> bool:
         """Override to restrict which change types this connector handles."""
         return True
+
+    # ── Optional capabilities — producer connectors override what they support ──
+
+    def get_project_name(self) -> str:
+        """Human-readable namespace for the entities this connector owns.
+
+        Used to detect cross-project changes. Connectors without a project
+        concept return "".
+        """
+        return ""
+
+    def get_model_sql_map(self) -> dict[str, str]:
+        """Map of entity ID → raw source text for entities this connector can
+        patch. Engines use it to give the LLM full context when generating
+        definitions and diffs. Connectors with no patchable sources return {}.
+        """
+        return {}
+
+    def find_model_path(self, entity_id: str) -> str | None:
+        """Repo-relative file path of an entity's source file, or None when
+        this connector cannot locate one. Engines must treat None as
+        "skip this entity", never as an error.
+        """
+        return None

@@ -15,7 +15,7 @@ from collections.abc import Awaitable, Callable
 from rich.console import Console
 from rich.table import Table
 
-from puxti.connectors.dbt import DbtConnector
+from puxti.connectors.base import BaseConnector
 from puxti.core.graph import KnowledgeGraph
 from puxti.llm import LLMBackend, get_backend, strip_markdown_fences
 from puxti.models import Definition, Edge, EdgeType, Entity, SemanticEdge
@@ -146,7 +146,7 @@ class SemanticScanner:
 
     async def estimate_scan_cost(
         self,
-        connector: "DbtConnector",
+        connector: BaseConnector,
     ) -> dict:
         """Estimate LLM cost for a full scan without calling the LLM.
 
@@ -401,7 +401,7 @@ class SemanticScanner:
 
     async def scan(
         self,
-        connector: DbtConnector,
+        connector: BaseConnector,
         graph: KnowledgeGraph,
         interactive: bool,
         console: Console,

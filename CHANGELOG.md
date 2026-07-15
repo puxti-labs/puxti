@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Engines (scanner, redefine) now depend on the `BaseConnector` interface instead of `DbtConnector` concretely; file-location logic moved into the connector (`find_model_path`), removing the engines' access to private manifest internals. No behavior change — groundwork for non-dbt producer connectors. The entity ID grammar is now documented as puxti's own, connector-neutral scheme.
+
 ### Added
 
 - `CONTRIBUTING.md` — dev setup, test/lint commands, and PR expectations.
