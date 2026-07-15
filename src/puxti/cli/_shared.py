@@ -125,7 +125,11 @@ def _load_workspace() -> WorkspaceConfig:
 def _parse_entity_id(entity_id: str) -> tuple[EntityType, str, str]:
     """Return (EntityType, source_connector, project) from a puxti entity ID.
 
-    Supported prefixes:
+    Entity IDs follow puxti's own grammar — `<type>.<namespace>.<name>[.<attribute>]`.
+    For dbt entities it deliberately coincides with dbt's node naming so manifest
+    node IDs are valid puxti IDs as-is; the grammar itself is connector-neutral,
+    and each producer connector claims its prefixes here:
+
       task.airflow.<dag_id>.<task_id>  → TASK,  airflow, dag_id
       source.<project>.<table>         → TABLE, dbt,     project
       model.<project>.<name>           → MODEL, dbt,     project

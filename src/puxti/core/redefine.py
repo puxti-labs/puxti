@@ -15,7 +15,7 @@ import json
 import logging
 from typing import TYPE_CHECKING
 
-from puxti.connectors.dbt import DbtConnector
+from puxti.connectors.base import BaseConnector
 from puxti.llm import LLMBackend, LLMResponse, get_backend, strip_markdown_fences
 from puxti.models import Entity, FileDiff
 
@@ -125,7 +125,7 @@ class SemanticRedefiner:
         entity_id: str,
         new_attribute: str,
         ancestors_with_depth: list[tuple[Entity, int]],
-        connector: DbtConnector,
+        connector: BaseConnector,
         graph: "KnowledgeGraph | None" = None,
     ) -> list[FileDiff]:
         """Generate diffs to pass a new attribute through the upstream structural chain.
@@ -190,7 +190,7 @@ class SemanticRedefiner:
             if no_change or not proposed_sql or proposed_sql.strip() == model_sql.strip():
                 continue  # unchanged or semantically irrelevant
 
-            model_path = _find_model_path(target_id, connector)
+            model_path = connector.find_model_path(target_id)
             if not model_path:
                 continue
 
@@ -215,7 +215,7 @@ class SemanticRedefiner:
         old_definition: str | None,
         new_definition: str,
         dependents_with_depth: list[tuple[Entity, int]],
-        connector: DbtConnector,
+        connector: BaseConnector,
     ) -> list[FileDiff]:
         """Generate FileDiffs for all semantically dependent models.
 
@@ -272,7 +272,7 @@ class SemanticRedefiner:
         old_definition: str | None,
         new_definition: str,
         depth: int,
-        connector: DbtConnector,
+        connector: BaseConnector,
     ) -> FileDiff | None:
         old_def_line = f"Old definition: {old_definition}" if old_definition else "No previous definition."
         sql_fragment = model_sql[:_MAX_SQL_CHARS]
@@ -335,7 +335,7 @@ class SemanticRedefiner:
 
         annotated_sql = _annotate_sql(proposed_sql, confidence_label, reasoning, entity_id)
 
-        model_path = _find_model_path(entity.id, connector)
+        model_path = connector.find_model_path(entity.id)
         if not model_path:
             return None
 
@@ -359,7 +359,7 @@ def _conflict_annotation_diff(
     entity_id: str,
     new_definition: str,
     conflict_description: str,
-    connector: DbtConnector,
+    connector: BaseConnector,
 ) -> FileDiff | None:
     """Return a diff that flags a naming conflict without touching any existing logic.
 
@@ -367,7 +367,7 @@ def _conflict_annotation_diff(
     the model with different semantics. The engineer must decide how to resolve it —
     puxti never silently overwrites existing business logic.
     """
-    model_path = _find_model_path(entity.id, connector)
+    model_path = connector.find_model_path(entity.id)
     if not model_path:
         return None
 
@@ -400,12 +400,12 @@ def _annotation_only_diff(
     entity_id: str,
     new_definition: str,
     depth: int,
-    connector: DbtConnector,
+    connector: BaseConnector,
     reasoning: str = "",
     llm_fallback: bool = False,
 ) -> FileDiff | None:
     """Return a diff that prepends a review annotation to the model SQL."""
-    model_path = _find_model_path(entity.id, connector)
+    model_path = connector.find_model_path(entity.id)
     if not model_path:
         return None
 
@@ -458,16 +458,3 @@ def _ensure_newline(sql: str) -> str:
     return sql.rstrip("\n") + "\n"
 
 
-def _find_model_path(entity_id: str, connector: DbtConnector) -> str | None:
-    """Return the relative file path for a model entity, or None if not found."""
-    try:
-        manifest = connector._load_manifest()
-    except FileNotFoundError:
-        return None
-    node = manifest.get("nodes", {}).get(entity_id)
-    if not node:
-        return None
-    model_path = connector._model_file_path(node)
-    if not model_path.exists():
-        return None
-    return str(model_path.relative_to(connector.project_dir))
