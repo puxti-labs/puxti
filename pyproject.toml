@@ -1,6 +1,6 @@
 [project]
 name = "puxti"
-version = "0.9.0"
+version = "0.10.0"
 description = "Open-source CLI for safe schema and semantic change propagation across dbt projects."
 requires-python = ">=3.12"
 license = "Apache-2.0"
