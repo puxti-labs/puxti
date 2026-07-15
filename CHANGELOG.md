@@ -9,6 +9,7 @@
 - **Cross-connector reference resolution** (`core/resolution.py`). Producer connectors stay isolated; a view referencing `public.users` emits a `sqlref.` placeholder edge, and `puxti scan` resolves it against every configured producer's entities by database-level name (Prisma `@@map` names, dbt model/source names, view names). Ambiguous names are never resolved; unmatched references are kept dangling and reported.
 - **Connector registry** (`connectors/registry.py`). The CLI builds producer connectors from `.puxti.yml` through one seam; `scan` now scans every configured producer, `health` checks Prisma/SQL-views configs, `capture` propagates through all producers and opens one PR per connector repo (`repo`/`repo_subdir`/`base_branch` per connector). New dependency: `sqlglot`.
 - `CONTRIBUTING.md` — dev setup, test/lint commands, and PR expectations.
+- `puxti correct` now offers to run the printed `puxti redefine` handoff when a correction is classified as a real change, while keeping the existing copy-paste behavior unless the user explicitly confirms.
 
 ### Changed
 

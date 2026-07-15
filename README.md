@@ -371,7 +371,7 @@ puxti purge --all
 Commands like `capture`, `redefine`, and `correct` require a full entity ID (e.g. `model.jaffle_shop.orders.order_date`). If you are not sure of an entity's ID, run `puxti describe` first — it lists all entities with their full IDs.
 
 **The `correct` → `redefine` handoff**
-When you classify a correction as a "real change", Puxti prints the `redefine` command to run next but does not execute it automatically. You need to copy-paste and run it yourself.
+When you classify a correction as a "real change", Puxti prints the `redefine` command to run next and asks whether to run it immediately. Press Enter or anything other than `y` to keep the copy-paste workflow.
 
 ---
 
