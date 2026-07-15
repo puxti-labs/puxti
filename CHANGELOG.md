@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- `CONTRIBUTING.md` — dev setup, test/lint commands, and PR expectations.
+
+---
+
 ## [0.10.0] — 2026-07-14
 
 ### Added

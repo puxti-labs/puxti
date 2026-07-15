@@ -64,6 +64,7 @@ exclude = [
   "fix_plan.md",
   "AGENTS.md",
   "CHANGELOG.md",
+  "CONTRIBUTING.md",
   "docs",
 ]
 
