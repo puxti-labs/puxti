@@ -204,6 +204,9 @@ async def test_describe_entity_with_definition_and_edges():
     assert result["name"] == "orders"
     assert result["definition"]["description"] == "One row per settled order."
     assert result["definition"]["version"] == 1
+    # created_at is returned so an agent can cite freshness in one call (provenance footer).
+    assert "created_at" in result["definition"]
+    assert result["definition"]["created_at"]
     assert len(result["semantic_edges"]) == 1
     assert result["semantic_edges"][0]["direction"] == "incoming"
     assert result["semantic_edges"][0]["type"] == "derived_from"

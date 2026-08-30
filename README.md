@@ -403,6 +403,27 @@ Once connected, four read-only tools are available:
 
 Run `puxti scan` in your dbt project first to populate the graph.
 
+### Teach the agent to use the tools
+
+The tools give an agent *access* to the graph; they don't tell it *when* to consult the
+graph or how to report what it found. Without that, an agent answers a metric question
+from the first plausible model and returns a stale-but-confident number — the exact
+failure that makes agentic analytics untrustworthy.
+
+`puxti mcp init` writes an agent skill that closes the gap:
+
+```bash
+puxti mcp init            # writes .claude/skills/puxti-analytics/SKILL.md
+puxti mcp init --print    # same markdown to stdout — paste into Cursor rules, CLAUDE.md, any agent
+```
+
+The skill instructs the agent to check each entity's current definition and
+`definition_history` before trusting a model, honor the latest definition (a model whose
+SQL lags its definition is flagged as unreliable, not reported as fact), and end every
+metric answer with a provenance footer citing the definition version, who authored it,
+and when. It is puxti's small-scale version of the "skills" layer from Anthropic's
+self-service analytics work.
+
 ---
 
 ## Telemetry

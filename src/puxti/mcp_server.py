@@ -11,11 +11,11 @@ from __future__ import annotations
 import asyncio
 import json
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from puxti.core.graph import KnowledgeGraph
 
-mcp = FastMCP(
+mcp = MCPServer(
     "puxti",
     instructions=(
         "Puxti exposes your dbt project's Knowledge Graph. "
@@ -176,6 +176,7 @@ async def describe_entity(entity_id: str) -> str:
             "description": definition.description,
             "version": definition.version,
             "created_by": definition.created_by,
+            "created_at": definition.created_at.isoformat(),
         } if definition else None,
         "semantic_edges": [
             {

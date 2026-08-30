@@ -1,5 +1,19 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **`puxti mcp init`** — writes an agent skill (`.claude/skills/puxti-analytics/SKILL.md`) that teaches an agent *when* to use the MCP tools: check each entity's current definition and `definition_history` before trusting a model, honor the latest definition (flag a model whose SQL lags its definition as unreliable rather than reporting its number as fact), and end every metric answer with a provenance footer (definition version, author, date). `--print` emits the same markdown to stdout to paste into Cursor rules, `CLAUDE.md`, or any other agent; `--force` overwrites an existing file. This is puxti's small-scale version of the "skills" layer from Anthropic's self-service analytics work — the tools give an agent access to the graph, this tells it how to answer truthfully.
+
+### Changed
+
+- The MCP `describe_entity` tool now returns `created_at` in the `definition` block, so an agent can cite a definition's freshness for the provenance footer from a single call.
+
+### Fixed
+
+- **`puxti mcp serve` on a fresh install.** The server was written against the mcp v1 `FastMCP` API while the lockfile had advanced to mcp 2.x, so a clean `pip install puxti` broke `mcp serve` with `ModuleNotFoundError: No module named 'mcp.server.fastmcp'`. Migrated the server to the mcp 2.x `MCPServer` API and pinned `mcp>=2.1.1`. Tool behavior is unchanged.
+
 ## [0.11.0] — 2026-07-17
 
 ### Added
