@@ -31,6 +31,13 @@ so nothing errors, but the number is wrong. Your job is to catch that before you
 You have four read-only puxti MCP tools:
 `describe_entity`, `definition_history`, `impact_of_change`, `consumers`.
 
+**These tools return meaning, not SQL.** They give you each entity's definition, how that
+definition has changed, its semantic edges, and what depends on it — never the model's
+query. The model's SQL lives in the dbt project files in this repo; read it there. Trust
+is a comparison *you* make: the definition puxti holds versus what the SQL actually
+computes. Puxti never flags staleness for you — it hands you the current meaning to check
+the SQL against.
+
 ## When to use this skill
 
 - Any question about a metric or KPI ("what was revenue / active users / win rate…").
@@ -39,14 +46,22 @@ You have four read-only puxti MCP tools:
 
 ## Workflow — do this before answering a metric question
 
-1. Identify the entities the question depends on — the metric's model, and the sources
+1. **Identify the entities** the question depends on — the metric's model, and the sources
    and staging models feeding it.
-2. Call `describe_entity` on each. Read the definition and its semantic edges. An edge
-   like `derived_from` pointing at a canonical source the model bypasses is a red flag.
-3. Call `definition_history` on the key entity. **Honor the latest version.** If the
-   model's SQL reflects an older definition than the newest one, treat the model as
-   unreliable and say so — do not report its number as trustworthy.
-4. For "what breaks if I change X" use `impact_of_change`; for "who reads X" use `consumers`.
+2. **Call `describe_entity`** on each. Read the current definition and its semantic edges.
+   An edge like `derived_from` or `feeds` pointing at a canonical source the model bypasses
+   is a red flag: the model may be computing the number from the wrong place.
+3. **Call `definition_history`** on the key entity to see whether its meaning changed
+   recently. A newer version (say v2) that post-dates the model's SQL is the signal a model
+   may be stale. **Honor the latest version**, not the one the SQL was written against.
+4. **Decide current vs stale.** Open the model's `.sql` in the dbt project and check what it
+   computes against the latest definition. If the SQL still reflects an older definition —
+   reads a legacy column, sums the wrong grain — treat the number as unreliable and say so;
+   do not report it as fact.
+5. For "what breaks if I change X" use `impact_of_change`; for "who reads X" use `consumers`.
+
+If a tool returns `{"error": "… not found"}`, the graph is not populated for that entity —
+say so and ask the user to run `puxti scan`, rather than guessing an answer.
 
 ## Answer honestly
 
@@ -66,16 +81,14 @@ Append a footer citing where the answer's trust comes from:
 
 where `<trust>` is one of:
 
-- `current` — the model's SQL reflects the latest definition; trust the number.
-- `stale: <reason>` — a newer definition exists that the model does not reflect; treat
-  the number as unreliable and explain why.
+- `current` — the model's SQL matches the latest definition; trust the number.
+- `stale: <reason>` — a newer definition exists that the model's SQL does not reflect;
+  treat the number as unreliable and explain why.
 
 Example:
 
     — via puxti · `model.clariva.stg_opportunities` def v2 (by user, 2026-07-17) ·
       stale: fct_revenue still reads legacy total_value
-
-Run `puxti scan` in the project first if a tool reports that an entity is not found.
 """
 
 
