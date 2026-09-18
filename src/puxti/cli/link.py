@@ -20,7 +20,10 @@ def link(
     ),
     description: str = typer.Option(
         ..., "--description", "-d",
-        help="Semantic description of this cross-system relationship — what data flows and what it means",
+        help=(
+            "Semantic description of this cross-system relationship — "
+            "what data flows and what it means"
+        ),
     ),
 ) -> None:
     """Declare a cross-system semantic link between a data producer and a dbt entity.
@@ -41,7 +44,10 @@ def link(
     except ValueError as exc:
         err_console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(1)
-    _run(_run_link(from_entity=from_entity, to_entity=to_entity, description=description), command="link")
+    _run(
+        _run_link(from_entity=from_entity, to_entity=to_entity, description=description),
+        command="link",
+    )
 
 
 async def _run_link(from_entity: str, to_entity: str, description: str) -> None:

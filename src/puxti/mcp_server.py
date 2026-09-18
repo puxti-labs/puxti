@@ -56,7 +56,8 @@ async def impact_of_change(entity_id: str, change_type: str | None = None) -> st
     change_type: rename (structural risk), redefine (semantic risk),
     drop or type_change (both).
 
-    Returns JSON: {entity_id, change_type, dependents: [{entity_id, name, type, hop, relationship}], total_count}
+    Returns JSON: {entity_id, change_type,
+    dependents: [{entity_id, name, type, hop, relationship}], total_count}
     """
     graph = await _graph_connect()
     entity = await graph.get_entity_by_id(entity_id)
@@ -146,7 +147,8 @@ async def definition_history(entity_id: str) -> str:
     Shows how the meaning of an entity has evolved over time — each version
     records the definition text, who wrote it (user or llm), and when.
 
-    Returns JSON: {entity_id, history: [{version, description, created_by, created_at}], total_versions}
+    Returns JSON: {entity_id,
+    history: [{version, description, created_by, created_at}], total_versions}
     """
     graph = await _graph_connect()
     entity = await graph.get_entity_by_id(entity_id)

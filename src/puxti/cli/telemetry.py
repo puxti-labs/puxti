@@ -13,7 +13,9 @@ def telemetry_on() -> None:
     console.print("[green]✓[/green] Telemetry enabled.")
     console.print(f"  Install ID:  [dim]{install_id}[/dim]")
     console.print("  Events sent: command name, version, duration, exit status — nothing else.")
-    console.print("  See [bold]TELEMETRY.md[/bold] or run [bold]puxti telemetry show[/bold] for details.")
+    console.print(
+        "  See [bold]TELEMETRY.md[/bold] or run [bold]puxti telemetry show[/bold] for details."
+    )
 
 
 @telemetry_app.command("off")
@@ -34,7 +36,10 @@ def telemetry_show() -> None:
     if enabled:
         install_id = get_install_id()
         console.print(f"[bold]Install ID:[/bold] [dim]{install_id}[/dim]")
-        console.print("\nWhat is sent per command: name, version, duration_ms, exit_status, python_version, platform.")
+        console.print(
+            "\nWhat is sent per command: name, version, duration_ms, exit_status, "
+            "python_version, platform."
+        )
         console.print("Nothing from your dbt project, graph, or environment is ever sent.")
         console.print("See [bold]TELEMETRY.md[/bold] for the full event schema.")
     else:

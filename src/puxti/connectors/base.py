@@ -34,7 +34,9 @@ class BaseConnector(ABC):
         """Read the dependency graph for entities in this connector."""
 
     @abstractmethod
-    async def generate_changes(self, event: SemanticChangeEvent) -> tuple[list[FileDiff], list[str]]:
+    async def generate_changes(
+        self, event: SemanticChangeEvent
+    ) -> tuple[list[FileDiff], list[str]]:
         """Given a semantic change event, generate required file changes.
 
         Returns (diffs, unverified_entity_ids).

@@ -81,7 +81,9 @@ async def _run_purge(project: str | None, all_projects: bool) -> None:
                 console.print("[yellow]Cancelled — nothing deleted.[/yellow]")
                 return
             deleted = await graph.purge_project(project)
-            console.print(f"[green]✓[/green] Purged project '{project}' ({deleted} entities deleted).")
+            console.print(
+                f"[green]✓[/green] Purged project '{project}' ({deleted} entities deleted)."
+            )
 
     finally:
         await graph.close()

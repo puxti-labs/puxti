@@ -67,16 +67,26 @@ async def _run_describe(entity: str | None, project: str | None = None) -> None:
             # ── Single entity detail ───────────────────────────────────────
             entity_obj = await graph.get_entity_by_id(entity)
             if not entity_obj:
-                err_console.print(f"[red]Error:[/red] Entity '{entity}' not found in the Knowledge Graph.")
+                err_console.print(
+                    f"[red]Error:[/red] Entity '{entity}' not found in the Knowledge Graph."
+                )
                 raise typer.Exit(1)
 
             definition = await graph.get_latest_definition(entity)
             edges = await graph.get_entity_semantic_edges(entity)
 
-            def_text = definition.description if definition else "[dim]No definition — run puxti scan[/dim]"
-            def_meta = f"v{definition.version} · created by {definition.created_by}" if definition else ""
+            def_text = (
+                definition.description
+                if definition
+                else "[dim]No definition — run puxti scan[/dim]"
+            )
+            def_meta = (
+                f"v{definition.version} · created by {definition.created_by}" if definition else ""
+            )
 
-            project_line = f"[bold]Project:[/bold]    {entity_obj.project}\n" if entity_obj.project else ""
+            project_line = (
+                f"[bold]Project:[/bold]    {entity_obj.project}\n" if entity_obj.project else ""
+            )
             is_proposed = entity_obj.status == EntityStatus.PROPOSED
             status_line = (
                 "[bold]Status:[/bold]     [yellow]proposed · not yet implemented[/yellow]\n"
@@ -117,7 +127,9 @@ async def _run_describe(entity: str | None, project: str | None = None) -> None:
             semantic_edges = await graph.get_all_semantic_edges()
 
             if not pairs:
-                console.print("[yellow]Knowledge Graph is empty. Run `puxti scan` to bootstrap it.[/yellow]")
+                console.print(
+                    "[yellow]Knowledge Graph is empty. Run `puxti scan` to bootstrap it.[/yellow]"
+                )
                 return
 
             # Apply --project filter if specified

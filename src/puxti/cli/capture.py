@@ -32,10 +32,19 @@ def capture(
         "-d",
         help="Human description of what this change means and why",
     ),
-    repo: Optional[str] = typer.Option(None, help="GitHub repository to open PR against (owner/repo) — required unless --dry-run. Falls back to .puxti.yml connectors.dbt.repo."),
-    base_branch: Optional[str] = typer.Option(None, help="Base branch for the PR (default: main or from .puxti.yml)."),
+    repo: Optional[str] = typer.Option(
+        None,
+        help=(
+            "GitHub repository to open PR against (owner/repo) — required unless "
+            "--dry-run. Falls back to .puxti.yml connectors.dbt.repo."
+        ),
+    ),
+    base_branch: Optional[str] = typer.Option(
+        None, help="Base branch for the PR (default: main or from .puxti.yml)."
+    ),
     dbt_project_dir: Optional[str] = typer.Option(
-        None, "--dbt-project-dir", help="Path to dbt project root (overrides .puxti.yml and DBT_PROJECT_DIR)"
+        None, "--dbt-project-dir",
+        help="Path to dbt project root (overrides .puxti.yml and DBT_PROJECT_DIR)",
     ),
     repo_subdir: Optional[str] = typer.Option(
         None, "--repo-subdir",
@@ -161,7 +170,9 @@ async def _run_capture(
             user_message = _build_user_message(
                 event=event,
                 user_input=description,
-                existing_definition=existing_definition.description if existing_definition else None,
+                existing_definition=(
+                    existing_definition.description if existing_definition else None
+                ),
                 semantic_dependent_names=[e.name for e in semantic_dependents],
                 structural_dependent_names=[e.name for e in structural_dependents],
                 known_entity_ids=all_entity_ids,
@@ -193,10 +204,10 @@ async def _run_capture(
             err_console.print(f"[red]Error:[/red] {exc}")
             raise typer.Exit(1) from exc
 
-        console.print(f"\n[bold]Enriched definition:[/bold]")
+        console.print("\n[bold]Enriched definition:[/bold]")
         console.print(f"  {semantic_event.semantic_context}")
         if semantic_event.affected_entity_ids:
-            console.print(f"\n[bold]Affected entities:[/bold]")
+            console.print("\n[bold]Affected entities:[/bold]")
             for eid in semantic_event.affected_entity_ids:
                 console.print(f"  • {eid}")
         if semantic_event.reasoning:
@@ -287,7 +298,8 @@ async def _run_capture(
             console.print(
                 f"[yellow]⚠ {len(all_unverified)} model(s) were flagged as potentially "
                 f"affected but could not be safely propagated.[/yellow]\n"
-                f"  Puxti could not confirm the `{semantic_event.change.get('before', {}).get('name', '')}` "
+                f"  Puxti could not confirm the "
+                f"`{semantic_event.change.get('before', {}).get('name', '')}` "
                 f"column in these models traces back to the renamed source — "
                 f"this can happen with non-standard dbt layering, shared column names, "
                 f"or table names that differ from their entity name (e.g. Prisma @@map).\n"

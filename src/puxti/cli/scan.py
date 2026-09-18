@@ -18,7 +18,8 @@ from puxti.settings import settings
 @app.command()
 def scan(
     dbt_project_dir: Optional[str] = typer.Option(
-        None, "--dbt-project-dir", help="Path to dbt project root (overrides .puxti.yml and DBT_PROJECT_DIR)"
+        None, "--dbt-project-dir",
+        help="Path to dbt project root (overrides .puxti.yml and DBT_PROJECT_DIR)",
     ),
     interactive: bool = typer.Option(
         False, "--interactive", "-i",
@@ -47,7 +48,10 @@ def scan(
     """
     ws = _load_workspace()
     resolved_project_dir = dbt_project_dir or (ws.dbt.project_dir if ws.dbt else None)
-    _run(_run_scan(dbt_project_dir=resolved_project_dir, interactive=interactive, dry_run=dry_run), command="scan")
+    _run(
+        _run_scan(dbt_project_dir=resolved_project_dir, interactive=interactive, dry_run=dry_run),
+        command="scan",
+    )
 
 
 async def _run_scan(dbt_project_dir: str | None, interactive: bool, dry_run: bool = False) -> None:

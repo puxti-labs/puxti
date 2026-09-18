@@ -101,7 +101,9 @@ def _run(coro, *, command: str = "") -> None:
         duration_ms = int((time.monotonic() - start) * 1000)
         if command:
             from puxti.telemetry import record_event as _record_event
-            tel_thread = _record_event(command=command, duration_ms=duration_ms, exit_status=exit_status)
+            tel_thread = _record_event(
+                command=command, duration_ms=duration_ms, exit_status=exit_status
+            )
         updater.join(timeout=4)
         if tel_thread is not None:
             tel_thread.join(timeout=3)

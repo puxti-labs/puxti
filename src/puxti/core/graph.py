@@ -592,7 +592,8 @@ class KnowledgeGraph:
         await self._db.execute(
             """
             INSERT INTO change_events
-                (id, type, source_entity_id, change, semantic_context, declared_by, status, detected_at)
+                (id, type, source_entity_id, change, semantic_context,
+                 declared_by, status, detected_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 status=excluded.status,
@@ -617,7 +618,8 @@ class KnowledgeGraph:
         for edge in updated_edges:
             await self._db.execute(
                 """
-                INSERT INTO semantic_edges (from_id, to_id, type, description, created_by, created_at)
+                INSERT INTO semantic_edges
+                    (from_id, to_id, type, description, created_by, created_at)
                 VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(from_id, to_id, type) DO UPDATE SET
                     description=excluded.description,
@@ -645,7 +647,8 @@ class KnowledgeGraph:
 
     async def get_projects(self) -> list[str]:
         async with self._db.execute(
-            "SELECT DISTINCT project FROM entities WHERE project IS NOT NULL AND project != '' ORDER BY project"
+            "SELECT DISTINCT project FROM entities "
+            "WHERE project IS NOT NULL AND project != '' ORDER BY project"
         ) as cur:
             return [row["project"] for row in await cur.fetchall()]
 
