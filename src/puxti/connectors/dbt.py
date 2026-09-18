@@ -181,7 +181,9 @@ class DbtConnector(BaseConnector):
                 sql_map[node_id] = model_path.read_text()
         return sql_map
 
-    async def generate_changes(self, event: SemanticChangeEvent) -> tuple[list[FileDiff], list[str]]:
+    async def generate_changes(
+        self, event: SemanticChangeEvent
+    ) -> tuple[list[FileDiff], list[str]]:
         """Generate file diffs for a semantic change event.
 
         Returns (diffs, unverified_entity_ids). unverified_entity_ids contains
@@ -321,7 +323,7 @@ _rename_column_in_sql = rename_column_in_sql
 def _references_model(sql: str, model_name: str) -> bool:
     """Return True if sql contains a dbt ref() call for model_name."""
     return bool(re.search(
-        rf"ref\s*\(\s*['\"]" + re.escape(model_name) + r"['\"]",
+        r"ref\s*\(\s*['\"]" + re.escape(model_name) + r"['\"]",
         sql,
         re.IGNORECASE,
     ))

@@ -19,7 +19,7 @@ from puxti.connectors.base import BaseConnector
 from puxti.core.graph import KnowledgeGraph
 from puxti.core.resolution import resolve_edges
 from puxti.llm import LLMBackend, get_backend, strip_markdown_fences
-from puxti.models import Definition, Edge, EdgeType, Entity, SemanticEdge
+from puxti.models import Definition, EdgeType, Entity, SemanticEdge
 from puxti.settings import settings
 
 _logger = logging.getLogger(__name__)

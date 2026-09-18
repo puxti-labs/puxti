@@ -240,7 +240,7 @@ def _build_user_message(
         user_input = user_input[:_USER_INPUT_MAX_CHARS] + " … [truncated]"
 
     lines = [
-        f"## Change event",
+        "## Change event",
         f"Type: {event.type.value}",
         f"Entity: {event.source_entity_id}",
         "",

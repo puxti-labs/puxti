@@ -27,14 +27,22 @@ def redefine(
         help="New definition — what this entity means now and why it changed",
     ),
     repo: Optional[str] = typer.Option(
-        None, help="GitHub repository to open PR against (owner/repo). Falls back to .puxti.yml connectors.dbt.repo. Not required for --dry-run."
+        None,
+        help=(
+            "GitHub repository to open PR against (owner/repo). Falls back to "
+            ".puxti.yml connectors.dbt.repo. Not required for --dry-run."
+        ),
     ),
-    base_branch: Optional[str] = typer.Option(None, help="Base branch for the PR (default: main or from .puxti.yml)."),
+    base_branch: Optional[str] = typer.Option(
+        None, help="Base branch for the PR (default: main or from .puxti.yml)."
+    ),
     dbt_project_dir: Optional[str] = typer.Option(
-        None, "--dbt-project-dir", help="Path to dbt project root (overrides .puxti.yml and DBT_PROJECT_DIR)"
+        None, "--dbt-project-dir",
+        help="Path to dbt project root (overrides .puxti.yml and DBT_PROJECT_DIR)",
     ),
     dry_run: bool = typer.Option(
-        False, "--dry-run", help="Show affected entities and cost estimate without generating diffs or opening a PR."
+        False, "--dry-run",
+        help="Show affected entities and cost estimate without generating diffs or opening a PR.",
     ),
 ) -> None:
     """Propagate a semantic definition change safely as a reviewable PR.

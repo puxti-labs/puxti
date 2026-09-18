@@ -274,7 +274,9 @@ class SemanticRedefiner:
         depth: int,
         connector: BaseConnector,
     ) -> FileDiff | None:
-        old_def_line = f"Old definition: {old_definition}" if old_definition else "No previous definition."
+        old_def_line = (
+            f"Old definition: {old_definition}" if old_definition else "No previous definition."
+        )
         sql_fragment = model_sql[:_MAX_SQL_CHARS]
         if len(model_sql) > _MAX_SQL_CHARS:
             sql_fragment += f"\n-- [truncated at {_MAX_SQL_CHARS} chars]"
@@ -299,7 +301,6 @@ class SemanticRedefiner:
 
         proposed_sql = result.get("proposed_sql")
         reasoning = result.get("reasoning", "")
-        llm_confidence = result.get("confidence", "medium")
         conflict = result.get("conflict", False)
         conflict_description = result.get("conflict_description", "")
 

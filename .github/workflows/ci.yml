@@ -42,8 +42,5 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev
 
-      # Non-blocking for now: src/ has pre-existing ruff findings. Once those are
-      # cleaned up, remove continue-on-error to make lint a required gate.
       - name: Lint (ruff)
         run: uv run ruff check src/
-        continue-on-error: true

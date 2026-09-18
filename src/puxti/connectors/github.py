@@ -260,10 +260,6 @@ def _pr_title(event: SemanticChangeEvent) -> str:
     before = event.change.get("before", {}).get("name") if event.change else None
     after = event.change.get("after", {}).get("name") if event.change else None
 
-    # Strip the column name from the entity_id to get the parent model
-    parts = event.entity_id.rsplit(".", 1)
-    model_id = parts[0] if len(parts) == 2 else event.entity_id
-
     if before and after:
         title = f"rename {before} → {after}"
     else:
@@ -331,7 +327,8 @@ def _pr_body(
                 f"### 🛑 Do not merge until this is resolved\n"
                 f"The source model uses a qualified column reference (e.g. `alias.{old_name}`) "
                 f"which puxti cannot safely rename without a SQL parser.\n\n"
-                f"**Before merging this PR**, manually update the source model to add the alias:\n\n"
+                f"**Before merging this PR**, manually update the source model "
+                f"to add the alias:\n\n"
                 f"```sql\n-- In the SELECT list of the source model, change:\n"
                 f"    alias.{old_name}\n"
                 f"-- to:\n"
@@ -348,7 +345,8 @@ def _pr_body(
                 f"### Transitive dependents — scope unclear\n"
                 f"These models were flagged as potentially affected but puxti could not "
                 f"confirm the renamed column traces back to the source. "
-                f"This can happen with non-standard dbt layering or shared column names across unrelated models.\n\n"
+                f"This can happen with non-standard dbt layering or shared "
+                f"column names across unrelated models.\n\n"
                 f"{transitive_list}"
             )
 

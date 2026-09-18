@@ -27,7 +27,9 @@ def health(
     _run(_run_health(dbt_project_dir=resolved_project_dir, workspace=ws), command="health")
 
 
-async def _run_health(dbt_project_dir: str | None, workspace: WorkspaceConfig | None = None) -> None:
+async def _run_health(
+    dbt_project_dir: str | None, workspace: WorkspaceConfig | None = None
+) -> None:
     all_ok = True
 
     # Knowledge Graph (SQLite)
@@ -35,7 +37,9 @@ async def _run_health(dbt_project_dir: str | None, workspace: WorkspaceConfig | 
     if DEFAULT_DB_PATH.exists():
         console.print(f"[green]✓[/green] Knowledge Graph  ({DEFAULT_DB_PATH})")
     else:
-        console.print(f"[yellow]–[/yellow] Knowledge Graph  (not initialised — run [bold]puxti scan[/bold])")
+        console.print(
+            "[yellow]–[/yellow] Knowledge Graph  (not initialised — run [bold]puxti scan[/bold])"
+        )
 
     # LLM API — the backend's auth check consumes no credits
     backend = None
@@ -130,19 +134,29 @@ async def _run_health(dbt_project_dir: str | None, workspace: WorkspaceConfig | 
     if workspace:
         for repo, connector_type in workspace.connector_repos():
             if not settings.github_token:
-                console.print(f"[yellow]–[/yellow] GitHub write access — {repo} ({connector_type}): GITHUB_TOKEN not configured")
+                console.print(
+                    f"[yellow]–[/yellow] GitHub write access — {repo} ({connector_type}): "
+                    "GITHUB_TOKEN not configured"
+                )
                 all_ok = False
                 continue
             try:
                 gh = GitHubConnector(config={"repo": repo, "token": settings.github_token})
                 ok = await gh.health_check()
                 if ok:
-                    console.print(f"[green]✓[/green] GitHub write access — {repo} ({connector_type})")
+                    console.print(
+                        f"[green]✓[/green] GitHub write access — {repo} ({connector_type})"
+                    )
                 else:
-                    console.print(f"[red]✗[/red] GitHub write access — {repo} ({connector_type}): no write permission")
+                    console.print(
+                        f"[red]✗[/red] GitHub write access — {repo} ({connector_type}): "
+                        "no write permission"
+                    )
                     all_ok = False
             except Exception as exc:
-                console.print(f"[red]✗[/red] GitHub write access — {repo} ({connector_type}): {exc}")
+                console.print(
+                    f"[red]✗[/red] GitHub write access — {repo} ({connector_type}): {exc}"
+                )
                 all_ok = False
 
     if not all_ok:

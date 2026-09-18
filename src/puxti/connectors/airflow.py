@@ -73,7 +73,9 @@ class AirflowConnector(BaseConnector):
                 ))
         return edges
 
-    async def generate_changes(self, event: SemanticChangeEvent) -> tuple[list[FileDiff], list[str]]:
+    async def generate_changes(
+        self, event: SemanticChangeEvent
+    ) -> tuple[list[FileDiff], list[str]]:
         """Generate docstring annotation diffs for Airflow tasks in the affected set."""
         affected_task_ids = [
             eid for eid in (event.affected_entity_ids or [])

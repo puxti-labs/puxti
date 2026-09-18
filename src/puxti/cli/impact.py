@@ -108,10 +108,14 @@ async def _run_impact(entity: str, change_type: str | None, as_json: bool) -> No
         if change_type:
             header_lines += f"\n[bold]Change type:[/bold] {change_type}"
 
-        console.print(Panel(header_lines, title=f"[bold]Impact: {entity}[/bold]", border_style="blue"))
+        console.print(
+            Panel(header_lines, title=f"[bold]Impact: {entity}[/bold]", border_style="blue")
+        )
 
         if not rows:
-            console.print("[yellow]No dependents found.[/yellow] Nothing in the graph depends on this entity.")
+            console.print(
+                "[yellow]No dependents found.[/yellow] Nothing in the graph depends on this entity."
+            )
             return
 
         table = Table(show_lines=False)
@@ -153,11 +157,13 @@ async def _run_impact(entity: str, change_type: str | None, as_json: bool) -> No
 
         if change_type in ("rename", "drop", "type_change") and str_count:
             console.print(
-                f"[yellow]⚠  {str_count} structural dependent(s) will need updating for a {change_type}.[/yellow]"
+                f"[yellow]⚠  {str_count} structural dependent(s) will need "
+                f"updating for a {change_type}.[/yellow]"
             )
         if change_type in ("redefine", "drop", "type_change") and sem_count:
             console.print(
-                f"[yellow]⚠  {sem_count} semantic dependent(s) may need review for a {change_type}.[/yellow]"
+                f"[yellow]⚠  {sem_count} semantic dependent(s) may need "
+                f"review for a {change_type}.[/yellow]"
             )
 
     finally:
