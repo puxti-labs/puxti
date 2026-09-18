@@ -4,16 +4,20 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from puxti.models import EntityStatus
+
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 
-def _mock_entity(entity_id: str, name: str, etype: str = "model", project: str = "jaffle_shop"):
+def _mock_entity(entity_id: str, name: str, etype: str = "model", project: str = "jaffle_shop",
+                 status: EntityStatus = EntityStatus.BOUND):
     e = MagicMock()
     e.id = entity_id
     e.name = name
     e.type = MagicMock(value=etype)
     e.source_connector = "dbt"
     e.project = project
+    e.status = status
     return e
 
 
@@ -228,3 +232,38 @@ async def test_describe_entity_outgoing_edge_direction():
         from puxti.mcp_server import describe_entity
         result = json.loads(await describe_entity(entity_id="model.jaffle_shop.orders"))
     assert result["semantic_edges"][0]["direction"] == "outgoing"
+
+
+# ── proposed metrics are not reported as facts ────────────────────────────────
+
+async def test_describe_entity_proposed_is_flagged_not_bound():
+    from puxti.models import Definition
+
+    entity = _mock_entity("metric.proposed.nrr", "nrr", etype="metric",
+                          status=EntityStatus.PROPOSED)
+    definition = Definition(
+        entity_id="metric.proposed.nrr",
+        description="Net revenue retention, net of churn.",
+        version=1,
+        created_by="user",
+    )
+    graph = _mock_graph(entity=entity, definition=definition, edges=[])
+    with patch("puxti.mcp_server._graph_connect", new=AsyncMock(return_value=graph)):
+        from puxti.mcp_server import describe_entity
+        result = json.loads(await describe_entity(entity_id="metric.proposed.nrr"))
+    assert result["bound"] is False
+    assert result["status"] == "proposed"
+    assert "Do NOT report a value" in result["note"]
+    # The definition is still returned — as intent, not as a fact.
+    assert result["definition"]["description"] == "Net revenue retention, net of churn."
+
+
+async def test_impact_of_change_proposed_returns_marker():
+    entity = _mock_entity("metric.proposed.nrr", "nrr", etype="metric",
+                          status=EntityStatus.PROPOSED)
+    graph = _mock_graph(entity=entity)
+    with patch("puxti.mcp_server._graph_connect", new=AsyncMock(return_value=graph)):
+        from puxti.mcp_server import impact_of_change
+        result = json.loads(await impact_of_change(entity_id="metric.proposed.nrr"))
+    assert result["proposed"] is True
+    assert result["dependents"] == []

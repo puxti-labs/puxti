@@ -135,8 +135,13 @@ def _parse_entity_id(entity_id: str) -> tuple[EntityType, str, str]:
       model.<project>.<name>           → MODEL, dbt,       project
       table.prisma.<model>[.<field>]   → TABLE, prisma,    prisma
       view.<schema>.<name>[.<column>]  → VIEW,  sql_views, schema
+      metric.<project>.<name>          → METRIC, proposed, project
     """
     parts = entity_id.split(".")
+    if parts[0] == "metric" and len(parts) >= 3:
+        # `proposed` is the sentinel namespace `define` uses for an empty project;
+        # decode it back to "" so callers (e.g. `link`) get the project `define` stored.
+        return EntityType.METRIC, "proposed", ("" if parts[1] == "proposed" else parts[1])
     if parts[0] == "task" and len(parts) >= 4 and parts[1] == "airflow":
         return EntityType.TASK, "airflow", parts[2]
     if parts[0] == "source" and len(parts) >= 3:

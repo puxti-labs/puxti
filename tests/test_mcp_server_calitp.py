@@ -23,7 +23,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from puxti.models import Definition, EdgeType, SemanticEdge
+from puxti.models import Definition, EdgeType, EntityStatus, SemanticEdge
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -37,6 +37,7 @@ def _model(name: str, etype: str = "model") -> MagicMock:
     e.type = MagicMock(value=etype)
     e.source_connector = "dbt"
     e.project = PROJECT
+    e.status = EntityStatus.BOUND
     return e
 
 

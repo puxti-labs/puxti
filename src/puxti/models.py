@@ -33,6 +33,11 @@ class ChangeStatus(str, Enum):
     CLOSED = "closed"
 
 
+class EntityStatus(str, Enum):
+    PROPOSED = "proposed"    # defined ahead of the code that implements it — not yet bound
+    BOUND = "bound"          # backed by a real scanned entity
+
+
 class EdgeType(str, Enum):
     DEPENDS_ON = "depends_on"
     TRANSFORMS = "transforms"
@@ -49,6 +54,7 @@ class Entity(BaseModel):
     type: EntityType
     source_connector: str
     project: str = ""                        # project name — e.g. dbt project, Airflow instance
+    status: EntityStatus = EntityStatus.BOUND  # proposed = defined before a backing model exists
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

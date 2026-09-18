@@ -7,7 +7,16 @@ from pathlib import Path
 
 import aiosqlite
 
-from puxti.models import ChangeEvent, CorrectionEvent, Definition, Edge, Entity, SemanticEdge
+from puxti.models import (
+    ChangeEvent,
+    CorrectionEvent,
+    Definition,
+    Edge,
+    Entity,
+    EntityStatus,
+    EntityType,
+    SemanticEdge,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +29,7 @@ CREATE TABLE IF NOT EXISTS entities (
     type TEXT NOT NULL,
     source_connector TEXT NOT NULL,
     project TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'bound',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -87,6 +97,7 @@ def _to_entity(row: aiosqlite.Row) -> Entity:
         type=row["type"],
         source_connector=row["source_connector"],
         project=row["project"] or "",
+        status=(row["status"] if "status" in row.keys() else "bound") or "bound",
     )
 
 
@@ -113,9 +124,26 @@ class KnowledgeGraph:
         self._db = await aiosqlite.connect(str(self._db_path))
         self._db.row_factory = aiosqlite.Row
         await self._db.executescript(_SCHEMA)
+        await self._migrate()
         await self._db.execute("PRAGMA journal_mode=WAL")
         await self._db.commit()
         logger.info("Knowledge Graph connected: %s", self._db_path)
+
+    async def _migrate(self) -> None:
+        """Idempotent, forward-only schema migrations for graphs created by
+        earlier versions. `_SCHEMA` uses CREATE TABLE IF NOT EXISTS, so a column
+        added to an existing table must be applied here, not in `_SCHEMA`."""
+        async with self._db.execute("PRAGMA table_info(entities)") as cur:
+            columns = {row["name"] for row in await cur.fetchall()}
+        if "status" not in columns:
+            # Pre-existing rows are all scanned entities → bound.
+            await self._db.execute(
+                "ALTER TABLE entities ADD COLUMN status TEXT NOT NULL DEFAULT 'bound'"
+            )
+        await self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_entities_status ON entities(status)"
+        )
+        await self._db.commit()
 
     async def close(self) -> None:
         if self._db:
@@ -127,15 +155,18 @@ class KnowledgeGraph:
     async def upsert_entity(self, entity: Entity) -> None:
         await self._db.execute(
             """
-            INSERT INTO entities (id, name, type, source_connector, project, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO entities
+                (id, name, type, source_connector, project, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 name=excluded.name, type=excluded.type,
                 source_connector=excluded.source_connector,
-                project=excluded.project, updated_at=excluded.updated_at
+                project=excluded.project, status=excluded.status,
+                updated_at=excluded.updated_at
             """,
             (entity.id, entity.name, entity.type.value, entity.source_connector,
-             entity.project, entity.created_at.isoformat(), entity.updated_at.isoformat()),
+             entity.project, entity.status.value,
+             entity.created_at.isoformat(), entity.updated_at.isoformat()),
         )
         await self._db.commit()
 
@@ -150,8 +181,9 @@ class KnowledgeGraph:
         if row:
             existing_id = row["id"]
             await self._db.execute(
-                "UPDATE entities SET type=?, project=?, updated_at=? WHERE id=?",
-                (entity.type.value, entity.project, entity.updated_at.isoformat(), existing_id),
+                "UPDATE entities SET type=?, project=?, status=?, updated_at=? WHERE id=?",
+                (entity.type.value, entity.project, entity.status.value,
+                 entity.updated_at.isoformat(), existing_id),
             )
             await self._db.commit()
             return Entity(
@@ -160,15 +192,18 @@ class KnowledgeGraph:
                 type=entity.type,
                 source_connector=entity.source_connector,
                 project=entity.project,
+                status=entity.status,
             )
 
         await self._db.execute(
             """
-            INSERT INTO entities (id, name, type, source_connector, project, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO entities
+                (id, name, type, source_connector, project, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (entity.id, entity.name, entity.type.value, entity.source_connector,
-             entity.project, entity.created_at.isoformat(), entity.updated_at.isoformat()),
+             entity.project, entity.status.value,
+             entity.created_at.isoformat(), entity.updated_at.isoformat()),
         )
         await self._db.commit()
         return entity
@@ -234,6 +269,84 @@ class KnowledgeGraph:
                 )
             result.append((entity, definition))
         return result
+
+    # ── Proposed entities ──────────────────────────────────────────────────────
+
+    async def get_proposed_entities(self) -> list[Entity]:
+        """Return entities defined ahead of code (status='proposed'), not yet bound."""
+        async with self._db.execute(
+            "SELECT * FROM entities WHERE status=? ORDER BY name",
+            (EntityStatus.PROPOSED.value,),
+        ) as cur:
+            return [_to_entity(r) for r in await cur.fetchall()]
+
+    async def get_reconcile_candidates(self) -> list[Entity]:
+        """Bound model/view/table entities a proposed metric could bind to."""
+        types = (EntityType.MODEL.value, EntityType.VIEW.value, EntityType.TABLE.value)
+        placeholders = ",".join("?" * len(types))
+        async with self._db.execute(
+            f"SELECT * FROM entities WHERE status=? AND type IN ({placeholders})",
+            (EntityStatus.BOUND.value, *types),
+        ) as cur:
+            return [_to_entity(r) for r in await cur.fetchall()]
+
+    async def bind_entity(self, proposed_id: str, real_id: str) -> None:
+        """Bind a proposed entity to a real one: carry its latest definition onto
+        the real entity as a new version, re-point its semantic edges, then remove
+        the placeholder. Safe on collisions (edges are de-duped, self-loops
+        dropped)."""
+        proposed_def = await self.get_latest_definition(proposed_id)
+        if proposed_def is not None:
+            existing = await self.get_latest_definition(real_id)
+            new_def = Definition(
+                entity_id=real_id,
+                description=proposed_def.description,
+                version=(existing.version + 1) if existing else 1,
+                created_by="user",
+            )
+            # Inline INSERT (no commit) rather than upsert_definition, which commits
+            # mid-bind: the whole bind must be one transaction, or a later failure
+            # leaves the target defined while the placeholder survives, and a retry
+            # writes a duplicate version.
+            await self._db.execute(
+                """
+                INSERT INTO definitions
+                    (id, entity_id, description, version, created_by, change_event_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (new_def.id, new_def.entity_id, new_def.description, new_def.version,
+                 new_def.created_by, new_def.change_event_id, new_def.created_at.isoformat()),
+            )
+
+        # Re-point semantic edges from the placeholder onto the real entity,
+        # dropping self-loops and de-duping against edges already on the target.
+        async with self._db.execute(
+            "SELECT from_id, to_id, type, description, created_by, created_at "
+            "FROM semantic_edges WHERE from_id=? OR to_id=?",
+            (proposed_id, proposed_id),
+        ) as cur:
+            edges = await cur.fetchall()
+        for e in edges:
+            new_from = real_id if e["from_id"] == proposed_id else e["from_id"]
+            new_to = real_id if e["to_id"] == proposed_id else e["to_id"]
+            if new_from == new_to:
+                continue
+            await self._db.execute(
+                """
+                INSERT INTO semantic_edges
+                    (from_id, to_id, type, description, created_by, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(from_id, to_id, type) DO NOTHING
+                """,
+                (new_from, new_to, e["type"], e["description"], e["created_by"], e["created_at"]),
+            )
+
+        await self._db.execute(
+            "DELETE FROM semantic_edges WHERE from_id=? OR to_id=?", (proposed_id, proposed_id)
+        )
+        await self._db.execute("DELETE FROM definitions WHERE entity_id=?", (proposed_id,))
+        await self._db.execute("DELETE FROM entities WHERE id=?", (proposed_id,))
+        await self._db.commit()
 
     # ── Structural lineage edges ───────────────────────────────────────────────
 

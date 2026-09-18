@@ -63,6 +63,26 @@ def test_parse_entity_id_view_column():
     assert project == "analytics"
 
 
+def test_parse_entity_id_metric_named_project():
+    from puxti.cli._shared import _parse_entity_id
+    from puxti.models import EntityType
+    entity_type, connector, project = _parse_entity_id("metric.jaffle_shop.nrr")
+    assert entity_type == EntityType.METRIC
+    assert connector == "proposed"
+    assert project == "jaffle_shop"
+
+
+def test_parse_entity_id_metric_proposed_sentinel_decodes_to_empty_project():
+    """`define` stores project="" and encodes it as the `proposed` namespace in the
+    ID; parsing must decode it back to "" so `link` gets the same project."""
+    from puxti.cli._shared import _parse_entity_id
+    from puxti.models import EntityType
+    entity_type, connector, project = _parse_entity_id("metric.proposed.nrr")
+    assert entity_type == EntityType.METRIC
+    assert connector == "proposed"
+    assert project == ""
+
+
 def test_parse_entity_id_bare_table_prefix_raises():
     """table.* without the prisma namespace is not claimed by any connector."""
     from puxti.cli._shared import _parse_entity_id

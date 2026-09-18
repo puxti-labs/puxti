@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+import aiosqlite
+
 from puxti.core.graph import KnowledgeGraph
 from puxti.models import (
     ChangeEvent,
@@ -14,6 +16,7 @@ from puxti.models import (
     Edge,
     EdgeType,
     Entity,
+    EntityStatus,
     EntityType,
     SemanticEdge,
 )
@@ -279,3 +282,147 @@ async def test_get_all_entities_with_definitions(kg: KnowledgeGraph) -> None:
     d = {e.id: defn for e, defn in pairs}
     assert d[a.id] is not None
     assert d[b.id] is None
+
+
+# ── proposed entities + status migration + binding ────────────────────────────
+
+_OLD_ENTITIES_SCHEMA = """
+CREATE TABLE entities (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    type TEXT NOT NULL,
+    source_connector TEXT NOT NULL,
+    project TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+"""
+
+
+@pytest.mark.asyncio
+async def test_status_migration_adds_column_and_defaults_bound(tmp_path: Path) -> None:
+    """A graph.db created before the status column upgrades cleanly, and its
+    pre-existing rows default to bound."""
+    db_path = tmp_path / "graph.db"
+    async with aiosqlite.connect(str(db_path)) as raw:
+        await raw.executescript(_OLD_ENTITIES_SCHEMA)
+        await raw.execute(
+            "INSERT INTO entities (id, name, type, source_connector, project, created_at, updated_at) "
+            "VALUES ('e1', 'orders', 'model', 'dbt', 'test', '2024-01-01T00:00:00', '2024-01-01T00:00:00')"
+        )
+        await raw.commit()
+
+    graph = KnowledgeGraph(db_path=db_path)
+    await graph.connect()
+    try:
+        existing = await graph.get_entity_by_id("e1")
+        assert existing is not None
+        assert existing.status == EntityStatus.BOUND
+    finally:
+        await graph.close()
+
+    # Re-opening is a no-op (idempotent).
+    graph2 = KnowledgeGraph(db_path=db_path)
+    await graph2.connect()
+    try:
+        assert (await graph2.get_entity_by_id("e1")).status == EntityStatus.BOUND
+    finally:
+        await graph2.close()
+
+
+@pytest.mark.asyncio
+async def test_get_proposed_and_reconcile_candidates(kg: KnowledgeGraph) -> None:
+    proposed = Entity(name="nrr", type=EntityType.METRIC, source_connector="proposed",
+                      project="test", status=EntityStatus.PROPOSED)
+    await kg.upsert_entity(proposed)
+    model = _entity("orders")  # bound dbt model
+    await kg.upsert_entity(model)
+
+    proposed_list = await kg.get_proposed_entities()
+    assert [e.id for e in proposed_list] == [proposed.id]
+
+    candidates = await kg.get_reconcile_candidates()
+    assert model.id in {e.id for e in candidates}
+    assert proposed.id not in {e.id for e in candidates}
+
+
+@pytest.mark.asyncio
+async def test_bind_entity_carries_definition_and_edges(kg: KnowledgeGraph) -> None:
+    proposed = Entity(name="nrr", type=EntityType.METRIC, source_connector="proposed",
+                      project="test", status=EntityStatus.PROPOSED)
+    await kg.upsert_entity(proposed)
+    await kg.upsert_definition(Definition(
+        entity_id=proposed.id, description="net revenue retention", version=1, created_by="user"))
+
+    upstream = _entity("revenue")
+    await kg.upsert_entity(upstream)
+    await kg.upsert_semantic_edge(_sedge(proposed.id, upstream.id))
+
+    target = _entity("fct_nrr")
+    await kg.upsert_entity(target)
+
+    await kg.bind_entity(proposed.id, target.id)
+
+    # Placeholder gone.
+    assert await kg.get_entity_by_id(proposed.id) is None
+    assert await kg.get_proposed_entities() == []
+    # Definition carried onto the target.
+    defn = await kg.get_latest_definition(target.id)
+    assert defn is not None and defn.description == "net revenue retention"
+    # Semantic edge re-pointed to the target.
+    edges = await kg.get_entity_semantic_edges(target.id)
+    assert any(e.from_entity_id == target.id and e.to_entity_id == upstream.id for e in edges)
+
+
+@pytest.mark.asyncio
+async def test_bind_entity_dedups_and_drops_self_loops(kg: KnowledgeGraph) -> None:
+    proposed = Entity(name="nrr", type=EntityType.METRIC, source_connector="proposed",
+                      project="test", status=EntityStatus.PROPOSED)
+    await kg.upsert_entity(proposed)
+    target = _entity("fct_nrr")
+    await kg.upsert_entity(target)
+    upstream = _entity("revenue")
+    await kg.upsert_entity(upstream)
+
+    # Edge proposed→target would become a self-loop after binding → dropped.
+    await kg.upsert_semantic_edge(_sedge(proposed.id, target.id))
+    # Duplicate edge already present on the target → de-duped, no error.
+    await kg.upsert_semantic_edge(_sedge(proposed.id, upstream.id))
+    await kg.upsert_semantic_edge(_sedge(target.id, upstream.id))
+
+    await kg.bind_entity(proposed.id, target.id)
+
+    edges = await kg.get_entity_semantic_edges(target.id)
+    assert not any(e.from_entity_id == target.id and e.to_entity_id == target.id for e in edges)
+    to_upstream = [e for e in edges if e.to_entity_id == upstream.id and e.from_entity_id == target.id]
+    assert len(to_upstream) == 1
+
+
+@pytest.mark.asyncio
+async def test_bind_entity_is_single_transaction(kg: KnowledgeGraph) -> None:
+    """The whole bind must be one transaction: the definition copy must not commit
+    mid-bind (which would let a later failure leave a half-done bind)."""
+    proposed = Entity(name="nrr", type=EntityType.METRIC, source_connector="proposed",
+                      project="test", status=EntityStatus.PROPOSED)
+    await kg.upsert_entity(proposed)
+    await kg.upsert_definition(Definition(
+        entity_id=proposed.id, description="net revenue retention", version=1, created_by="user"))
+    target = _entity("fct_nrr")
+    await kg.upsert_entity(target)
+
+    original_commit = kg._db.commit
+    calls = {"n": 0}
+
+    async def counting_commit():
+        calls["n"] += 1
+        return await original_commit()
+
+    kg._db.commit = counting_commit
+    try:
+        await kg.bind_entity(proposed.id, target.id)
+    finally:
+        kg._db.commit = original_commit
+
+    assert calls["n"] == 1  # one commit for the whole bind, not one per write
+    defn = await kg.get_latest_definition(target.id)
+    assert defn is not None and defn.description == "net revenue retention"
