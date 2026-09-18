@@ -130,5 +130,79 @@ async def _run_scan(dbt_project_dir: str | None, interactive: bool, dry_run: boo
                 f"{result.definitions_written} definitions, "
                 f"{result.semantic_edges_written} semantic edges written."
             )
+
+        # Reconcile proposed metrics once, after every connector — a proposed
+        # metric can bind to an entity produced by any of them.
+        await _reconcile_proposed(graph, interactive)
     finally:
         await graph.close()
+
+
+def _build_name_index(entities: list) -> dict[str, str]:
+    """Lowercase bare name → entity ID, dropping names claimed by more than one
+    entity. Mirrors core.resolution.build_reference_index's ambiguous-drop rule
+    ("dangling beats silently wrong"); kept separate because that function reads
+    entity.metadata, which the graph does not persist."""
+    _AMBIGUOUS = object()
+    index: dict[str, object] = {}
+    for e in entities:
+        key = e.name.lower()
+        existing = index.get(key)
+        if existing is None:
+            index[key] = e.id
+        elif existing != e.id:
+            index[key] = _AMBIGUOUS
+    return {k: v for k, v in index.items() if v is not _AMBIGUOUS}
+
+
+async def _reconcile_proposed(graph: KnowledgeGraph, interactive: bool) -> None:
+    """Offer to bind proposed metrics to scanned entities with a matching name.
+
+    Never binds without confirmation. Exact (case-insensitive) name matches only;
+    anything scan cannot match stays unbound and is bound explicitly with
+    `puxti bind`."""
+    proposed = await graph.get_proposed_entities()
+    if not proposed:
+        return
+
+    index = _build_name_index(await graph.get_reconcile_candidates())
+    matches = [(p, index[p.name.lower()]) for p in proposed if p.name.lower() in index]
+
+    if not matches:
+        console.print(
+            f"\n[dim]{len(proposed)} proposed metric(s) still unbound: no scanned entity "
+            f"matches by name. Bind explicitly with `puxti bind --proposed <id> --to <id>`.[/dim]"
+        )
+        return
+
+    console.print(f"\n[bold]Proposed metrics matched to scanned entities ({len(matches)}):[/bold]")
+    for p, target_id in matches:
+        console.print(f"  [cyan]{p.name}[/cyan] [dim]({p.id})[/dim] → [cyan]{target_id}[/cyan]")
+
+    confirmed: list[tuple] = []
+    if interactive:
+        for p, target_id in matches:
+            choice = console.input(
+                f"  [bold]Bind[/bold] {p.name} → {target_id}? "
+                "([green]y[/green]=yes, [red]n[/red]=skip) > "
+            ).strip().lower()
+            if choice == "y":
+                confirmed.append((p, target_id))
+    else:
+        choice = console.input(
+            "\n[bold]Bind all?[/bold] ([green]y[/green]=yes, [red]n[/red]=cancel) > "
+        ).strip().lower()
+        if choice == "y":
+            confirmed = matches
+
+    for p, target_id in confirmed:
+        await graph.bind_entity(p.id, target_id)
+
+    bound = len(confirmed)
+    remaining = len(proposed) - bound
+    console.print(f"[green]✓[/green] Bound {bound} proposed metric(s).")
+    if remaining:
+        console.print(
+            f"[dim]{remaining} still unbound. Bind explicitly with "
+            f"`puxti bind --proposed <id> --to <id>`.[/dim]"
+        )

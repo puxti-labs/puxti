@@ -10,6 +10,8 @@ from puxti.cli._app import app
 
 from puxti.cli import capture  # noqa: F401
 from puxti.cli import scan  # noqa: F401
+from puxti.cli import define  # noqa: F401
+from puxti.cli import bind  # noqa: F401
 from puxti.cli import link  # noqa: F401
 from puxti.cli import impact  # noqa: F401
 from puxti.cli import redefine  # noqa: F401

@@ -51,6 +51,9 @@ the SQL against.
 2. **Call `describe_entity`** on each. Read the current definition and its semantic edges.
    An edge like `derived_from` or `feeds` pointing at a canonical source the model bypasses
    is a red flag: the model may be computing the number from the wrong place.
+   If it returns `"bound": false` (a *proposed* metric), the definition is intent, not a
+   built model. Report what the metric is *meant* to mean and that it is not yet implemented.
+   Do not report a value for it as fact, and do not guess which model computes it.
 3. **Call `definition_history`** on the key entity to see whether its meaning changed
    recently. A newer version (say v2) that post-dates the model's SQL is the signal a model
    may be stale. **Honor the latest version**, not the one the SQL was written against.
@@ -84,6 +87,8 @@ where `<trust>` is one of:
 - `current` — the model's SQL matches the latest definition; trust the number.
 - `stale: <reason>` — a newer definition exists that the model's SQL does not reflect;
   treat the number as unreliable and explain why.
+- `proposed` — the entity is a proposed metric (`"bound": false`), defined ahead of any
+  model that implements it; report it as intent, not a value.
 
 Example:
 

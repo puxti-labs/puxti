@@ -44,3 +44,6 @@ neo4j_logs/
 
 # Plan / scratch files
 fix_plan.md
+
+# enola architectural snapshots (local, per-repo)
+.enola/

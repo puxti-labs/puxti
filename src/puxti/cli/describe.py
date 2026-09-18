@@ -9,6 +9,31 @@ from rich.table import Table
 from puxti.cli._app import app
 from puxti.cli._shared import _run, console, err_console
 from puxti.core.graph import KnowledgeGraph
+from puxti.models import EntityStatus
+
+
+def _render_proposed_section(proposed_pairs: list) -> None:
+    """Render the 'Proposed (unbound)' table for the KG overview. No-op when empty."""
+    if not proposed_pairs:
+        return
+    table = Table(
+        title=f"[bold yellow]Proposed (unbound)[/bold yellow]  "
+              f"[dim]{len(proposed_pairs)} metric(s), not yet implemented[/dim]",
+        show_lines=False,
+    )
+    table.add_column("Name", style="bold", no_wrap=True)
+    table.add_column("Entity ID", style="dim", no_wrap=True)
+    table.add_column("Definition")
+    for entity_obj, definition in proposed_pairs:
+        desc = definition.description if definition else "[dim]no definition[/dim]"
+        if len(desc) > 80:
+            desc = desc[:77] + "..."
+        table.add_row(entity_obj.name, entity_obj.id, desc)
+    console.print(table)
+    console.print(
+        "[dim]Bind with `puxti scan` (reconcile) or "
+        "`puxti bind --proposed <id> --to <id>`.[/dim]\n"
+    )
 
 
 @app.command()
@@ -52,14 +77,20 @@ async def _run_describe(entity: str | None, project: str | None = None) -> None:
             def_meta = f"v{definition.version} · created by {definition.created_by}" if definition else ""
 
             project_line = f"[bold]Project:[/bold]    {entity_obj.project}\n" if entity_obj.project else ""
+            is_proposed = entity_obj.status == EntityStatus.PROPOSED
+            status_line = (
+                "[bold]Status:[/bold]     [yellow]proposed · not yet implemented[/yellow]\n"
+                if is_proposed else ""
+            )
             console.print(Panel(
                 f"[bold]Type:[/bold]       {entity_obj.type.value}\n"
                 f"[bold]Connector:[/bold]  {entity_obj.source_connector}\n"
                 f"{project_line}"
+                f"{status_line}"
                 f"[bold]Definition:[/bold] {def_text}\n"
                 f"[dim]{def_meta}[/dim]",
                 title=f"[bold]{entity_obj.name}[/bold]  [dim]{entity}[/dim]",
-                border_style="blue",
+                border_style="yellow" if is_proposed else "blue",
             ))
 
             outgoing = [e for e in edges if e.from_entity_id == entity]
@@ -105,13 +136,17 @@ async def _run_describe(entity: str | None, project: str | None = None) -> None:
                     if edge.from_entity_id in entity_ids or edge.to_entity_id in entity_ids
                 ]
 
+            # Proposed metrics are shown in their own flagged section, not mixed
+            # into the per-project entity tables.
+            bound_pairs = [(e, d) for e, d in pairs if e.status != EntityStatus.PROPOSED]
+            proposed_pairs = [(e, d) for e, d in pairs if e.status == EntityStatus.PROPOSED]
+
             # Group by project for display
-            from itertools import groupby
-            projects_in_graph = sorted({e.project or "(untagged)" for e, _ in pairs})
-            defined = sum(1 for _, d in pairs if d)
+            projects_in_graph = sorted({e.project or "(untagged)" for e, _ in bound_pairs})
+            defined = sum(1 for _, d in bound_pairs if d)
 
             for proj in projects_in_graph:
-                proj_pairs = [(e, d) for e, d in pairs if (e.project or "(untagged)") == proj]
+                proj_pairs = [(e, d) for e, d in bound_pairs if (e.project or "(untagged)") == proj]
                 table = Table(
                     title=f"[bold]{proj}[/bold]  [dim]{len(proj_pairs)} entities[/dim]",
                     show_lines=False,
@@ -132,10 +167,12 @@ async def _run_describe(entity: str | None, project: str | None = None) -> None:
                 console.print()
 
             console.print(
-                f"[dim]{defined}/{len(pairs)} entities have definitions · "
+                f"[dim]{defined}/{len(bound_pairs)} entities have definitions · "
                 f"{len(semantic_edges)} semantic edge(s) · "
                 f"{len(projects_in_graph)} project(s)[/dim]\n"
             )
+
+            _render_proposed_section(proposed_pairs)
 
             if semantic_edges:
                 # Build name lookup for cleaner display

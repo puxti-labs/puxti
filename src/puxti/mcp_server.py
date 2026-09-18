@@ -14,6 +14,7 @@ import json
 from mcp.server.mcpserver import MCPServer
 
 from puxti.core.graph import KnowledgeGraph
+from puxti.models import EntityStatus
 
 mcp = MCPServer(
     "puxti",
@@ -62,6 +63,17 @@ async def impact_of_change(entity_id: str, change_type: str | None = None) -> st
     if not entity:
         return json.dumps({"error": f"Entity '{entity_id}' not found. Run `puxti scan` first."})
 
+    if entity.status == EntityStatus.PROPOSED:
+        return json.dumps({
+            "entity_id": entity_id,
+            "change_type": change_type,
+            "proposed": True,
+            "note": "This metric is proposed (defined but not yet implemented by a model). "
+                    "It has no structural dependents until it is bound to a real entity.",
+            "dependents": [],
+            "total_count": 0,
+        })
+
     semantic_deps = await graph.get_semantic_dependents_with_depth(entity_id)
     structural_deps = await graph.get_structural_dependents(entity_id)
 
@@ -106,6 +118,15 @@ async def consumers(entity_id: str) -> str:
     entity = await graph.get_entity_by_id(entity_id)
     if not entity:
         return json.dumps({"error": f"Entity '{entity_id}' not found. Run `puxti scan` first."})
+
+    if entity.status == EntityStatus.PROPOSED:
+        return json.dumps({
+            "entity_id": entity_id,
+            "proposed": True,
+            "note": "This metric is proposed (not yet implemented). No entity reads from it yet.",
+            "consumers": [],
+            "total_count": 0,
+        })
 
     deps = await graph.get_structural_dependents(entity_id)
     return json.dumps({
@@ -166,12 +187,20 @@ async def describe_entity(entity_id: str) -> str:
     definition = await graph.get_latest_definition(entity_id)
     edges = await graph.get_entity_semantic_edges(entity_id)
 
+    is_bound = entity.status == EntityStatus.BOUND
     return json.dumps({
         "entity_id": entity_id,
         "name": entity.name,
         "type": entity.type.value,
         "connector": entity.source_connector,
         "project": entity.project,
+        "status": entity.status.value,
+        "bound": is_bound,
+        "note": None if is_bound else (
+            "PROPOSED: this metric is defined as intent but not yet implemented by any "
+            "model. The definition describes what it should mean. Do NOT report a value "
+            "for it as fact. Cite it as a proposed definition only."
+        ),
         "definition": {
             "description": definition.description,
             "version": definition.version,

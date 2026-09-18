@@ -262,6 +262,53 @@ Output shows each dependent entity, its hop distance from the target, and whethe
 
 ---
 
+### Step 1d — Define a metric before it exists (optional)
+
+Sometimes the definition comes before the model. You can register a metric's
+meaning now and let a model catch up later. `puxti define` writes a *proposed*
+metric into the Knowledge Graph. No LLM call, no dbt manifest, no PR: the
+definition is intent, not code.
+
+```bash
+puxti define --name net_revenue_retention --description "Revenue retained from existing customers, net of churn and contraction." --derived-from model.jaffle_shop.subscriptions
+```
+
+A proposed metric is never reported as a fact by the MCP tools (see below) until
+it is bound to a real entity. `puxti describe` lists proposed metrics in their own
+"Proposed (unbound)" section.
+
+Two ways to bind a proposed metric to the model that implements it:
+
+- `puxti scan` reconciles automatically: when a scanned model or view has the same
+  name as a proposed metric, scan offers the bind and you confirm it. It never
+  binds silently, and it only matches on an exact (case-insensitive) name.
+- `puxti bind` binds explicitly, for the cases scan cannot match by name:
+
+```bash
+puxti bind --proposed metric.proposed.net_revenue_retention --to model.jaffle_shop.fct_nrr
+```
+
+Binding carries the metric's definition onto the real entity as a new version and
+moves its semantic edges across.
+
+#### `define` options
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--name` / `-n` | Yes | Metric name (e.g. `net_revenue_retention`) |
+| `--description` / `-d` | Yes | What the metric means |
+| `--project` / `-p` | No | Project to namespace the metric under |
+| `--derived-from` | No | Existing entity ID this metric is derived from; anchors it into impact analysis |
+
+#### `bind` options
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--proposed` | Yes | Proposed metric entity ID (from `puxti define` / `puxti describe`) |
+| `--to` | Yes | Real entity ID that implements the metric |
+
+---
+
 ### Step 2a — Capture a column rename
 
 ```bash
@@ -373,6 +420,9 @@ Commands like `capture`, `redefine`, and `correct` require a full entity ID (e.g
 **The `correct` → `redefine` handoff**
 When you classify a correction as a "real change", Puxti prints the `redefine` command to run next and asks whether to run it immediately. Press Enter or anything other than `y` to keep the copy-paste workflow.
 
+**Proposed metrics are inert until reconciled**
+A metric created with `puxti define` is a definition with no backing model. It holds no value and has no structural dependents until it is bound. `puxti scan` only auto-suggests a bind when a scanned model or view has the exact same name; for anything else, bind it explicitly with `puxti bind`.
+
 ---
 
 ## Use with Claude Code / Cursor (MCP)
@@ -400,6 +450,8 @@ Once connected, four read-only tools are available:
 | `consumers` | Which models directly read from this entity? |
 | `describe_entity` | What does this entity mean? What semantic edges does it have? |
 | `definition_history` | How has the meaning of this entity evolved over time? |
+
+For a *proposed* metric (one created with `puxti define` but not yet bound to a model), `describe_entity` returns the definition with `"bound": false`, and `impact_of_change` / `consumers` return a `"proposed"` marker with no dependents. The tools present a proposed metric as intent, never as a value to report.
 
 Run `puxti scan` in your dbt project first to populate the graph.
 
