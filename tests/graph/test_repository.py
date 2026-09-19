@@ -426,3 +426,19 @@ async def test_bind_entity_is_single_transaction(kg: KnowledgeGraph) -> None:
     assert calls["n"] == 1  # one commit for the whole bind, not one per write
     defn = await kg.get_latest_definition(target.id)
     assert defn is not None and defn.description == "net revenue retention"
+
+
+@pytest.mark.asyncio
+async def test_get_all_lineage_edges_excludes_dangling(kg: KnowledgeGraph) -> None:
+    a = _entity("orders")
+    b = _entity("raw_orders", EntityType.TABLE)
+    await kg.upsert_entity(a)
+    await kg.upsert_entity(b)
+    await kg.upsert_edge(Edge(from_entity_id=a.id, to_entity_id=b.id,
+                              type=EdgeType.DEPENDS_ON, connector="dbt"))
+    # A dangling edge whose target is not a real entity must be excluded by the join.
+    await kg.upsert_edge(Edge(from_entity_id=a.id, to_entity_id="sqlref.missing",
+                              type=EdgeType.DEPENDS_ON, connector="dbt"))
+    pairs = {(e.from_entity_id, e.to_entity_id) for e in await kg.get_all_lineage_edges()}
+    assert (a.id, b.id) in pairs
+    assert all(not target.startswith("sqlref.") for _, target in pairs)

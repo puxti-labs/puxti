@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
 
 import aiosqlite
@@ -451,6 +452,29 @@ class KnowledgeGraph:
             rows = await cur.fetchall()
         return [_to_semantic_edge(r) for r in rows]
 
+    async def get_all_lineage_edges(self) -> list[Edge]:
+        """All structural lineage edges whose endpoints are real entities (dangling
+        `sqlref.` placeholder targets are excluded via the joins)."""
+        async with self._db.execute(
+            """
+            SELECT le.from_id, le.to_id, le.connector, le.type
+            FROM lineage_edges le
+            JOIN entities a ON a.id = le.from_id
+            JOIN entities b ON b.id = le.to_id
+            ORDER BY a.name, b.name
+            """
+        ) as cur:
+            rows = await cur.fetchall()
+        return [
+            Edge(
+                from_entity_id=r["from_id"],
+                to_entity_id=r["to_id"],
+                type=r["type"],
+                connector=r["connector"],
+            )
+            for r in rows
+        ]
+
     async def get_entity_semantic_edges(self, entity_id: str) -> list[SemanticEdge]:
         async with self._db.execute(
             """
@@ -582,6 +606,7 @@ class KnowledgeGraph:
                 version=row["version"],
                 created_by=row["created_by"],
                 change_event_id=row["change_event_id"],
+                created_at=datetime.fromisoformat(row["created_at"]),
             )
             for row in rows
         ]

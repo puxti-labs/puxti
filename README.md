@@ -397,6 +397,32 @@ puxti describe --entity "model.jaffle_shop.orders"
 
 ---
 
+### Step 3b — Visualize the graph
+
+Render the Knowledge Graph as a self-contained, interactive HTML page:
+
+```bash
+puxti graph -o kg.html          # write the page
+puxti graph -o kg.html --open   # write it and open in your browser
+puxti graph --project jaffle_shop -o kg.html   # limit to one project
+```
+
+The page has an interactive force-directed view of your entities and their lineage
+and semantic relationships. Click a node to see its definition, relationships, and
+definition history. It is read-only, has no external dependencies (open it in any
+browser, no server needed), and proposed metrics from `puxti define` are shown with a
+distinct style so intent-vs-implemented is visible at a glance.
+
+#### `graph` options
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--output` / `-o` | No | Path to write the HTML file to (default: `puxti-graph.html`) |
+| `--project` / `-p` | No | Only include entities from this project |
+| `--open` | No | Open the generated file in your browser |
+
+---
+
 ### Step 4 — Purge project data
 
 ```bash
