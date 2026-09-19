@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.13.0] — 2026-09-19
+
+### Added
+
+- **`puxti define` and `puxti bind`** — author a metric's meaning before a model implements it. `puxti define` records a *proposed* metric in the Knowledge Graph with no LLM call, no dbt manifest, and no PR; the definition is intent, not code. `puxti scan` offers to bind a proposed metric to a scanned model with a matching name (you confirm; it never binds silently), and `puxti bind` binds one explicitly. A proposed metric is never reported as a fact by the MCP tools or the agent skill until it is bound: `describe_entity` returns `"bound": false`, and `puxti describe` lists proposed metrics in their own "Proposed (unbound)" section.
+- **`puxti graph`** — render the Knowledge Graph as a self-contained, interactive HTML page (`puxti graph -o kg.html`, add `--open` to launch it). A dependency-free, force-directed view of entities and their lineage and semantic relationships; click a node for its definition, relationships, and definition history. No server and no external dependencies. Proposed metrics are shown with a distinct style.
+- **Continuous integration.** A GitHub Actions workflow runs the test suite on Python 3.12 and 3.13 and lints `src/` with ruff on every pull request and push to `main`. The pre-existing `src/` lint findings were cleaned up and the lint step is now a required gate.
+
+### Changed
+
+- `puxti describe` shows a proposed metric's status on `--entity`, and the overview groups proposed metrics into their own flagged "Proposed (unbound)" section.
+
+### Fixed
+
+- `get_definition_history` now returns each definition's stored `created_at` instead of the current time, so the MCP `definition_history` tool and the graph's history timeline report real timestamps.
+
 ## [0.12.0] — 2026-09-01
 
 ### Added
