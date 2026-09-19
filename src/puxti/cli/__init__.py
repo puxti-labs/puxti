@@ -18,6 +18,7 @@ from puxti.cli import redefine  # noqa: F401
 from puxti.cli import correct  # noqa: F401
 from puxti.cli import purge  # noqa: F401
 from puxti.cli import describe  # noqa: F401
+from puxti.cli import graph  # noqa: F401
 from puxti.cli import config  # noqa: F401
 from puxti.cli import health  # noqa: F401
 from puxti.cli import mcp  # noqa: F401
