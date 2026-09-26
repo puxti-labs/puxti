@@ -4,7 +4,9 @@
 def test_parse_entity_id_task():
     from puxti.cli._shared import _parse_entity_id
     from puxti.models import EntityType
-    entity_type, connector, project = _parse_entity_id("task.airflow.salesforce_sync.extract_opportunities")
+    entity_type, connector, project = _parse_entity_id(
+        "task.airflow.salesforce_sync.extract_opportunities"
+    )
     assert entity_type == EntityType.TASK
     assert connector == "airflow"
     assert project == "salesforce_sync"
@@ -85,14 +87,16 @@ def test_parse_entity_id_metric_proposed_sentinel_decodes_to_empty_project():
 
 def test_parse_entity_id_bare_table_prefix_raises():
     """table.* without the prisma namespace is not claimed by any connector."""
-    from puxti.cli._shared import _parse_entity_id
     import pytest
+
+    from puxti.cli._shared import _parse_entity_id
     with pytest.raises(ValueError, match="Unrecognized entity ID"):
         _parse_entity_id("table.warehouse.users")
 
 
 def test_parse_entity_id_unknown_raises():
-    from puxti.cli._shared import _parse_entity_id
     import pytest
+
+    from puxti.cli._shared import _parse_entity_id
     with pytest.raises(ValueError, match="Unrecognized entity ID"):
         _parse_entity_id("unknown.prefix.thing")
