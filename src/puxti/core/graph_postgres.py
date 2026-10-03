@@ -12,6 +12,8 @@ backend is actually used.
 """
 from __future__ import annotations
 
+import asyncio
+import functools
 import json
 import logging
 from datetime import datetime
@@ -31,6 +33,25 @@ from puxti.models import (
 logger = logging.getLogger(__name__)
 
 
+def _serialized(method):
+    """Serialize a public backend operation on the shared asyncpg connection.
+
+    The MCP server reuses one `PostgresKnowledgeGraph` (and its single
+    connection) across tool handlers that the MCP SDK may run concurrently.
+    asyncpg forbids overlapping operations on one connection, so each public
+    method holds a per-instance lock across all of its statements — including a
+    full transaction — before touching the connection. The lock is not
+    reentrant, so a serialized method must never call another serialized method
+    on the same instance; nested reads use the unlocked `_*` helpers instead.
+    """
+    @functools.wraps(method)
+    async def wrapper(self, *args, **kwargs):
+        async with self._lock:
+            return await method(self, *args, **kwargs)
+
+    return wrapper
+
+
 class PostgresKnowledgeGraph:
     """Postgres-backed Knowledge Graph (implements ``GraphStore``).
 
@@ -43,7 +64,10 @@ class PostgresKnowledgeGraph:
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
         self._conn = None  # asyncpg.Connection, set in connect()
+        # Serializes operations on the single shared connection (see _serialized).
+        self._lock = asyncio.Lock()
 
+    @_serialized
     async def connect(self) -> None:
         try:
             import asyncpg
@@ -72,6 +96,7 @@ class PostgresKnowledgeGraph:
             "CREATE INDEX IF NOT EXISTS idx_entities_status ON entities(status)"
         )
 
+    @_serialized
     async def close(self) -> None:
         if self._conn is not None:
             await self._conn.close()
@@ -79,6 +104,7 @@ class PostgresKnowledgeGraph:
 
     # ── Entities ──────────────────────────────────────────────────────────────
 
+    @_serialized
     async def upsert_entity(self, entity: Entity) -> None:
         await self._conn.execute(
             """
@@ -96,6 +122,7 @@ class PostgresKnowledgeGraph:
             entity.created_at.isoformat(), entity.updated_at.isoformat(),
         )
 
+    @_serialized
     async def upsert_entity_by_name(self, entity: Entity) -> Entity:
         """Create or update an entity keyed on (name, source_connector). Returns stored entity."""
         row = await self._conn.fetchrow(
@@ -132,6 +159,7 @@ class PostgresKnowledgeGraph:
         )
         return entity
 
+    @_serialized
     async def get_entity_by_name(self, name: str, connector: str) -> Entity | None:
         row = await self._conn.fetchrow(
             "SELECT * FROM entities WHERE name = $1 AND source_connector = $2",
@@ -139,16 +167,19 @@ class PostgresKnowledgeGraph:
         )
         return _to_entity(row) if row else None
 
+    @_serialized
     async def get_entity_by_id(self, entity_id: str) -> Entity | None:
         row = await self._conn.fetchrow(
             "SELECT * FROM entities WHERE id = $1", entity_id
         )
         return _to_entity(row) if row else None
 
+    @_serialized
     async def get_all_entity_ids(self) -> list[str]:
         rows = await self._conn.fetch("SELECT id FROM entities ORDER BY id")
         return [row["id"] for row in rows]
 
+    @_serialized
     async def filter_existing_entity_ids(self, entity_ids: list[str]) -> list[str]:
         if not entity_ids:
             return []
@@ -157,6 +188,7 @@ class PostgresKnowledgeGraph:
         )
         return [row["id"] for row in rows]
 
+    @_serialized
     async def get_all_entities_with_definitions(
         self,
     ) -> list[tuple[Entity, Definition | None]]:
@@ -192,6 +224,7 @@ class PostgresKnowledgeGraph:
 
     # ── Proposed entities ──────────────────────────────────────────────────────
 
+    @_serialized
     async def get_proposed_entities(self) -> list[Entity]:
         """Return entities defined ahead of code (status='proposed'), not yet bound."""
         rows = await self._conn.fetch(
@@ -200,6 +233,7 @@ class PostgresKnowledgeGraph:
         )
         return [_to_entity(r) for r in rows]
 
+    @_serialized
     async def get_reconcile_candidates(self) -> list[Entity]:
         """Bound model/view/table entities a proposed metric could bind to."""
         types = [EntityType.MODEL.value, EntityType.VIEW.value, EntityType.TABLE.value]
@@ -209,15 +243,16 @@ class PostgresKnowledgeGraph:
         )
         return [_to_entity(r) for r in rows]
 
+    @_serialized
     async def bind_entity(self, proposed_id: str, real_id: str) -> None:
         """Bind a proposed entity to a real one: carry its latest definition onto
         the real entity as a new version, re-point its semantic edges, then remove
         the placeholder. The whole bind runs in one transaction so a mid-way
         failure can't leave the target defined while the placeholder survives."""
         async with self._conn.transaction():
-            proposed_def = await self.get_latest_definition(proposed_id)
+            proposed_def = await self._latest_definition_unlocked(proposed_id)
             if proposed_def is not None:
-                existing = await self.get_latest_definition(real_id)
+                existing = await self._latest_definition_unlocked(real_id)
                 new_def = Definition(
                     entity_id=real_id,
                     description=proposed_def.description,
@@ -267,6 +302,7 @@ class PostgresKnowledgeGraph:
 
     # ── Structural lineage edges ───────────────────────────────────────────────
 
+    @_serialized
     async def upsert_edge(self, edge: Edge) -> None:
         await self._conn.execute(
             """
@@ -277,6 +313,7 @@ class PostgresKnowledgeGraph:
             edge.from_entity_id, edge.to_entity_id, edge.connector, edge.type.value,
         )
 
+    @_serialized
     async def get_structural_dependents(self, entity_id: str) -> list[Entity]:
         """Return direct structural dependents (single-hop LINEAGE). Falls back to name lookup."""
         rows = await self._conn.fetch(
@@ -313,6 +350,7 @@ class PostgresKnowledgeGraph:
                 return [_to_entity(r) for r in rows]
         return []
 
+    @_serialized
     async def get_structural_ancestors(self, entity_id: str) -> list[tuple[Entity, int]]:
         """Return upstream model ancestors with hop depth via recursive CTE."""
         # GROUP BY the entity primary key: Postgres then allows selecting the
@@ -338,6 +376,7 @@ class PostgresKnowledgeGraph:
 
     # ── Semantic graph ────────────────────────────────────────────────────────
 
+    @_serialized
     async def upsert_semantic_edge(self, edge: SemanticEdge) -> None:
         await self._conn.execute(
             """
@@ -352,6 +391,7 @@ class PostgresKnowledgeGraph:
             edge.description, edge.created_by, edge.created_at.isoformat(),
         )
 
+    @_serialized
     async def get_all_semantic_edges(self) -> list[SemanticEdge]:
         rows = await self._conn.fetch(
             """
@@ -364,6 +404,7 @@ class PostgresKnowledgeGraph:
         )
         return [_to_semantic_edge(r) for r in rows]
 
+    @_serialized
     async def get_all_lineage_edges(self) -> list[Edge]:
         """All structural lineage edges whose endpoints are real entities (dangling
         `sqlref.` placeholder targets are excluded via the joins)."""
@@ -386,6 +427,7 @@ class PostgresKnowledgeGraph:
             for r in rows
         ]
 
+    @_serialized
     async def get_entity_semantic_edges(self, entity_id: str) -> list[SemanticEdge]:
         rows = await self._conn.fetch(
             """
@@ -396,6 +438,7 @@ class PostgresKnowledgeGraph:
         )
         return [_to_semantic_edge(r) for r in rows]
 
+    @_serialized
     async def get_semantic_dependents_with_depth(
         self, entity_id: str
     ) -> list[tuple[Entity, int]]:
@@ -418,6 +461,7 @@ class PostgresKnowledgeGraph:
         )
         return [(_to_entity(r), r["depth"]) for r in rows]
 
+    @_serialized
     async def get_semantic_dependents(self, entity_id: str) -> list[Entity]:
         rows = await self._conn.fetch(
             """
@@ -432,6 +476,7 @@ class PostgresKnowledgeGraph:
         )
         return [_to_entity(r) for r in rows]
 
+    @_serialized
     async def get_feeds_producers(self, entity_id: str) -> list[Entity]:
         ids_to_check = [entity_id]
         if "." in entity_id:
@@ -455,6 +500,7 @@ class PostgresKnowledgeGraph:
                 entities.append(_to_entity(row))
         return entities
 
+    @_serialized
     async def delete_semantic_edge(self, from_entity_id: str, to_entity_id: str) -> None:
         await self._conn.execute(
             "DELETE FROM semantic_edges WHERE from_id = $1 AND to_id = $2",
@@ -463,6 +509,7 @@ class PostgresKnowledgeGraph:
 
     # ── Definitions ───────────────────────────────────────────────────────────
 
+    @_serialized
     async def upsert_definition(self, definition: Definition) -> None:
         await self._conn.execute(
             """
@@ -479,7 +526,13 @@ class PostgresKnowledgeGraph:
             definition.created_at.isoformat(),
         )
 
+    @_serialized
     async def get_latest_definition(self, entity_id: str) -> Definition | None:
+        return await self._latest_definition_unlocked(entity_id)
+
+    async def _latest_definition_unlocked(self, entity_id: str) -> Definition | None:
+        """Body of get_latest_definition without the serialization lock, for
+        callers that already hold it (bind_entity, inside its transaction)."""
         row = await self._conn.fetchrow(
             "SELECT * FROM definitions WHERE entity_id = $1 ORDER BY version DESC LIMIT 1",
             entity_id,
@@ -495,6 +548,7 @@ class PostgresKnowledgeGraph:
             change_event_id=row["change_event_id"],
         )
 
+    @_serialized
     async def get_definition_history(self, entity_id: str) -> list[Definition]:
         """Return all definition versions for an entity, oldest first."""
         rows = await self._conn.fetch(
@@ -516,6 +570,7 @@ class PostgresKnowledgeGraph:
 
     # ── Change and correction events ──────────────────────────────────────────
 
+    @_serialized
     async def save_change_event(self, event: ChangeEvent) -> None:
         await self._conn.execute(
             """
@@ -533,6 +588,7 @@ class PostgresKnowledgeGraph:
             event.detected_at.isoformat(),
         )
 
+    @_serialized
     async def write_correction(
         self, event: CorrectionEvent, updated_edges: list[SemanticEdge]
     ) -> None:
@@ -572,6 +628,7 @@ class PostgresKnowledgeGraph:
 
     # ── Project management ────────────────────────────────────────────────────
 
+    @_serialized
     async def get_projects(self) -> list[str]:
         rows = await self._conn.fetch(
             "SELECT DISTINCT project FROM entities "
@@ -579,6 +636,7 @@ class PostgresKnowledgeGraph:
         )
         return [row["project"] for row in rows]
 
+    @_serialized
     async def purge_project(self, project: str) -> int:
         async with self._conn.transaction():
             rows = await self._conn.fetch(
@@ -613,6 +671,7 @@ class PostgresKnowledgeGraph:
                 )
         return len(ids)
 
+    @_serialized
     async def purge_all(self) -> int:
         async with self._conn.transaction():
             row = await self._conn.fetchrow("SELECT COUNT(*) AS n FROM entities")

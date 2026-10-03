@@ -8,6 +8,7 @@ their own graph or guard on the backend type.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -493,3 +494,25 @@ async def test_get_all_lineage_edges_excludes_dangling(kg: KnowledgeGraph) -> No
     pairs = {(e.from_entity_id, e.to_entity_id) for e in await kg.get_all_lineage_edges()}
     assert (a.id, b.id) in pairs
     assert all(not target.startswith("sqlref.") for _, target in pairs)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_operations_on_shared_instance(kg: GraphStore) -> None:
+    """Overlapping operations on one shared graph instance must not error.
+
+    The MCP server reuses a single graph across tool handlers that can run
+    concurrently. The Postgres backend serializes operations on its one
+    connection; without that, asyncpg raises "another operation is in progress"
+    and this fails. (SQLite serializes internally and passes trivially.)"""
+    entities = [_entity(f"m{i}") for i in range(10)]
+    await asyncio.gather(*(kg.upsert_entity(e) for e in entities))
+
+    async def read_cycle(e: Entity) -> None:
+        assert await kg.get_entity_by_id(e.id) is not None
+        await kg.get_all_entity_ids()
+        await kg.get_structural_dependents(e.id)
+
+    await asyncio.gather(*(read_cycle(e) for e in entities))
+
+    stored = set(await kg.get_all_entity_ids())
+    assert {e.id for e in entities}.issubset(stored)
