@@ -1,10 +1,10 @@
 # Changelog
 
-## [Unreleased]
+## [0.14.0] — 2026-10-03
 
 ### Added
 
-- **Postgres storage backend.** The Knowledge Graph can now be stored in Postgres instead of the default local SQLite file. Install the extra (`pip install 'puxti[postgres]'`) and set `DATABASE_URL` to a Postgres DSN; puxti creates its tables on first connect. Both backends sit behind one `GraphStore` interface and store identical data, so every command and the MCP server work the same against either. SQLite remains the default — nothing changes for existing users, and `asyncpg` is only needed when the Postgres backend is selected. `puxti health` reports which backend is active.
+- **Postgres storage backend.** The Knowledge Graph can now be stored in Postgres instead of the default local SQLite file. Install the extra (`pip install 'puxti[postgres]'`) and set `DATABASE_URL` to a Postgres DSN; puxti creates its tables on first connect. Both backends sit behind one `GraphStore` interface and store identical data, so every command and the MCP server work the same against either. SQLite remains the default — nothing changes for existing users, and `asyncpg` is only needed when the Postgres backend is selected. `puxti health` verifies the Postgres connection (not just the config) and reports which backend is active.
 
 ## [0.13.0] — 2026-09-19
 
