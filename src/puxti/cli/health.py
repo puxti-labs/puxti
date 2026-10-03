@@ -1,5 +1,6 @@
 """`puxti health` — check connectivity to all configured services."""
 
+import asyncio
 from typing import Optional
 
 import typer
@@ -32,9 +33,21 @@ async def _run_health(
 ) -> None:
     all_ok = True
 
-    # Knowledge Graph (SQLite)
-    from puxti.core.graph import DEFAULT_DB_PATH
-    if DEFAULT_DB_PATH.exists():
+    # Knowledge Graph
+    from puxti.core.graph import DEFAULT_DB_PATH, KnowledgeGraph
+    if settings.database_url.strip().startswith(("postgres://", "postgresql://")):
+        # Actually reach the database — a health check that only inspects the
+        # config would report ✓ for a backend every other command then fails on.
+        graph = KnowledgeGraph()
+        try:
+            await asyncio.wait_for(graph.connect(), timeout=5.0)
+            console.print("[green]✓[/green] Knowledge Graph  (postgres via DATABASE_URL)")
+        except Exception as exc:
+            console.print(f"[red]✗[/red] Knowledge Graph  (postgres): {exc}")
+            all_ok = False
+        finally:
+            await graph.close()
+    elif DEFAULT_DB_PATH.exists():
         console.print(f"[green]✓[/green] Knowledge Graph  ({DEFAULT_DB_PATH})")
     else:
         console.print(

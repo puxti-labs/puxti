@@ -16,7 +16,7 @@ from rich.console import Console
 from rich.table import Table
 
 from puxti.connectors.base import BaseConnector
-from puxti.core.graph import KnowledgeGraph
+from puxti.core.graph import GraphStore
 from puxti.core.resolution import resolve_edges
 from puxti.llm import LLMBackend, get_backend, strip_markdown_fences
 from puxti.models import Definition, EdgeType, Entity, SemanticEdge
@@ -406,7 +406,7 @@ class SemanticScanner:
     async def scan(
         self,
         connector: BaseConnector,
-        graph: KnowledgeGraph,
+        graph: GraphStore,
         interactive: bool,
         console: Console,
         reference_index: dict[str, str] | None = None,

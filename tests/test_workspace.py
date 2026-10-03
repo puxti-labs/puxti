@@ -293,6 +293,7 @@ def test_cli_capture_uses_workspace_repo(tmp_path):
         patch("puxti.cli._shared.load_workspace", return_value=load_workspace(start_dir=tmp_path)),
     ):
         mock_settings.dbt_project_dir = None
+        mock_settings.database_url = ""
         mock_settings.github_token = "ghp_test"
 
         result = runner.invoke(app, [
@@ -326,6 +327,7 @@ def test_cli_capture_flag_overrides_workspace(tmp_path):
         patch("puxti.cli._shared.load_workspace", return_value=ws),
     ):
         mock_settings.dbt_project_dir = "/some/dbt"
+        mock_settings.database_url = ""
         mock_settings.github_token = "ghp_test"
 
         # Patch _run_capture to capture which repo it receives
@@ -404,6 +406,7 @@ def test_cli_health_checks_workspace_repos():
         patch("puxti.cli._shared.load_workspace", return_value=ws),
     ):
         mock_settings.dbt_project_dir = None
+        mock_settings.database_url = ""
         mock_settings.anthropic_api_key = "sk-ant-test"
         mock_settings.github_token = "ghp_test"
 

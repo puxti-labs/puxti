@@ -39,6 +39,7 @@ def test_health_all_ok():
         patch("puxti.cli.health.get_backend", return_value=mock_backend),
     ):
         mock_settings.dbt_project_dir = "/some/dbt"
+        mock_settings.database_url = ""
         mock_settings.anthropic_api_key = "sk-ant-test"
 
         result = runner.invoke(app, ["health"])
@@ -65,6 +66,7 @@ def test_health_anthropic_invalid_key_exits_nonzero():
         patch("puxti.cli.health.get_backend", return_value=mock_backend),
     ):
         mock_settings.dbt_project_dir = None
+        mock_settings.database_url = ""
         mock_settings.anthropic_api_key = "sk-ant-bad"
 
         result = runner.invoke(app, ["health"])
@@ -89,6 +91,7 @@ def test_health_anthropic_credit_error_exits_nonzero():
         patch("puxti.cli.health.get_backend", return_value=mock_backend),
     ):
         mock_settings.dbt_project_dir = None
+        mock_settings.database_url = ""
         mock_settings.anthropic_api_key = "sk-ant-real-but-broke"
 
         result = runner.invoke(app, ["health"])
@@ -111,6 +114,7 @@ def test_health_anthropic_not_configured_exits_nonzero():
         patch("puxti.cli.health.get_backend", return_value=mock_backend),
     ):
         mock_settings.dbt_project_dir = None
+        mock_settings.database_url = ""
 
         result = runner.invoke(app, ["health"])
 
@@ -129,6 +133,7 @@ def test_health_graph_not_initialised_shows_dash():
     ):
         mock_path.exists.return_value = False
         mock_settings.dbt_project_dir = None
+        mock_settings.database_url = ""
 
         result = runner.invoke(app, ["health"])
 
@@ -148,6 +153,7 @@ def test_health_dbt_not_configured_shows_dash():
         patch("puxti.cli.health.get_backend", return_value=mock_backend),
     ):
         mock_settings.dbt_project_dir = None
+        mock_settings.database_url = ""
         mock_settings.anthropic_api_key = "sk-ant-test"
 
         result = runner.invoke(app, ["health"])
@@ -185,6 +191,7 @@ def test_health_airflow_dags_dir_ok(tmp_path):
         patch("puxti.cli.health._load_workspace", return_value=ws),
     ):
         mock_settings.dbt_project_dir = "/some/dbt"
+        mock_settings.database_url = ""
         mock_settings.anthropic_api_key = "sk-ant-test"
         mock_settings.github_token = None
 
@@ -223,6 +230,7 @@ def test_health_airflow_dags_dir_missing_exits_nonzero(tmp_path):
         patch("puxti.cli.health._load_workspace", return_value=ws),
     ):
         mock_settings.dbt_project_dir = "/some/dbt"
+        mock_settings.database_url = ""
         mock_settings.anthropic_api_key = "sk-ant-test"
         mock_settings.github_token = None
 
@@ -254,6 +262,7 @@ def test_health_airflow_not_configured_shows_dash():
         patch("puxti.cli.health._load_workspace", return_value=ws),
     ):
         mock_settings.dbt_project_dir = "/some/dbt"
+        mock_settings.database_url = ""
         mock_settings.anthropic_api_key = "sk-ant-test"
         mock_settings.github_token = None
 
@@ -272,6 +281,7 @@ def test_health_reports_llm_config_error():
               side_effect=LLMConfigError("LLM_MODEL is required when LLM_PROVIDER='mistral'")),
     ):
         mock_settings.dbt_project_dir = None
+        mock_settings.database_url = ""
 
         result = runner.invoke(app, ["health"])
 
@@ -288,6 +298,7 @@ def test_health_labels_non_anthropic_provider():
         patch("puxti.cli.health.get_backend", return_value=mock_backend),
     ):
         mock_settings.dbt_project_dir = None
+        mock_settings.database_url = ""
 
         result = runner.invoke(app, ["health"])
 
@@ -318,6 +329,7 @@ def test_health_checks_prisma_and_sql_views_when_configured(tmp_path):
         patch("puxti.cli._shared.load_workspace", return_value=ws),
     ):
         mock_settings.dbt_project_dir = None
+        mock_settings.database_url = ""
         mock_settings.github_token = None
 
         result = runner.invoke(app, ["health"])
@@ -338,6 +350,7 @@ def test_health_fails_when_prisma_schema_missing(tmp_path):
         patch("puxti.cli._shared.load_workspace", return_value=ws),
     ):
         mock_settings.dbt_project_dir = None
+        mock_settings.database_url = ""
         mock_settings.github_token = None
 
         result = runner.invoke(app, ["health"])
@@ -358,6 +371,7 @@ def test_health_silent_for_unconfigured_prisma_and_sql_views():
         patch("puxti.cli._shared.load_workspace", return_value=WorkspaceConfig()),
     ):
         mock_settings.dbt_project_dir = None
+        mock_settings.database_url = ""
         mock_settings.github_token = None
 
         result = runner.invoke(app, ["health"])

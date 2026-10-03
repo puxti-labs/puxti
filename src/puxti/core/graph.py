@@ -1,10 +1,19 @@
-"""SQLite-backed Knowledge Graph."""
+"""Knowledge Graph store.
+
+Two interchangeable backends implement the same :class:`GraphStore` interface:
+a SQLite one (:class:`SqliteKnowledgeGraph`, the default, a local file at
+``~/.puxti/graph.db``) and a Postgres one
+(:class:`~puxti.core.graph_postgres.PostgresKnowledgeGraph`, opt-in via
+``DATABASE_URL``). Call sites construct a store through the :func:`KnowledgeGraph`
+factory, which picks the backend at runtime.
+"""
 from __future__ import annotations
 
 import json
 import logging
 from datetime import datetime
 from pathlib import Path
+from typing import Protocol
 
 import aiosqlite
 
@@ -18,6 +27,7 @@ from puxti.models import (
     EntityType,
     SemanticEdge,
 )
+from puxti.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +122,74 @@ def _to_semantic_edge(row: aiosqlite.Row) -> SemanticEdge:
     )
 
 
-class KnowledgeGraph:
+class GraphStore(Protocol):
+    """Interface every Knowledge Graph backend implements.
+
+    Both :class:`SqliteKnowledgeGraph` and
+    :class:`~puxti.core.graph_postgres.PostgresKnowledgeGraph` satisfy this
+    structurally. It exists for type annotations and to document the contract;
+    the parametrized repository test suite (run against both backends) is what
+    actually guards parity.
+    """
+
+    async def connect(self) -> None: ...
+    async def close(self) -> None: ...
+
+    # Entities
+    async def upsert_entity(self, entity: Entity) -> None: ...
+    async def upsert_entity_by_name(self, entity: Entity) -> Entity: ...
+    async def get_entity_by_name(self, name: str, connector: str) -> Entity | None: ...
+    async def get_entity_by_id(self, entity_id: str) -> Entity | None: ...
+    async def get_all_entity_ids(self) -> list[str]: ...
+    async def filter_existing_entity_ids(self, entity_ids: list[str]) -> list[str]: ...
+    async def get_all_entities_with_definitions(
+        self,
+    ) -> list[tuple[Entity, Definition | None]]: ...
+
+    # Proposed entities
+    async def get_proposed_entities(self) -> list[Entity]: ...
+    async def get_reconcile_candidates(self) -> list[Entity]: ...
+    async def bind_entity(self, proposed_id: str, real_id: str) -> None: ...
+
+    # Structural lineage edges
+    async def upsert_edge(self, edge: Edge) -> None: ...
+    async def get_structural_dependents(self, entity_id: str) -> list[Entity]: ...
+    async def get_structural_ancestors(
+        self, entity_id: str
+    ) -> list[tuple[Entity, int]]: ...
+
+    # Semantic graph
+    async def upsert_semantic_edge(self, edge: SemanticEdge) -> None: ...
+    async def get_all_semantic_edges(self) -> list[SemanticEdge]: ...
+    async def get_all_lineage_edges(self) -> list[Edge]: ...
+    async def get_entity_semantic_edges(self, entity_id: str) -> list[SemanticEdge]: ...
+    async def get_semantic_dependents_with_depth(
+        self, entity_id: str
+    ) -> list[tuple[Entity, int]]: ...
+    async def get_semantic_dependents(self, entity_id: str) -> list[Entity]: ...
+    async def get_feeds_producers(self, entity_id: str) -> list[Entity]: ...
+    async def delete_semantic_edge(
+        self, from_entity_id: str, to_entity_id: str
+    ) -> None: ...
+
+    # Definitions
+    async def upsert_definition(self, definition: Definition) -> None: ...
+    async def get_latest_definition(self, entity_id: str) -> Definition | None: ...
+    async def get_definition_history(self, entity_id: str) -> list[Definition]: ...
+
+    # Change and correction events
+    async def save_change_event(self, event: ChangeEvent) -> None: ...
+    async def write_correction(
+        self, event: CorrectionEvent, updated_edges: list[SemanticEdge]
+    ) -> None: ...
+
+    # Project management
+    async def get_projects(self) -> list[str]: ...
+    async def purge_project(self, project: str) -> int: ...
+    async def purge_all(self) -> int: ...
+
+
+class SqliteKnowledgeGraph:
     """SQLite-backed Knowledge Graph. Drop-in replacement for the Neo4j implementation."""
 
     def __init__(self, db_path: Path | None = None) -> None:
@@ -717,3 +794,30 @@ class KnowledgeGraph:
             await self._db.execute(f"DELETE FROM {table}")
         await self._db.commit()
         return count
+
+
+def KnowledgeGraph(db_path: Path | None = None) -> GraphStore:
+    """Construct the Knowledge Graph store for this environment.
+
+    - An explicit ``db_path`` always selects SQLite (used by tests and any caller
+      that wants a specific file or ``:memory:``).
+    - Otherwise, if ``DATABASE_URL`` names a Postgres DSN
+      (``postgres://`` / ``postgresql://``), the Postgres backend is used.
+    - Otherwise SQLite at the default location (``~/.puxti/graph.db``).
+
+    Kept as a callable named ``KnowledgeGraph`` so existing call sites
+    (``KnowledgeGraph()`` then ``await .connect()``) and their test mocks are
+    unchanged across backends.
+    """
+    if db_path is not None:
+        return SqliteKnowledgeGraph(db_path)
+
+    url = settings.database_url.strip()
+    if url.startswith(("postgres://", "postgresql://")):
+        # Imported lazily so the optional asyncpg dependency and this module are
+        # only loaded when the Postgres backend is actually selected.
+        from puxti.core.graph_postgres import PostgresKnowledgeGraph
+
+        return PostgresKnowledgeGraph(url)
+
+    return SqliteKnowledgeGraph()
