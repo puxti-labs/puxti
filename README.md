@@ -74,6 +74,22 @@ cp .env.example .env
 | `LLM_BASE_URL` | Override the provider's base URL (custom endpoints, non-default Bedrock regions) |
 | `LLM_INPUT_COST_PER_MTOK` / `LLM_OUTPUT_COST_PER_MTOK` | USD per million tokens for `--dry-run` cost estimates on models puxti doesn't know (optional) |
 | `LLM_CONCURRENCY` | Max parallel LLM calls during `puxti scan` (optional, default 4) — raise only if your provider's rate-limit tier allows it |
+| `DATABASE_URL` | Postgres DSN for the Knowledge Graph (optional) — see [Storage backends](#storage-backends). Unset uses the default local SQLite file. |
+
+---
+
+## Storage backends
+
+Puxti's Knowledge Graph lives in a local SQLite file at `~/.puxti/graph.db` by default — no setup, nothing to run.
+
+To store it in **Postgres** instead (for a shared or server deployment), install the extra and point `DATABASE_URL` at your database:
+
+```bash
+pip install 'puxti[postgres]'
+export DATABASE_URL=postgresql://user:password@host:5432/puxti
+```
+
+Puxti creates its tables on first connect, so the database must already exist — create it (or reuse one) before running any command. Both backends store identical data, so every command (`scan`, `define`, `impact`, `describe`, …) and the MCP server work the same way against either.
 
 ---
 
@@ -582,7 +598,8 @@ src/puxti/
 ├── core/
 │   ├── capture.py          # semantic capture — LLM enrichment + Knowledge Graph write
 │   ├── corrector.py        # puxti correct — definition correction without propagation
-│   ├── graph.py            # Knowledge Graph — SQLite backend (~/.puxti/graph.db)
+│   ├── graph.py            # Knowledge Graph — GraphStore interface + SQLite backend + factory
+│   ├── graph_postgres.py   # Knowledge Graph — Postgres backend (opt-in via DATABASE_URL)
 │   ├── scanner.py          # puxti scan — bootstraps KG from producer connectors
 │   ├── resolution.py       # cross-connector table-reference resolution
 │   └── redefine.py         # puxti redefine — semantic change propagation

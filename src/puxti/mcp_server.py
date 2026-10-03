@@ -1,6 +1,6 @@
 """MCP server exposing puxti's Knowledge Graph to coding agents.
 
-Exposes four read-only tools — all hit the local SQLite graph, no LLM calls:
+Exposes four read-only tools — all read directly from the Knowledge Graph, no LLM calls:
   impact_of_change  — what depends on an entity and what breaks
   consumers         — direct structural consumers (1-hop lineage)
   definition_history — full version history of an entity's definition
@@ -13,7 +13,7 @@ import json
 
 from mcp.server.mcpserver import MCPServer
 
-from puxti.core.graph import KnowledgeGraph
+from puxti.core.graph import GraphStore, KnowledgeGraph
 from puxti.models import EntityStatus
 
 mcp = MCPServer(
@@ -26,7 +26,7 @@ mcp = MCPServer(
     ),
 )
 
-_graph: KnowledgeGraph | None = None
+_graph: GraphStore | None = None
 _graph_lock: asyncio.Lock | None = None
 
 
@@ -37,7 +37,7 @@ async def _get_lock() -> asyncio.Lock:
     return _graph_lock
 
 
-async def _graph_connect() -> KnowledgeGraph:
+async def _graph_connect() -> GraphStore:
     global _graph
     lock = await _get_lock()
     async with lock:

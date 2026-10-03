@@ -8,7 +8,7 @@ from rich.panel import Panel
 from puxti.cli._app import app
 from puxti.cli._shared import _load_workspace, _run, console, err_console
 from puxti.connectors.registry import build_configured_connectors
-from puxti.core.graph import KnowledgeGraph
+from puxti.core.graph import GraphStore, KnowledgeGraph
 from puxti.core.resolution import build_reference_index
 from puxti.core.scanner import SemanticScanner
 from puxti.llm import COST_UNKNOWN_HINT
@@ -159,7 +159,7 @@ def _build_name_index(entities: list) -> dict[str, str]:
     return {k: v for k, v in index.items() if v is not _AMBIGUOUS}
 
 
-async def _reconcile_proposed(graph: KnowledgeGraph, interactive: bool) -> None:
+async def _reconcile_proposed(graph: GraphStore, interactive: bool) -> None:
     """Offer to bind proposed metrics to scanned entities with a matching name.
 
     Never binds without confirmation. Exact (case-insensitive) name matches only;

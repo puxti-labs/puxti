@@ -34,5 +34,12 @@ class Settings(BaseSettings):
     # limits; raise it only if your tier allows.
     llm_concurrency: int = 4
 
+    # Knowledge Graph storage backend. Empty (default) uses the local SQLite
+    # file at ~/.puxti/graph.db. A Postgres DSN ("postgresql://user:pass@host/db")
+    # switches to the Postgres backend (requires `pip install puxti[postgres]`;
+    # the target database must already exist — puxti creates its tables on first
+    # connect).
+    database_url: str = ""
+
 
 settings = Settings()

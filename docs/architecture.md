@@ -131,9 +131,12 @@ The semantic graph is queryable independently of connectors. The propagation
 engine queries it to understand meaning before dispatching to connectors for
 the structural changes.
 
-In v0.6.0 the graph is stored in Neo4j. A SQLite port is in progress to remove
-the Docker requirement for OSS users. The graph schema is portable across both
-backends; the abstraction lives in `graph/repository.py`.
+The graph is stored through a single `GraphStore` interface
+(`core/graph.py`) with two interchangeable backends: SQLite (the default — a
+local file at `~/.puxti/graph.db`, no services to run) and Postgres
+(`core/graph_postgres.py`, opt-in via `DATABASE_URL` for shared or server
+deployments). The schema and stored data are identical across both; the
+`KnowledgeGraph()` factory selects the backend at runtime.
 
 ---
 
@@ -598,7 +601,7 @@ Users can inspect everything Puxti has ever done in their stack.
 | Package manager | `uv` |
 | CLI framework | Typer |
 | Settings/validation | Pydantic |
-| Graph store | Neo4j (SQLite port in progress) |
+| Graph store | SQLite (default) or Postgres (opt-in via `DATABASE_URL`) |
 | LLM provider | Anthropic Claude |
 | SQL parsing | `sqlglot` (when needed) |
 | dbt parsing | dbt's own manifest |
@@ -616,13 +619,15 @@ as a tax to be reduced.
 A few decisions worth flagging because the alternatives are reasonable and
 might come up.
 
-**Why a graph store rather than a relational database?** Lineage is
-fundamentally a graph problem. Multi-hop traversals over chained
-dependencies, cross-tool propagation paths, and impact analysis all map
-naturally onto graph queries. Relational schemas can model this but with
-more complexity and worse performance at the depths we care about. The
-trade-off is operational complexity for OSS users — Neo4j requires Docker.
-A SQLite port is in progress to address this for the OSS mode.
+**Why a relational store for a graph?** Lineage is fundamentally a graph
+problem — multi-hop traversals over chained dependencies, cross-tool
+propagation paths, and impact analysis. A dedicated graph database models
+these directly but adds install friction (a server, usually Docker), which is
+a real adoption tax for OSS users. Puxti instead keeps the graph in a plain
+relational store and expresses the traversals as recursive SQL (`WITH
+RECURSIVE`). That runs with zero setup on the default SQLite file, and scales
+to a shared Postgres when a team needs it — both behind the same `GraphStore`
+interface, so the query logic is written once.
 
 **Why CLI-first rather than a web UI?** The CLI lives in the workflow
 engineers already use. A web UI requires a separate interaction model and

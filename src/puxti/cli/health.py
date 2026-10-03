@@ -32,9 +32,11 @@ async def _run_health(
 ) -> None:
     all_ok = True
 
-    # Knowledge Graph (SQLite)
+    # Knowledge Graph
     from puxti.core.graph import DEFAULT_DB_PATH
-    if DEFAULT_DB_PATH.exists():
+    if settings.database_url.strip().startswith(("postgres://", "postgresql://")):
+        console.print("[green]✓[/green] Knowledge Graph  (postgres via DATABASE_URL)")
+    elif DEFAULT_DB_PATH.exists():
         console.print(f"[green]✓[/green] Knowledge Graph  ({DEFAULT_DB_PATH})")
     else:
         console.print(

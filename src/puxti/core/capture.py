@@ -2,7 +2,7 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 
-from puxti.core.graph import KnowledgeGraph
+from puxti.core.graph import GraphStore
 from puxti.llm import LLMBackend, get_backend, strip_markdown_fences
 from puxti.models import (
     ChangeEvent,
@@ -87,7 +87,7 @@ class SemanticCapture:
         self,
         event: ChangeEvent,
         user_input: str,
-        graph: KnowledgeGraph,
+        graph: GraphStore,
     ) -> tuple[SemanticChangeEvent, Callable[[], Awaitable[None]]]:
         """Run the semantic capture step.
 

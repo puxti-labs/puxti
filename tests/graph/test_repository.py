@@ -1,13 +1,24 @@
-"""Integration tests for the SQLite-backed KnowledgeGraph."""
+"""Integration tests for the KnowledgeGraph backends.
+
+The `kg` fixture is parametrized over both backends, so every test that uses it
+runs against SQLite (in-memory) and — when TEST_DATABASE_URL is set — Postgres.
+This shared suite is the parity guard between the two backends. The handful of
+backend-specific tests (SQLite migration, SQLite single-commit) either manage
+their own graph or guard on the backend type.
+"""
 from __future__ import annotations
 
+import os
 from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from uuid import uuid4
 
 import pytest
 
 import aiosqlite
 
-from puxti.core.graph import KnowledgeGraph
+from puxti.core.graph import GraphStore, KnowledgeGraph, SqliteKnowledgeGraph
+from puxti.core.graph_postgres import PostgresKnowledgeGraph
 from puxti.models import (
     ChangeEvent,
     ChangeType,
@@ -22,12 +33,49 @@ from puxti.models import (
 )
 
 
-@pytest.fixture
-async def kg() -> KnowledgeGraph:
-    graph = KnowledgeGraph(db_path=Path(":memory:"))
-    await graph.connect()
-    yield graph
-    await graph.close()
+def _with_search_path(dsn: str, schema: str) -> str:
+    """Return `dsn` with a libpq `options` parameter pinning the connection's
+    search_path to `schema`, so the backend's CREATE TABLE statements land in an
+    isolated schema we can drop afterwards — never touching existing tables."""
+    parts = urlsplit(dsn)
+    query = dict(parse_qsl(parts.query))
+    query["options"] = f"-c search_path={schema}"
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+
+
+@pytest.fixture(params=["sqlite", "postgres"])
+async def kg(request) -> GraphStore:
+    if request.param == "postgres":
+        # Opt-in, against a disposable test database. Each test gets a fresh
+        # schema (dropped on teardown), so parametrized runs never collide and
+        # any existing data in the target database is left untouched.
+        url = os.environ.get("TEST_DATABASE_URL")
+        if not url:
+            pytest.skip("TEST_DATABASE_URL not set; skipping Postgres backend tests")
+
+        import asyncpg
+
+        schema = f"puxti_test_{uuid4().hex}"
+        admin = await asyncpg.connect(url)
+        await admin.execute(f'CREATE SCHEMA "{schema}"')
+        await admin.close()
+
+        graph = PostgresKnowledgeGraph(_with_search_path(url, schema))
+        await graph.connect()
+        try:
+            yield graph
+        finally:
+            await graph.close()
+            admin = await asyncpg.connect(url)
+            await admin.execute(f'DROP SCHEMA "{schema}" CASCADE')
+            await admin.close()
+    else:
+        graph = KnowledgeGraph(db_path=Path(":memory:"))
+        await graph.connect()
+        try:
+            yield graph
+        finally:
+            await graph.close()
 
 
 def _entity(name: str, etype: EntityType = EntityType.MODEL, project: str = "test") -> Entity:
@@ -402,6 +450,9 @@ async def test_bind_entity_dedups_and_drops_self_loops(kg: KnowledgeGraph) -> No
 async def test_bind_entity_is_single_transaction(kg: KnowledgeGraph) -> None:
     """The whole bind must be one transaction: the definition copy must not commit
     mid-bind (which would let a later failure leave a half-done bind)."""
+    if not isinstance(kg, SqliteKnowledgeGraph):
+        pytest.skip("commit-counting inspects the SQLite connection; Postgres atomicity "
+                    "is covered by the shared bind_entity test under its transaction")
     proposed = Entity(name="nrr", type=EntityType.METRIC, source_connector="proposed",
                       project="test", status=EntityStatus.PROPOSED)
     await kg.upsert_entity(proposed)
