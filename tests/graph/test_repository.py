@@ -516,3 +516,23 @@ async def test_concurrent_operations_on_shared_instance(kg: GraphStore) -> None:
 
     stored = set(await kg.get_all_entity_ids())
     assert {e.id for e in entities}.issubset(stored)
+
+
+@pytest.mark.asyncio
+async def test_postgres_connect_cleans_up_on_setup_failure():
+    """If schema setup fails after the socket opens, connect() must terminate the
+    connection and reset _conn, so the Postgres session isn't leaked and a later
+    connect() can retry cleanly. Mocked — runs without a live database."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    fake_conn = MagicMock()
+    fake_conn.execute = AsyncMock(side_effect=RuntimeError("schema boom"))
+    fake_conn.terminate = MagicMock()
+
+    graph = PostgresKnowledgeGraph("postgresql://u:p@h:5432/db")
+    with patch("asyncpg.connect", AsyncMock(return_value=fake_conn)):
+        with pytest.raises(RuntimeError, match="schema boom"):
+            await graph.connect()
+
+    fake_conn.terminate.assert_called_once()
+    assert graph._conn is None

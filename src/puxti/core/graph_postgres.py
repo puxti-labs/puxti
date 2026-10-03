@@ -78,10 +78,20 @@ class PostgresKnowledgeGraph:
             ) from exc
 
         self._conn = await asyncpg.connect(self._dsn)
-        # _SCHEMA is CREATE TABLE/INDEX IF NOT EXISTS and parameter-free, so it
-        # runs as a single multi-statement execute.
-        await self._conn.execute(_SCHEMA)
-        await self._migrate()
+        try:
+            # _SCHEMA is CREATE TABLE/INDEX IF NOT EXISTS and parameter-free, so
+            # it runs as a single multi-statement execute.
+            await self._conn.execute(_SCHEMA)
+            await self._migrate()
+        except BaseException:
+            # Schema setup failed or was cancelled (e.g. a health-check timeout)
+            # after the socket opened. Terminate the connection and reset _conn so
+            # the Postgres session isn't leaked and a later connect() retries
+            # cleanly. terminate() is synchronous, so it still runs while a
+            # cancellation is unwinding.
+            self._conn.terminate()
+            self._conn = None
+            raise
         # No DSN in the log line — it may carry a password.
         logger.info("Knowledge Graph connected: postgres")
 
