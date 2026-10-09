@@ -7,6 +7,7 @@ from tests.cli._helpers import plain, runner
 
 # ── impact ────────────────────────────────────────────────────────────────────
 
+
 def test_impact_shows_help():
     result = runner.invoke(app, ["impact", "--help"])
     assert result.exit_code == 0
@@ -41,7 +42,13 @@ def test_impact_entity_not_found_exits_1():
 def test_impact_no_dependents_shows_message():
     from puxti.models import Entity, EntityType
 
-    entity = Entity(id="model.jaffle_shop.orders", name="orders", type=EntityType.MODEL, source_connector="dbt", project="jaffle_shop")
+    entity = Entity(
+        id="model.jaffle_shop.orders",
+        name="orders",
+        type=EntityType.MODEL,
+        source_connector="dbt",
+        project="jaffle_shop",
+    )
 
     mock_graph = MagicMock()
     mock_graph.connect = AsyncMock()
@@ -61,9 +68,26 @@ def test_impact_no_dependents_shows_message():
 def test_impact_shows_semantic_dependents():
     from puxti.models import Definition, Entity, EntityType
 
-    entity = Entity(id="model.jaffle_shop.orders", name="orders", type=EntityType.MODEL, source_connector="dbt", project="jaffle_shop")
-    dep = Entity(id="model.jaffle_shop.customers", name="customers", type=EntityType.MODEL, source_connector="dbt", project="jaffle_shop")
-    definition = Definition(entity_id="model.jaffle_shop.orders", description="One row per settled order.", version=1, created_by="scan")
+    entity = Entity(
+        id="model.jaffle_shop.orders",
+        name="orders",
+        type=EntityType.MODEL,
+        source_connector="dbt",
+        project="jaffle_shop",
+    )
+    dep = Entity(
+        id="model.jaffle_shop.customers",
+        name="customers",
+        type=EntityType.MODEL,
+        source_connector="dbt",
+        project="jaffle_shop",
+    )
+    definition = Definition(
+        entity_id="model.jaffle_shop.orders",
+        description="One row per settled order.",
+        version=1,
+        created_by="scan",
+    )
 
     mock_graph = MagicMock()
     mock_graph.connect = AsyncMock()
@@ -85,8 +109,20 @@ def test_impact_shows_semantic_dependents():
 def test_impact_shows_structural_dependents():
     from puxti.models import Entity, EntityType
 
-    entity = Entity(id="model.jaffle_shop.orders", name="orders", type=EntityType.MODEL, source_connector="dbt", project="jaffle_shop")
-    dep = Entity(id="model.jaffle_shop.reports", name="reports", type=EntityType.MODEL, source_connector="dbt", project="jaffle_shop")
+    entity = Entity(
+        id="model.jaffle_shop.orders",
+        name="orders",
+        type=EntityType.MODEL,
+        source_connector="dbt",
+        project="jaffle_shop",
+    )
+    dep = Entity(
+        id="model.jaffle_shop.reports",
+        name="reports",
+        type=EntityType.MODEL,
+        source_connector="dbt",
+        project="jaffle_shop",
+    )
 
     mock_graph = MagicMock()
     mock_graph.connect = AsyncMock()
@@ -106,10 +142,23 @@ def test_impact_shows_structural_dependents():
 
 def test_impact_json_output():
     import json
+
     from puxti.models import Entity, EntityType
 
-    entity = Entity(id="model.jaffle_shop.orders", name="orders", type=EntityType.MODEL, source_connector="dbt", project="jaffle_shop")
-    dep = Entity(id="model.jaffle_shop.customers", name="customers", type=EntityType.MODEL, source_connector="dbt", project="jaffle_shop")
+    entity = Entity(
+        id="model.jaffle_shop.orders",
+        name="orders",
+        type=EntityType.MODEL,
+        source_connector="dbt",
+        project="jaffle_shop",
+    )
+    dep = Entity(
+        id="model.jaffle_shop.customers",
+        name="customers",
+        type=EntityType.MODEL,
+        source_connector="dbt",
+        project="jaffle_shop",
+    )
 
     mock_graph = MagicMock()
     mock_graph.connect = AsyncMock()
@@ -135,9 +184,16 @@ def test_impact_json_output():
 
 def test_impact_json_with_change_type():
     import json
+
     from puxti.models import Entity, EntityType
 
-    entity = Entity(id="model.jaffle_shop.orders", name="orders", type=EntityType.MODEL, source_connector="dbt", project="jaffle_shop")
+    entity = Entity(
+        id="model.jaffle_shop.orders",
+        name="orders",
+        type=EntityType.MODEL,
+        source_connector="dbt",
+        project="jaffle_shop",
+    )
 
     mock_graph = MagicMock()
     mock_graph.connect = AsyncMock()
@@ -148,7 +204,9 @@ def test_impact_json_with_change_type():
     mock_graph.get_structural_dependents = AsyncMock(return_value=[])
 
     with patch("puxti.cli.impact.KnowledgeGraph", return_value=mock_graph):
-        result = runner.invoke(app, ["impact", "model.jaffle_shop.orders", "--change-type", "rename", "--json"])
+        result = runner.invoke(
+            app, ["impact", "model.jaffle_shop.orders", "--change-type", "rename", "--json"]
+        )
 
     assert result.exit_code == 0
     data = json.loads(plain(result.output))
@@ -158,8 +216,20 @@ def test_impact_json_with_change_type():
 def test_impact_change_type_rename_shows_structural_warning():
     from puxti.models import Entity, EntityType
 
-    entity = Entity(id="model.jaffle_shop.orders", name="orders", type=EntityType.MODEL, source_connector="dbt", project="jaffle_shop")
-    dep = Entity(id="model.jaffle_shop.reports", name="reports", type=EntityType.MODEL, source_connector="dbt", project="jaffle_shop")
+    entity = Entity(
+        id="model.jaffle_shop.orders",
+        name="orders",
+        type=EntityType.MODEL,
+        source_connector="dbt",
+        project="jaffle_shop",
+    )
+    dep = Entity(
+        id="model.jaffle_shop.reports",
+        name="reports",
+        type=EntityType.MODEL,
+        source_connector="dbt",
+        project="jaffle_shop",
+    )
 
     mock_graph = MagicMock()
     mock_graph.connect = AsyncMock()
@@ -170,7 +240,9 @@ def test_impact_change_type_rename_shows_structural_warning():
     mock_graph.get_structural_dependents = AsyncMock(return_value=[dep])
 
     with patch("puxti.cli.impact.KnowledgeGraph", return_value=mock_graph):
-        result = runner.invoke(app, ["impact", "model.jaffle_shop.orders", "--change-type", "rename"])
+        result = runner.invoke(
+            app, ["impact", "model.jaffle_shop.orders", "--change-type", "rename"]
+        )
 
     assert result.exit_code == 0
     assert "structural" in plain(result.output)
@@ -180,9 +252,21 @@ def test_impact_change_type_rename_shows_structural_warning():
 def test_impact_merges_both_relationship_types():
     from puxti.models import Entity, EntityType
 
-    entity = Entity(id="model.jaffle_shop.orders", name="orders", type=EntityType.MODEL, source_connector="dbt", project="jaffle_shop")
+    entity = Entity(
+        id="model.jaffle_shop.orders",
+        name="orders",
+        type=EntityType.MODEL,
+        source_connector="dbt",
+        project="jaffle_shop",
+    )
     # Same entity appears in both semantic and structural
-    dep = Entity(id="model.jaffle_shop.customers", name="customers", type=EntityType.MODEL, source_connector="dbt", project="jaffle_shop")
+    dep = Entity(
+        id="model.jaffle_shop.customers",
+        name="customers",
+        type=EntityType.MODEL,
+        source_connector="dbt",
+        project="jaffle_shop",
+    )
 
     mock_graph = MagicMock()
     mock_graph.connect = AsyncMock()
