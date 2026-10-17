@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from puxti.connectors.dbt import DbtConnector, _rename_column_in_sql
-from puxti.connectors.sql_utils import mentions_in_jinja
+from puxti.connectors.sql_utils import mentions_in_jinja, rename_column_fully
 from puxti.models import ChangeType, EntityType, SemanticChangeEvent
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -334,6 +334,100 @@ async def test_column_rename_source_with_only_qualified_refs_goes_to_unverified(
     assert "model.jaffle_shop.orders" in unverified
 
 
+@pytest.mark.parametrize("is_source", [True, False])
+async def test_column_rename_mixed_refs_goes_to_unverified(tmp_path, is_source):
+    """A model with both bare and qualified refs must not get a partial rename."""
+    manifest = {
+        "metadata": {"dbt_schema_version": "v9", "project_name": "jaffle_shop"},
+        "nodes": {
+            "model.jaffle_shop.orders": {
+                "resource_type": "model", "name": "orders",
+                "original_file_path": "models/orders.sql",
+                "schema": "public", "database": "dev", "description": "", "tags": [],
+                "columns": {}, "depends_on": {"nodes": []},
+            },
+            "model.jaffle_shop.report": {
+                "resource_type": "model", "name": "report",
+                "original_file_path": "models/report.sql",
+                "schema": "public", "database": "dev", "description": "", "tags": [],
+                "columns": {}, "depends_on": {"nodes": ["model.jaffle_shop.orders"]},
+            },
+        },
+        "sources": {},
+    }
+    mixed = "select order_date, s.order_date as d from {{ ref('orders') }} s"
+    (tmp_path / "target").mkdir()
+    (tmp_path / "target" / "manifest.json").write_text(json.dumps(manifest))
+    (tmp_path / "models").mkdir()
+    orders_sql = mixed if is_source else "select order_date from t"
+    (tmp_path / "models" / "orders.sql").write_text(orders_sql)
+    (tmp_path / "models" / "report.sql").write_text(mixed if not is_source else "select 1")
+
+    event = SemanticChangeEvent(
+        change_event_id="evt-mixed",
+        entity_id="model.jaffle_shop.orders.order_date",
+        change_type=ChangeType.STRUCTURAL,
+        semantic_context="rename order_date",
+        affected_entity_ids=["model.jaffle_shop.orders", "model.jaffle_shop.report"],
+        reasoning="",
+        change={"before": {"name": "order_date"}, "after": {"name": "recorded_date"}},
+    )
+    connector = DbtConnector(config={"project_dir": str(tmp_path)})
+    diffs, unverified = await connector.generate_changes(event)
+
+    mixed_id = "model.jaffle_shop.orders" if is_source else "model.jaffle_shop.report"
+    mixed_file = "models/orders.sql" if is_source else "models/report.sql"
+    assert mixed_id in unverified
+    assert all(d.file_path != mixed_file for d in diffs)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "select order_date, o.order_date from orders o",
+        'select order_date, o."order_date" from orders o',
+        "select order_date, o.`order_date` from orders o",
+        "select order_date, o.[order_date] from orders o",
+        "select order_date, o . order_date from orders o",
+        "select order_date, o.ORDER_DATE from orders o",
+        "select order_date, (o).order_date from orders o",
+        "select order_date, {{ ref('orders') }}.order_date from {{ ref('orders') }}",
+    ],
+)
+def test_rename_fully_refuses_qualified_reference(sql):
+    assert rename_column_fully(sql, "order_date", "recorded_date") is None
+
+
+@pytest.mark.parametrize(
+    "sql, expected",
+    [
+        ("select order_date from orders", "select recorded_date from orders"),
+        ("select 'o.order_date' from orders", "select 'o.order_date' from orders"),
+        ("select 1 -- o.order_date", "select 1 -- o.order_date"),
+        ("select o.recorded_order_date from orders o",
+         "select o.recorded_order_date from orders o"),
+        ("select {{ o.order_date }} from orders", "select {{ o.order_date }} from orders"),
+        # Dots inside a quoted name are not qualifiers.
+        ("select order_date from `proj.ds.order_date`",
+         "select recorded_date from `proj.ds.order_date`"),
+        ('select "o.order_date" as x, order_date from t',
+         'select "o.order_date" as x, recorded_date from t'),
+        # A quoted name in another case is a different column.
+        ('select order_date, o."ORDER_DATE" from t o',
+         'select recorded_date, o."ORDER_DATE" from t o'),
+        # Relation names and path segments are not column references.
+        ("select order_date from raw.order_date",
+         "select recorded_date from raw.order_date"),
+        ("select order_date from proj.order_date.tbl",
+         "select recorded_date from proj.order_date.tbl"),
+        ('select order_date from "raw"."order_date"',
+         'select recorded_date from "raw"."order_date"'),
+    ],
+)
+def test_rename_fully_allows_non_qualified(sql, expected):
+    assert rename_column_fully(sql, "order_date", "recorded_date") == expected
+
+
 async def test_column_rename_diff_content(connector):
     event = SemanticChangeEvent(
         change_event_id="evt-002",
@@ -495,7 +589,8 @@ def test_rename_inside_array_and_list_brackets():
 
 
 @pytest.mark.parametrize(
-    "ref", ['o."order_date"', "o.[order_date]", '"o".order_date', "[o].order_date", "o.`order_date`"]
+    "ref",
+    ['o."order_date"', "o.[order_date]", '"o".order_date', "[o].order_date", "o.`order_date`"],
 )
 def test_rename_qualified_quoted_forms_unchanged(ref):
     sql = f"select {ref} from orders o"

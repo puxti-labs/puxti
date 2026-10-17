@@ -30,8 +30,9 @@ def rename_column_in_sql(sql: str, old_name: str, new_name: str) -> str:
     Qualified references are deliberately not touched: at the SQL text level
     we cannot know which table alias maps to the source model, so renaming
     them risks both wrong renames (s.type where s is a different table) and
-    broken SQL. A source model whose only references are qualified is instead
-    reported as unverified so the PR flags it for manual review.
+    broken SQL. Any dot before the name makes it qualified, whatever precedes
+    the dot (an alias, a quoted name, a Jinja ref(), a parenthesis). Callers
+    that cannot accept a partial rename use rename_column_fully instead.
 
     Jinja spans ({{ }}, {% %}, {# #}) are never modified. Callers that cannot
     accept a partial rename should check mentions_in_jinja first.
@@ -45,6 +46,23 @@ def rename_column_in_sql(sql: str, old_name: str, new_name: str) -> str:
 
     Raises ValueError if new_name is not a plain SQL identifier.
     """
+    return _rename(sql, old_name, new_name)[0]
+
+
+def rename_column_fully(sql: str, old_name: str, new_name: str) -> str | None:
+    """Rename like rename_column_in_sql, or return None if that would be partial.
+
+    The result is None when the SQL has a qualified column reference to
+    old_name (alias.old_name), which the rename never rewrites. The caller
+    should report the whole model as unverified instead of writing it.
+    Relation names (from raw.old_name) and path segments (a.old_name.b) are
+    not column references and do not count.
+    """
+    renamed, qualified = _rename(sql, old_name, new_name)
+    return None if qualified else renamed
+
+
+def _rename(sql: str, old_name: str, new_name: str) -> tuple[str, bool]:
     if not _IDENTIFIER.fullmatch(new_name):
         raise ValueError(f"new column name is not a valid SQL identifier: {new_name!r}")
     spans: list[str] = []
@@ -56,8 +74,9 @@ def rename_column_in_sql(sql: str, old_name: str, new_name: str) -> str:
     # Jinja spans become quote-free placeholders so a literal or comment that
     # contains one ('{{ var("x") }}') stays a single token for the rename.
     masked = _JINJA_SPAN.sub(stash, sql)
-    renamed = _rename_in_plain_sql(masked, old_name, new_name)
-    return re.sub(r"\x00(\d+)\x00", lambda m: spans[int(m.group(1))], renamed)
+    renamed, qualified = _rename_in_plain_sql(masked, old_name, new_name)
+    restored = re.sub(r"\x00(\d+)\x00", lambda m: spans[int(m.group(1))], renamed)
+    return restored, qualified
 
 
 def mentions_in_jinja(sql: str, name: str) -> bool:
@@ -70,36 +89,70 @@ def mentions_in_jinja(sql: str, name: str) -> bool:
     return any(pattern.search(span) for span in _JINJA_SPAN.findall(sql))
 
 
-def _rename_in_plain_sql(sql: str, old_name: str, new_name: str) -> str:
-    # Qualified references (alias.col, table.col) are left completely unchanged.
-    # We cannot determine from SQL text alone which table alias maps to the
-    # source model being renamed, so touching qualified refs risks both wrong
-    # renames (s.type where s is a different table) and broken SQL (AS alias
-    # in WHERE clauses is invalid). Bare references are unambiguous within a
-    # model that is already scoped to the affected entity set.
+# Characters of a qualifier chain such as proj.ds.tbl, "s"."t", [s].[t] or a
+# Jinja placeholder, walked back over to find the keyword before a relation.
+_QUALIFIER_CHARS = re.compile(r"""[\w$."`\[\]\x00]*$""")
+_RELATION_KEYWORD = re.compile(
+    r"\b(?:from|join|into|update|table|view)\s+$", re.IGNORECASE
+)
+
+
+def _rename_in_plain_sql(sql: str, old_name: str, new_name: str) -> tuple[str, bool]:
+    """Rename bare references; also report whether a qualified one was seen.
+
+    Qualified references (alias.col, table.col) are left completely unchanged.
+    We cannot determine from SQL text alone which table alias maps to the
+    source model being renamed, so touching qualified refs risks both wrong
+    renames (s.type where s is a different table) and broken SQL (AS alias
+    in WHERE clauses is invalid). Bare references are unambiguous within a
+    model that is already scoped to the affected entity set.
+    """
     old = re.escape(old_name)
     pattern = re.compile(
         rf"""(?P<skip>'(?:''|[^'])*'|--[^\n]*|/\*.*?\*/)"""
         rf"""|(?P<quoted>`[^`]*`|"(?:""|[^"])*"|(?<![\w\])])\[[^\]\[,()'"+\-*/<>=!|&%.:]*\])"""
-        rf"""|(?<![\w"`\]]\.)\b(?P<bare>{old})\b""",
+        rf"""|\.\s*\b(?P<qualified>{old})\b"""
+        rf"""|\b(?P<bare>{old})\b""",
         re.DOTALL | re.IGNORECASE,
     )
+    qualified = False
 
     def replace(m: re.Match) -> str:
+        nonlocal qualified
         if m.group("skip") is not None:
+            return m.group(0)
+        if m.group("qualified") is not None:
+            if not _is_relation_segment(m.string, m.start(), m.end()):
+                qualified = True
             return m.group(0)
         if m.group("quoted") is not None:
             # Quoted identifiers are case-sensitive: exact match only.
             text = m.group(0)
-            if m.start() > 0 and m.string[m.start() - 1] == ".":
-                return text  # qualified reference: leave unchanged
             open_, inner, close = text[0], text[1:-1], text[-1]
             if inner != old_name:
+                return text
+            before = m.string[: m.start()].rstrip()
+            if before.endswith("."):
+                if not _is_relation_segment(m.string, len(before) - 1, m.end()):
+                    qualified = True
                 return text
             return f"{open_}{new_name}{close}"
         return _match_case(m.group("bare"), old_name, new_name)
 
-    return pattern.sub(replace, sql)
+    return pattern.sub(replace, sql), qualified
+
+
+def _is_relation_segment(sql: str, dot: int, end: int) -> bool:
+    """Return True if the name after sql[dot] is part of a relation, not a column.
+
+    It is when another segment follows (a.name.b) or when the dotted chain
+    comes right after FROM, JOIN, INTO, UPDATE, TABLE or VIEW (from raw.name).
+    """
+    if sql[end:].lstrip().startswith("."):
+        return True
+    head = sql[:dot]
+    chain = _QUALIFIER_CHARS.search(head)
+    return bool(_RELATION_KEYWORD.search(head[: chain.start()]))
 
 
 def _match_case(found: str, old_name: str, new_name: str) -> str:

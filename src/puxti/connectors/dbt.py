@@ -4,7 +4,11 @@ import re
 from pathlib import Path
 
 from puxti.connectors.base import BaseConnector
-from puxti.connectors.sql_utils import mentions_in_jinja, rename_column_in_sql
+from puxti.connectors.sql_utils import (
+    mentions_in_jinja,
+    rename_column_fully,
+    rename_column_in_sql,
+)
 from puxti.models import (
     ChangeType,
     Edge,
@@ -281,18 +285,29 @@ class DbtConnector(BaseConnector):
                 continue
 
             try:
-                updated_sql = _rename_column_in_sql(original_sql, old_name, new_name)
+                updated_sql = rename_column_fully(original_sql, old_name, new_name)
             except Exception as exc:
                 raise RuntimeError(
                     f"Failed to apply rename `{old_name}` → `{new_name}` "
                     f"in model `{node['name']}` ({model_path})"
                 ) from exc
 
+            # Qualified references (alias.col) are never rewritten, so renaming
+            # the bare ones alone would leave broken SQL. Never write a partial
+            # rename: flag the whole model for manual review.
+            if updated_sql is None:
+                _logger.warning(
+                    "Skipping rename of `%s` in model `%s`: column has qualified "
+                    "references that cannot be renamed safely; flagged as unverified",
+                    old_name,
+                    node["name"],
+                )
+                unverified.append(node_id)
+                continue
+
             if updated_sql == original_sql:
-                # Source model has no bare references — column is likely only
-                # referenced via qualified refs (e.g. alias.col). The rename
-                # cannot be applied automatically without a SQL parser.
-                # Surface this as unverified so the PR flags it for manual review.
+                # The model does not reference the column at all. Flag the
+                # source model anyway: its rename did not land anywhere.
                 if is_source:
                     unverified.append(node_id)
                 continue

@@ -23,7 +23,7 @@ import sqlglot
 from sqlglot import expressions as exp
 
 from puxti.connectors.base import BaseConnector
-from puxti.connectors.sql_utils import rename_column_in_sql
+from puxti.connectors.sql_utils import rename_column_fully
 from puxti.models import (
     ChangeType,
     Edge,
@@ -248,10 +248,14 @@ class SqlViewsConnector(BaseConnector):
                 continue
 
             original_sql = view.file.read_text()
-            updated_sql = rename_column_in_sql(original_sql, old_name, new_name)
+            updated_sql = rename_column_fully(original_sql, old_name, new_name)
+            if updated_sql is None:
+                # Qualified refs are never rewritten; a partial rename would
+                # leave broken SQL, so flag the whole view for manual review.
+                unverified.append(view.entity_id)
+                continue
             if updated_sql == original_sql:
-                # Only qualified (alias.col) references — cannot rename safely
-                # at the text level; flag for manual review.
+                # No reference to the column was found; flag for manual review.
                 unverified.append(view.entity_id)
                 continue
 

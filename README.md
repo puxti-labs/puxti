@@ -461,6 +461,9 @@ puxti purge --all
 **Column renames and Jinja**
 The rename is a text replacement and never edits Jinja (`{{ }}`, `{% %}`, `{# #}`). If the old column name appears inside a Jinja expression, for example a macro argument such as `dbt_utils.generate_surrogate_key(['order_date'])`, Puxti skips that model and lists it as unverified in the PR so you can update it by hand.
 
+**Column renames and qualified references**
+Qualified references such as `o.order_date` or `{{ ref('orders') }}.order_date` are never rewritten, because the text alone does not say which table the qualifier points to. Any model or view with a qualified reference to the renamed column is skipped entirely and listed as unverified, so the PR never carries a half-renamed model. Relation names such as `from raw.order_date` do not count as column references.
+
 **Finding entity IDs**
 Commands like `capture`, `redefine`, and `correct` require a full entity ID (e.g. `model.jaffle_shop.orders.order_date`). If you are not sure of an entity's ID, run `puxti describe` first — it lists all entities with their full IDs.
 

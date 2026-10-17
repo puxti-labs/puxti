@@ -237,6 +237,21 @@ async def test_rename_with_only_qualified_references_flags_unverified(tmp_path):
     assert unverified == ["view.public.q"]
 
 
+async def test_rename_with_mixed_bare_and_qualified_references_flags_unverified(tmp_path):
+    views = tmp_path / "views"
+    views.mkdir()
+    (views / "q.sql").write_text(
+        "create view q as select email, u.email as e2 from users u"
+    )
+    connector = SqlViewsConnector(config={"project_dir": str(tmp_path), "views_dir": "views"})
+    diffs, unverified = await connector.generate_changes(
+        _rename_event("model.shop.users.email", "email", "contact_email",
+                      affected=["view.public.q"])
+    )
+    assert diffs == []
+    assert unverified == ["view.public.q"]
+
+
 async def test_non_structural_event_produces_no_changes(connector):
     event = SemanticChangeEvent(
         change_event_id="evt-2",

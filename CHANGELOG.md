@@ -6,6 +6,7 @@
 
 - **Column rename skips string literals and SQL comments, handles `[bracket]` quoting and case.** The SQL text rename no longer rewrites matches inside `'...'` literals or `--` and `/* */` comments. `[old_name]` is renamed like backtick and double-quoted identifiers, all of which match exactly (case-sensitive). Bare references still match case-insensitively but keep their case style (`ORDER_DATE` becomes `RECORDED_DATE`). A new name that is not a plain SQL identifier raises `ValueError` instead of being written into the file. (#46)
 - **`puxti capture` no longer opens an empty PR when every affected model is unverified.** A connector that returned no diffs but a non-empty unverified list still reached the PR step, which created a branch with no commits. Such results are now treated as a manual-review outcome: the unverified models are listed, no branch or PR is created, and the command exits 0. When only some connectors have diffs, PRs are opened for those connectors alone. (#59)
+- **Column rename no longer writes half-renamed models.** A model or view that mixes bare and qualified (`alias.col`) references to the renamed column used to get only the bare ones rewritten, leaving broken SQL with no warning. Downstream dbt models with only qualified references were skipped silently. Both cases are now reported as unverified and no diff is written for them. Any dot before the name counts as a qualifier, including `{{ ref(...) }}.col` and `(o).col`; relation names such as `from raw.col` and dots inside quoted names do not. (#47)
 
 ## [0.15.0] — 2026-10-11
 
