@@ -16,9 +16,8 @@ import asyncio
 import functools
 import json
 import logging
-from datetime import datetime
 
-from puxti.core.graph import _SCHEMA, _to_entity, _to_semantic_edge
+from puxti.core.graph import _SCHEMA, _to_definition, _to_entity, _to_semantic_edge
 from puxti.models import (
     ChangeEvent,
     CorrectionEvent,
@@ -205,7 +204,8 @@ class PostgresKnowledgeGraph:
         rows = await self._conn.fetch(
             """
             SELECT e.*,
-                   d.id AS def_id, d.description AS def_desc, d.version AS def_ver,
+                   d.id AS def_id, d.entity_id AS def_entity_id,
+                   d.description AS def_description, d.version AS def_version,
                    d.created_by AS def_created_by, d.change_event_id AS def_change_event_id,
                    d.created_at AS def_created_at
             FROM entities e
@@ -221,15 +221,7 @@ class PostgresKnowledgeGraph:
             entity = _to_entity(row)
             definition = None
             if row["def_id"]:
-                definition = Definition(
-                    id=row["def_id"],
-                    entity_id=row["id"],
-                    description=row["def_desc"],
-                    version=row["def_ver"],
-                    created_by=row["def_created_by"],
-                    change_event_id=row["def_change_event_id"],
-                    created_at=datetime.fromisoformat(row["def_created_at"]),
-                )
+                definition = _to_definition(row, prefix="def_")
             result.append((entity, definition))
         return result
 
@@ -550,15 +542,7 @@ class PostgresKnowledgeGraph:
         )
         if not row:
             return None
-        return Definition(
-            id=row["id"],
-            entity_id=row["entity_id"],
-            description=row["description"],
-            version=row["version"],
-            created_by=row["created_by"],
-            change_event_id=row["change_event_id"],
-            created_at=datetime.fromisoformat(row["created_at"]),
-        )
+        return _to_definition(row)
 
     @_serialized
     async def get_definition_history(self, entity_id: str) -> list[Definition]:
@@ -567,18 +551,7 @@ class PostgresKnowledgeGraph:
             "SELECT * FROM definitions WHERE entity_id = $1 ORDER BY version ASC",
             entity_id,
         )
-        return [
-            Definition(
-                id=row["id"],
-                entity_id=row["entity_id"],
-                description=row["description"],
-                version=row["version"],
-                created_by=row["created_by"],
-                change_event_id=row["change_event_id"],
-                created_at=datetime.fromisoformat(row["created_at"]),
-            )
-            for row in rows
-        ]
+        return [_to_definition(row) for row in rows]
 
     # ── Change and correction events ──────────────────────────────────────────
 
