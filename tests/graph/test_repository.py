@@ -362,6 +362,134 @@ async def test_get_all_entities_with_definitions(kg: KnowledgeGraph) -> None:
     assert d[b.id] is None
 
 
+# ── search_entities ───────────────────────────────────────────────────────────
+
+async def _seed_search_graph(kg: GraphStore) -> None:
+    """A jaffle-shop-shaped graph: models, a column and a proposed metric."""
+    for name in ("orders", "stg_orders", "customers"):
+        await kg.upsert_entity(
+            Entity(id=f"model.shop.{name}", name=name, type=EntityType.MODEL,
+                   source_connector="dbt", project="shop")
+        )
+    await kg.upsert_entity(
+        Entity(id="model.shop.customers.average_order_value", name="average_order_value",
+               type=EntityType.COLUMN, source_connector="dbt", project="shop")
+    )
+    await kg.upsert_entity(
+        Entity(id="metric.shop.average_order_value", name="average_order_value",
+               type=EntityType.METRIC, source_connector="user", project="shop",
+               status=EntityStatus.PROPOSED)
+    )
+    await kg.upsert_definition(
+        Definition(entity_id="metric.shop.average_order_value", version=1, created_by="user",
+                   description="Revenue divided by order count.\nExcludes refunds.")
+    )
+
+
+@pytest.mark.asyncio
+async def test_search_entities_matches_words_across_separators(kg: GraphStore) -> None:
+    await _seed_search_graph(kg)
+    hits = await kg.search_entities("Average Order")
+    ids = [e.id for e, _ in hits]
+    assert ids == ["metric.shop.average_order_value", "model.shop.customers.average_order_value"]
+    entity, definition = hits[0]
+    assert entity.status == EntityStatus.PROPOSED
+    assert definition is not None
+    assert definition.description.startswith("Revenue divided")
+    assert hits[1][1] is None
+
+
+@pytest.mark.asyncio
+async def test_search_entities_exact_name_ranks_first(kg: GraphStore) -> None:
+    await _seed_search_graph(kg)
+    hits = await kg.search_entities("orders", entity_type=EntityType.MODEL)
+    assert [e.id for e, _ in hits] == ["model.shop.orders", "model.shop.stg_orders"]
+
+
+@pytest.mark.asyncio
+async def test_search_entities_matches_id(kg: GraphStore) -> None:
+    await _seed_search_graph(kg)
+    hits = await kg.search_entities("model.shop.customers")
+    assert hits[0][0].id == "model.shop.customers"
+    # The column's ID contains the model ID, so it matches too, ranked below.
+    assert "model.shop.customers.average_order_value" in [e.id for e, _ in hits]
+
+
+@pytest.mark.asyncio
+async def test_search_entities_type_filter_and_limit(kg: GraphStore) -> None:
+    await _seed_search_graph(kg)
+    hits = await kg.search_entities("average", entity_type=EntityType.METRIC)
+    assert [e.id for e, _ in hits] == ["metric.shop.average_order_value"]
+    assert len(await kg.search_entities("shop", limit=2)) == 2
+
+
+@pytest.mark.asyncio
+async def test_search_entities_treats_like_wildcards_literally(kg: GraphStore) -> None:
+    await _seed_search_graph(kg)
+    assert await kg.search_entities("%") == []
+    assert await kg.search_entities("ord%rs") == []
+    assert await kg.search_entities("   ") == []
+    assert await kg.search_entities("no_such_thing") == []
+
+
+@pytest.mark.asyncio
+async def test_search_entities_exact_name_with_double_underscore_ranks_first(
+    kg: GraphStore,
+) -> None:
+    for name in ("stg_shop__orders", "stg_shop_orders_v2", "x_stg_shop__orders"):
+        await kg.upsert_entity(
+            Entity(id=f"model.shop.{name}", name=name, type=EntityType.MODEL,
+                   source_connector="dbt", project="shop")
+        )
+    hits = await kg.search_entities("stg_shop__orders")
+    assert hits[0][0].id == "model.shop.stg_shop__orders"
+
+
+@pytest.mark.asyncio
+async def test_search_entities_folds_dots_in_names(kg: GraphStore) -> None:
+    await kg.upsert_entity(
+        Entity(id="view.analytics.orders", name="analytics.orders", type=EntityType.VIEW,
+               source_connector="sql_views", project="shop")
+    )
+    await kg.upsert_entity(
+        Entity(id="view.analytics.orders_daily", name="analytics_orders_daily",
+               type=EntityType.VIEW, source_connector="sql_views", project="shop")
+    )
+    hits = await kg.search_entities("analytics orders")
+    assert [e.id for e, _ in hits] == ["view.analytics.orders", "view.analytics.orders_daily"]
+
+
+@pytest.mark.asyncio
+async def test_search_entities_ignores_terms_beyond_the_cap(kg: GraphStore) -> None:
+    await _seed_search_graph(kg)
+    # Ten matching words, then words no entity contains: only the first ten count.
+    query = " ".join(["orders"] * 10 + ["zzz", "yyy"])
+    hits = await kg.search_entities(query)
+    assert hits[0][0].id == "model.shop.orders"
+
+
+@pytest.mark.asyncio
+async def test_search_entities_limit_below_one_returns_nothing(kg: GraphStore) -> None:
+    await _seed_search_graph(kg)
+    assert await kg.search_entities("orders", limit=0) == []
+    assert await kg.search_entities("orders", limit=-1) == []
+
+
+@pytest.mark.asyncio
+async def test_search_entities_attaches_definitions_after_limit(kg: GraphStore) -> None:
+    await _seed_search_graph(kg)
+    await kg.upsert_definition(
+        Definition(entity_id="metric.shop.average_order_value", version=2, created_by="user",
+                   description="Net revenue divided by order count.")
+    )
+    hits = await kg.search_entities("average_order_value", limit=1)
+    assert len(hits) == 1
+    entity, definition = hits[0]
+    assert entity.id == "metric.shop.average_order_value"
+    assert definition is not None
+    assert definition.version == 2
+
+
 # ── proposed entities + status migration + binding ────────────────────────────
 
 _OLD_ENTITIES_SCHEMA = """

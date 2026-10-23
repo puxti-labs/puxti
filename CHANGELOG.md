@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`search_entities` MCP tool.** The other MCP tools take an exact `entity_id`, and nothing let an agent find one, so it guessed the format and got "not found". `search_entities(query, type=None, limit=20)` matches every word of the query case-insensitively against entity names and IDs ("average order" finds `average_order_value`), optionally filtered by entity type, and returns each hit's ID, name, type, project, status and the first line of its current definition, plus a `truncated` flag when more entities matched than the limit. Exact name and ID matches rank first. The `puxti-analytics` skill written by `puxti mcp init` now tells the agent to search before it calls the other tools. ([#71](https://github.com/puxti-labs/puxti/issues/71))
+
 ### Fixed
 
 - **Latest definitions keep their stored timestamp.** `get_latest_definition` and `get_all_entities_with_definitions` did not read `created_at` on either backend, so the value fell back to the current time. The MCP `describe_entity` tool, and the provenance footer the `puxti-analytics` skill builds from it, reported every definition as written at the moment of the call. `definition_history` was not affected.

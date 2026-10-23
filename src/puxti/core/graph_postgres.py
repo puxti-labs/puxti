@@ -17,7 +17,14 @@ import functools
 import json
 import logging
 
-from puxti.core.graph import _SCHEMA, _to_definition, _to_entity, _to_semantic_edge
+from puxti.core.graph import (
+    _SCHEMA,
+    _search_sql,
+    _to_definition,
+    _to_entity,
+    _to_entity_with_definition,
+    _to_semantic_edge,
+)
 from puxti.models import (
     ChangeEvent,
     CorrectionEvent,
@@ -224,6 +231,19 @@ class PostgresKnowledgeGraph:
                 definition = _to_definition(row, prefix="def_")
             result.append((entity, definition))
         return result
+
+    @_serialized
+    async def search_entities(
+        self, query: str, entity_type: EntityType | None = None, limit: int = 20
+    ) -> list[tuple[Entity, Definition | None]]:
+        """Entities whose name or ID matches every term of `query`, best match
+        first, each with its latest definition. See :func:`~puxti.core.graph._search_sql`."""
+        built = _search_sql(query, entity_type, limit, lambda n: f"${n}")
+        if built is None:
+            return []
+        sql, params = built
+        rows = await self._conn.fetch(sql, *params)
+        return [_to_entity_with_definition(r) for r in rows]
 
     # ── Proposed entities ──────────────────────────────────────────────────────
 

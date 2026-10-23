@@ -275,3 +275,98 @@ async def test_impact_of_change_proposed_returns_marker():
         result = json.loads(await impact_of_change(entity_id="metric.proposed.nrr"))
     assert result["proposed"] is True
     assert result["dependents"] == []
+
+
+# ── search_entities ───────────────────────────────────────────────────────────
+
+
+async def _search_graph():
+    """A real in-memory graph, so the tool is exercised against actual SQL."""
+    from pathlib import Path
+
+    from puxti.core.graph import KnowledgeGraph
+    from puxti.models import Definition, Entity, EntityType
+
+    graph = KnowledgeGraph(db_path=Path(":memory:"))
+    await graph.connect()
+    for name in ("orders", "stg_orders", "customers"):
+        await graph.upsert_entity(
+            Entity(id=f"model.jaffle_shop.{name}", name=name, type=EntityType.MODEL,
+                   source_connector="dbt", project="jaffle_shop")
+        )
+    await graph.upsert_entity(
+        Entity(id="metric.jaffle_shop.average_order_value", name="average_order_value",
+               type=EntityType.METRIC, source_connector="user", project="jaffle_shop",
+               status=EntityStatus.PROPOSED)
+    )
+    await graph.upsert_definition(
+        Definition(entity_id="metric.jaffle_shop.average_order_value", version=1,
+                   created_by="user", description="\nRevenue per order.\nExcludes refunds.")
+    )
+    return graph
+
+
+async def test_search_entities_returns_metric_with_first_definition_line():
+    graph = await _search_graph()
+    with patch("puxti.mcp_server._graph_connect", new=AsyncMock(return_value=graph)):
+        from puxti.mcp_server import search_entities
+        result = json.loads(await search_entities(query="average order"))
+    await graph.close()
+    assert result["total_count"] == 1
+    hit = result["results"][0]
+    assert hit == {
+        "entity_id": "metric.jaffle_shop.average_order_value",
+        "name": "average_order_value",
+        "type": "metric",
+        "project": "jaffle_shop",
+        "status": "proposed",
+        "definition": "Revenue per order.",
+    }
+
+
+async def test_search_entities_type_filter_ranks_exact_name_first():
+    graph = await _search_graph()
+    with patch("puxti.mcp_server._graph_connect", new=AsyncMock(return_value=graph)):
+        from puxti.mcp_server import search_entities
+        result = json.loads(await search_entities(query="orders", type="model"))
+    await graph.close()
+    assert result["type"] == "model"
+    assert [r["entity_id"] for r in result["results"]] == [
+        "model.jaffle_shop.orders", "model.jaffle_shop.stg_orders",
+    ]
+    assert result["results"][0]["definition"] is None
+
+
+async def test_search_entities_unknown_type_is_an_error():
+    graph = _mock_graph()
+    with patch("puxti.mcp_server._graph_connect", new=AsyncMock(return_value=graph)):
+        from puxti.mcp_server import search_entities
+        result = json.loads(await search_entities(query="orders", type="widget"))
+    assert "widget" in result["error"]
+    assert "metric" in result["error"]
+    graph.search_entities.assert_not_called()
+
+
+async def test_search_entities_clamps_limit():
+    graph = _mock_graph()
+    graph.search_entities = AsyncMock(return_value=[])
+    with patch("puxti.mcp_server._graph_connect", new=AsyncMock(return_value=graph)):
+        from puxti.mcp_server import search_entities
+        await search_entities(query="orders", limit=10_000)
+        await search_entities(query="orders", limit=0)
+    # The tool asks for one row beyond the clamped limit to detect truncation.
+    limits = [c.kwargs["limit"] for c in graph.search_entities.call_args_list]
+    assert limits == [101, 2]
+
+
+async def test_search_entities_flags_truncated_results():
+    graph = await _search_graph()
+    with patch("puxti.mcp_server._graph_connect", new=AsyncMock(return_value=graph)):
+        from puxti.mcp_server import search_entities
+        cut = json.loads(await search_entities(query="jaffle_shop", limit=2))
+        full = json.loads(await search_entities(query="jaffle_shop", limit=4))
+    await graph.close()
+    assert cut["total_count"] == 2
+    assert cut["truncated"] is True
+    assert full["total_count"] == 4
+    assert full["truncated"] is False

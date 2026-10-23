@@ -492,16 +492,19 @@ Puxti ships an MCP server so coding agents can query your knowledge graph withou
 }
 ```
 
-Once connected, four read-only tools are available:
+Once connected, five read-only tools are available:
 
 | Tool | What it answers |
 |---|---|
+| `search_entities` | What is the exact ID of the entity called "average order value"? Matches name and ID, filters by type. |
 | `impact_of_change` | Which entities depend on this one and would break? |
 | `consumers` | Which models directly read from this entity? |
 | `describe_entity` | What does this entity mean? What semantic edges does it have? |
 | `definition_history` | How has the meaning of this entity evolved over time? |
 
 For a *proposed* metric (one created with `puxti define` but not yet bound to a model), `describe_entity` returns the definition with `"bound": false`, and `impact_of_change` / `consumers` return a `"proposed"` marker with no dependents. The tools present a proposed metric as intent, never as a value to report.
+
+The other four tools take an exact `entity_id`. Agents call `search_entities` first to find it instead of guessing the ID format.
 
 Run `puxti scan` in your dbt project first to populate the graph.
 

@@ -1,7 +1,7 @@
 """The agent skill puxti emits via `puxti mcp init`.
 
 This is puxti's answer to the "skills" layer from Anthropic's self-service analytics
-post: the four MCP tools give an agent *access* to the knowledge graph, but nothing
+post: the five MCP tools give an agent *access* to the knowledge graph, but nothing
 tells it *when* to consult them or *how* to cite provenance. Without that, an agent
 grabs the first plausible model and reports a silently-wrong number. This file is the
 convention that closes the gap — written once here, emitted as a Claude Code SKILL.md
@@ -28,8 +28,8 @@ Puxti tracks what each entity in this project *means* and how that meaning has c
 over time. A model's SQL can silently lag its definition: the column name never changes,
 so nothing errors, but the number is wrong. Your job is to catch that before you answer.
 
-You have four read-only puxti MCP tools:
-`describe_entity`, `definition_history`, `impact_of_change`, `consumers`.
+You have five read-only puxti MCP tools:
+`search_entities`, `describe_entity`, `definition_history`, `impact_of_change`, `consumers`.
 
 **These tools return meaning, not SQL.** They give you each entity's definition, how that
 definition has changed, its semantic edges, and what depends on it — never the model's
@@ -47,7 +47,10 @@ the SQL against.
 ## Workflow — do this before answering a metric question
 
 1. **Identify the entities** the question depends on — the metric's model, and the sources
-   and staging models feeding it.
+   and staging models feeding it. The other tools take an exact `entity_id`. When you don't
+   already have one, **call `search_entities`** with the name as the user said it
+   ("average order value") and use the `entity_id` it returns. Never guess an ID's format.
+   Pass `type` (`metric`, `model`, `column`, …) to narrow the results.
 2. **Call `describe_entity`** on each. Read the current definition and its semantic edges.
    An edge like `derived_from` or `feeds` pointing at a canonical source the model bypasses
    is a red flag: the model may be computing the number from the wrong place.
@@ -63,8 +66,10 @@ the SQL against.
    do not report it as fact.
 5. For "what breaks if I change X" use `impact_of_change`; for "who reads X" use `consumers`.
 
-If a tool returns `{"error": "… not found"}`, the graph is not populated for that entity —
-say so and ask the user to run `puxti scan`, rather than guessing an answer.
+If a tool returns `{"error": "… not found"}`, look the entity up with `search_entities`
+instead of retrying a guessed ID. If the search finds nothing either, the graph is not
+populated for that entity — say so and ask the user to run `puxti scan`, rather than
+guessing an answer.
 
 ## Answer honestly
 

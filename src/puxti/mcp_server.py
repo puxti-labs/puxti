@@ -1,6 +1,7 @@
 """MCP server exposing puxti's Knowledge Graph to coding agents.
 
-Exposes four read-only tools — all read directly from the Knowledge Graph, no LLM calls:
+Exposes five read-only tools — all read directly from the Knowledge Graph, no LLM calls:
+  search_entities   — find entity IDs by name, so agents don't guess them
   impact_of_change  — what depends on an entity and what breaks
   consumers         — direct structural consumers (1-hop lineage)
   definition_history — full version history of an entity's definition
@@ -14,17 +15,21 @@ import json
 from mcp.server.mcpserver import MCPServer
 
 from puxti.core.graph import GraphStore, KnowledgeGraph
-from puxti.models import EntityStatus
+from puxti.models import EntityStatus, EntityType
 
 mcp = MCPServer(
     "puxti",
     instructions=(
         "Puxti exposes your dbt project's Knowledge Graph. "
+        "The other tools take an exact entity_id: call search_entities first to find it "
+        "instead of guessing the ID format. "
         "Use impact_of_change or consumers to understand blast radius before making changes. "
         "Use describe_entity to look up what a model or source means. "
         "Run `puxti scan` in the project first to populate the graph."
     ),
 )
+
+SEARCH_MAX_LIMIT = 100
 
 _graph: GraphStore | None = None
 _graph_lock: asyncio.Lock | None = None
@@ -45,6 +50,57 @@ async def _graph_connect() -> GraphStore:
             _graph = KnowledgeGraph()
             await _graph.connect()
     return _graph
+
+
+@mcp.tool()
+async def search_entities(query: str, type: str | None = None, limit: int = 20) -> str:
+    """Find entities by name or ID. Call this first when you don't have an exact entity_id.
+
+    Matches every word of the query case-insensitively against entity names and
+    IDs ("average order" finds average_order_value). Exact name matches rank
+    first. Optionally filter by type: table, column, model, view, dag, task,
+    dashboard, metric. limit is capped at 100.
+
+    Returns JSON: {query, type,
+    results: [{entity_id, name, type, project, status, definition}], total_count,
+    truncated} where definition is the first line of the current definition, or
+    null, and truncated is true when more entities matched than limit allowed:
+    narrow the query, pass a type, or raise limit.
+    """
+    entity_type = None
+    if type is not None:
+        try:
+            entity_type = EntityType(type.lower())
+        except ValueError:
+            valid = ", ".join(t.value for t in EntityType)
+            return json.dumps({"error": f"Unknown type '{type}'. Valid types: {valid}."})
+
+    limit = max(1, min(limit, SEARCH_MAX_LIMIT))
+    graph = await _graph_connect()
+    # One extra row tells a full page apart from a cut-off one.
+    hits = await graph.search_entities(query, entity_type=entity_type, limit=limit + 1)
+    truncated = len(hits) > limit
+    hits = hits[:limit]
+    return json.dumps({
+        "query": query,
+        "type": entity_type.value if entity_type else None,
+        "results": [
+            {
+                "entity_id": entity.id,
+                "name": entity.name,
+                "type": entity.type.value,
+                "project": entity.project,
+                "status": entity.status.value,
+                "definition": (
+                    definition.description.strip().splitlines()[0]
+                    if definition and definition.description.strip() else None
+                ),
+            }
+            for entity, definition in hits
+        ],
+        "total_count": len(hits),
+        "truncated": truncated,
+    })
 
 
 @mcp.tool()

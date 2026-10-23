@@ -23,9 +23,12 @@ def test_mcp_init_writes_skill_file(tmp_path, monkeypatch):
     dest = tmp_path / _SKILL_PATH
     assert dest.exists()
     content = dest.read_text()
-    # Frontmatter + the four tools + the honor-latest rule + the footer template.
+    # Frontmatter + the five tools + the honor-latest rule + the footer template.
     assert content.startswith("---\nname: puxti-analytics")
-    for tool in ("describe_entity", "definition_history", "impact_of_change", "consumers"):
+    for tool in (
+        "search_entities", "describe_entity", "definition_history", "impact_of_change",
+        "consumers",
+    ):
         assert tool in content
     assert "Honor the latest version" in content
     assert "via puxti" in content

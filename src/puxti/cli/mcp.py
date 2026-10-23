@@ -17,7 +17,8 @@ _SKILL_PATH = Path(".claude") / "skills" / "puxti-analytics" / "SKILL.md"
 def mcp_serve() -> None:
     """Start the puxti MCP server (stdio transport).
 
-    Exposes four read-only tools to any MCP-compatible agent:
+    Exposes five read-only tools to any MCP-compatible agent:
+      search_entities   — find entity IDs by name, so agents don't guess them
       impact_of_change  — what depends on an entity and what breaks
       consumers         — direct structural consumers (1-hop lineage)
       definition_history — full version history of an entity's definition

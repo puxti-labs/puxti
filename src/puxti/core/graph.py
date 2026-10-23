@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Protocol
@@ -137,6 +139,96 @@ def _to_definition(row: aiosqlite.Row, prefix: str = "") -> Definition:
     )
 
 
+_SEARCH_SPLIT = re.compile(r"[\s_.\-]+")
+
+# Words beyond this are ignored: each one adds a LIKE check per entity row.
+_SEARCH_MAX_TERMS = 10
+
+# Entity name with separators folded to spaces, so "average order" matches
+# "average_order_value" and "Average-Order Value" alike.
+_NORMALIZED_NAME = "REPLACE(REPLACE(REPLACE(LOWER(e.name), '_', ' '), '-', ' '), '.', ' ')"
+
+
+def _like_escape(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _search_sql(
+    query: str,
+    entity_type: EntityType | None,
+    limit: int,
+    placeholder: Callable[[int], str],
+) -> tuple[str, list[object]] | None:
+    """Build the entity search query shared by both backends, or None when the
+    query has no searchable terms or `limit` is below 1. `placeholder(n)` renders the n-th (1-based)
+    bind parameter in the backend's style, so ranking stays identical across
+    SQLite and Postgres.
+
+    Every term (up to _SEARCH_MAX_TERMS) must appear in the entity's name or
+    ID. Rank: exact ID or name match, then name prefix, then all terms in the
+    name, then ID-only matches. Ties prefer non-column entities, then shorter
+    names. Entities are ranked and limited before the latest definition is
+    joined, so the definition lookup runs only for the returned rows."""
+    terms = [t for t in _SEARCH_SPLIT.split(query.strip().lower()) if t][:_SEARCH_MAX_TERMS]
+    if not terms or limit < 1:
+        return None
+
+    params: list[object] = []
+
+    def bind(value: object) -> str:
+        params.append(value)
+        return placeholder(len(params))
+
+    phrase = " ".join(terms)
+    exact = bind(query.strip().lower())
+    exact_name = bind(phrase)
+    prefix = bind(_like_escape(phrase) + "%")
+    patterns = [bind(f"%{_like_escape(t)}%") for t in terms]
+
+    in_name = " AND ".join(f"LOWER(e.name) LIKE {p} ESCAPE '\\'" for p in patterns)
+    in_name_or_id = " AND ".join(
+        f"(LOWER(e.name) LIKE {p} ESCAPE '\\' OR LOWER(e.id) LIKE {p} ESCAPE '\\')"
+        for p in patterns
+    )
+    where = in_name_or_id
+    if entity_type is not None:
+        where += f" AND e.type = {bind(entity_type.value)}"
+
+    sql = f"""
+        SELECT m.*,
+               d.id AS def_id, d.entity_id AS def_entity_id,
+               d.description AS def_description, d.version AS def_version,
+               d.created_by AS def_created_by, d.change_event_id AS def_change_event_id,
+               d.created_at AS def_created_at
+        FROM (
+            SELECT e.*,
+                   CASE
+                       WHEN LOWER(e.id) = {exact} OR LOWER(e.name) = {exact}
+                            OR {_NORMALIZED_NAME} = {exact_name} THEN 0
+                       WHEN {_NORMALIZED_NAME} LIKE {prefix} ESCAPE '\\' THEN 1
+                       WHEN {in_name} THEN 2
+                       ELSE 3
+                   END AS search_rank,
+                   CASE WHEN e.type = '{EntityType.COLUMN.value}' THEN 1 ELSE 0 END
+                       AS search_is_column
+            FROM entities e
+            WHERE {where}
+            ORDER BY search_rank, search_is_column, LENGTH(e.name), e.id
+            LIMIT {bind(limit)}
+        ) m
+        LEFT JOIN definitions d ON d.id = (
+            SELECT id FROM definitions WHERE entity_id = m.id ORDER BY version DESC LIMIT 1
+        )
+        ORDER BY m.search_rank, m.search_is_column, LENGTH(m.name), m.id
+    """
+    return sql, params
+
+
+def _to_entity_with_definition(row: aiosqlite.Row) -> tuple[Entity, Definition | None]:
+    definition = _to_definition(row, prefix="def_") if row["def_id"] else None
+    return _to_entity(row), definition
+
+
 class GraphStore(Protocol):
     """Interface every Knowledge Graph backend implements.
 
@@ -159,6 +251,9 @@ class GraphStore(Protocol):
     async def filter_existing_entity_ids(self, entity_ids: list[str]) -> list[str]: ...
     async def get_all_entities_with_definitions(
         self,
+    ) -> list[tuple[Entity, Definition | None]]: ...
+    async def search_entities(
+        self, query: str, entity_type: EntityType | None = None, limit: int = 20
     ) -> list[tuple[Entity, Definition | None]]: ...
 
     # Proposed entities
@@ -356,6 +451,18 @@ class SqliteKnowledgeGraph:
                 definition = _to_definition(row, prefix="def_")
             result.append((entity, definition))
         return result
+
+    async def search_entities(
+        self, query: str, entity_type: EntityType | None = None, limit: int = 20
+    ) -> list[tuple[Entity, Definition | None]]:
+        """Entities whose name or ID matches every term of `query`, best match
+        first, each with its latest definition. See :func:`_search_sql`."""
+        built = _search_sql(query, entity_type, limit, lambda n: f"?{n}")
+        if built is None:
+            return []
+        sql, params = built
+        async with self._db.execute(sql, params) as cur:
+            return [_to_entity_with_definition(r) for r in await cur.fetchall()]
 
     # ── Proposed entities ──────────────────────────────────────────────────────
 
