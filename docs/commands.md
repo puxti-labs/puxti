@@ -23,6 +23,8 @@ Nothing is written to the Knowledge Graph without your explicit confirmation.
 
 After definitions are confirmed, Puxti also proposes initial semantic edges between models and asks you to confirm those as a group.
 
+An invalid relationship type in an LLM proposal is skipped with a warning. The remaining valid edges are still shown for confirmation before they are written.
+
 When the dbt project defines MetricFlow metrics, scan imports them too. See [Metrics](metrics.md#metricflow-metrics-from-dbt).
 
 ---

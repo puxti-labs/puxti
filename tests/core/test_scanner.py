@@ -1,10 +1,12 @@
 """Tests for SemanticScanner — Knowledge Graph bootstrapping."""
 
 import json
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from puxti.core.graph import SqliteKnowledgeGraph
 from puxti.core.scanner import ScanResult, SemanticScanner
 from puxti.llm import INPUT_COST_PER_MTOK, OUTPUT_COST_PER_MTOK, LLMResponse, TokenCount
 from puxti.models import Definition, Edge, EdgeType, Entity, EntityType, SemanticEdge
@@ -215,6 +217,55 @@ async def test_propose_semantic_edges_returns_edges():
     assert truncated == 0
 
 
+@pytest.mark.parametrize("invalid_type", ["invented", None, 42, ["derived_from"], {}])
+async def test_propose_semantic_edges_skips_invalid_types(
+    invalid_type: object, caplog: pytest.LogCaptureFixture,
+) -> None:
+    first = {
+        "from_entity_id": CUSTOMERS_ENTITY.id,
+        "to_entity_id": ORDERS_ENTITY.id,
+        "type": "derived_from",
+        "description": "CLV from orders.",
+    }
+    last = {
+        "from_entity_id": ORDERS_ENTITY.id,
+        "to_entity_id": CUSTOMERS_ENTITY.id,
+        "type": "references",
+        "description": "Orders refer to customers.",
+    }
+    backend = _make_backend({"edges": [first, {**first, "type": invalid_type}, last]})
+    scanner = SemanticScanner(backend=backend)
+
+    edges, truncated = await scanner.propose_semantic_edges(
+        [ORDERS_ENTITY, CUSTOMERS_ENTITY],
+        {ORDERS_ENTITY.id: "Orders.", CUSTOMERS_ENTITY.id: "Customers."},
+    )
+
+    assert [(edge.from_entity_id, edge.to_entity_id, edge.type) for edge in edges] == [
+        (CUSTOMERS_ENTITY.id, ORDERS_ENTITY.id, EdgeType.DERIVED_FROM),
+        (ORDERS_ENTITY.id, CUSTOMERS_ENTITY.id, EdgeType.REFERENCES),
+    ]
+    assert truncated == 0
+    assert "Skipping semantic edge with invalid type" in caplog.text
+
+
+async def test_propose_semantic_edges_defaults_missing_type() -> None:
+    backend = _make_backend({"edges": [{
+        "from_entity_id": CUSTOMERS_ENTITY.id,
+        "to_entity_id": ORDERS_ENTITY.id,
+        "description": "CLV from orders.",
+    }]})
+
+    edges, truncated = await SemanticScanner(backend=backend).propose_semantic_edges(
+        [ORDERS_ENTITY, CUSTOMERS_ENTITY],
+        {ORDERS_ENTITY.id: "Orders.", CUSTOMERS_ENTITY.id: "Customers."},
+    )
+
+    assert len(edges) == 1
+    assert edges[0].type == EdgeType.DERIVED_FROM
+    assert truncated == 0
+
+
 async def test_propose_semantic_edges_drops_hallucinated_ids():
     payload = {"edges": [{
         "from_entity_id": "model.demo_shop.nonexistent",
@@ -404,6 +455,40 @@ async def test_scan_writes_confirmed_semantic_edges():
     result = await scanner.scan(connector, graph, interactive=False, console=console)
 
     assert result.semantic_edges_written == 1
+
+
+@pytest.mark.parametrize("confirmation", ["y", "n"])
+async def test_scan_invalid_edge_type_preserves_confirmation(
+    tmp_path: Path, confirmation: str,
+) -> None:
+    valid_edge = {
+        "from_entity_id": CUSTOMERS_ENTITY.id,
+        "to_entity_id": ORDERS_ENTITY.id,
+        "type": "derived_from",
+        "description": "CLV from orders.",
+    }
+    backend = _make_backend({})
+    backend.complete = AsyncMock(side_effect=[
+        _make_llm_response({"definition": "Orders."}),
+        _make_llm_response({"definition": "Customers."}),
+        _make_llm_response({"edges": [{**valid_edge, "type": "invented"}, valid_edge]}),
+    ])
+    graph = SqliteKnowledgeGraph(tmp_path / "graph.db")
+    await graph.connect()
+    try:
+        result = await SemanticScanner(backend=backend).scan(
+            _make_connector(), graph, interactive=False,
+            console=_make_console(inputs=["y", confirmation]),
+        )
+        stored_edges = await graph.get_all_semantic_edges()
+        assert result.definitions_written == 2
+        assert result.semantic_edges_written == (1 if confirmation == "y" else 0)
+        assert [(edge.from_entity_id, edge.to_entity_id, edge.type) for edge in stored_edges] == (
+            [(CUSTOMERS_ENTITY.id, ORDERS_ENTITY.id, EdgeType.DERIVED_FROM)]
+            if confirmation == "y" else []
+        )
+    finally:
+        await graph.close()
 
 
 # ── concurrency ───────────────────────────────────────────────────────────────
