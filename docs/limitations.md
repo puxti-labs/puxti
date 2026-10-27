@@ -12,6 +12,8 @@ The rename is a text replacement and never edits Jinja (`{{ }}`, `{% %}`, `{# #}
 
 Qualified references such as `o.order_date` or `{{ ref('orders') }}.order_date` are never rewritten, because the text alone does not say which table the qualifier points to. Any model or view with a qualified reference to the renamed column is skipped entirely and listed as unverified, so the PR never carries a half-renamed model. Relation names such as `from raw.order_date` do not count as column references.
 
+`CREATE VIEW` target names also stay unchanged when a column has the same name, including quoted and schema-qualified view names. The column references in the view's query still follow the rename. This does not add general SQL scope analysis for table names, aliases or CTEs.
+
 ## Finding entity IDs
 
 Commands like `capture`, `redefine`, and `correct` require a full entity ID (e.g. `model.jaffle_shop.orders.order_date`). If you are not sure of an entity's ID, run `puxti describe` first — it lists all entities with their full IDs.

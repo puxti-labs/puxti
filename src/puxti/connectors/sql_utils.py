@@ -40,6 +40,7 @@ def rename_column_in_sql(sql: str, old_name: str, new_name: str) -> str:
     String literals and SQL comments (-- and /* */) are never modified, and
     quoted identifiers (`x`, "x", [x]) are renamed only on an exact match.
     Bare references match case-insensitively and keep their case style.
+    CREATE VIEW target names stay unchanged, including schema-qualified names.
 
     Uses word-boundary matching to avoid partial replacements
     (e.g. 'recorded_date' should not match 'date').
@@ -97,6 +98,7 @@ _GAP = r"(?:\s|--[^\n]*|/\*.*?\*/)*"
 _RELATION_KEYWORD = re.compile(
     r"\b(?:from|join|into|update|table|view)\s+$", re.IGNORECASE
 )
+_VIEW_NAME = r'''(?:[\w$]+|`[^`]*`|"(?:""|[^"])*"|\[[^\]]*\]|\x00\d+\x00)'''
 
 
 def _rename_in_plain_sql(sql: str, old_name: str, new_name: str) -> tuple[str, bool]:
@@ -112,6 +114,12 @@ def _rename_in_plain_sql(sql: str, old_name: str, new_name: str) -> tuple[str, b
     old = re.escape(old_name)
     pattern = re.compile(
         rf"""(?P<skip>'(?:''|[^'])*'|--[^\n]*|/\*.*?\*/)"""
+        # Consume CREATE VIEW targets before matching column names. Doing this in
+        # the same pass keeps keywords inside comments and literals inert.
+        rf"|(?P<view>\bcreate\b{_GAP}(?:or\b{_GAP}replace\b{_GAP})?"
+        rf"(?:(?:temp|temporary)\b{_GAP})?view\b{_GAP}"
+        rf"(?:if\b{_GAP}not\b{_GAP}exists\b{_GAP})?"
+        rf"{_VIEW_NAME}(?:{_GAP}\.{_GAP}{_VIEW_NAME})*)"
         rf"""|(?P<quoted>`[^`]*`|"(?:""|[^"])*"|(?<![\w\])])\[[^\]\[,()'"+\-*/<>=!|&%.:]*\])"""
         rf"""|\.{_GAP}\b(?P<qualified>{old})\b"""
         rf"""|\b(?P<bare>{old})\b""",
@@ -121,7 +129,7 @@ def _rename_in_plain_sql(sql: str, old_name: str, new_name: str) -> tuple[str, b
 
     def replace(m: re.Match) -> str:
         nonlocal qualified
-        if m.group("skip") is not None:
+        if m.group("skip") is not None or m.group("view") is not None:
             return m.group(0)
         if m.group("qualified") is not None:
             if not _is_relation_segment(m.string, m.start()):

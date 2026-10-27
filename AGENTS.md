@@ -66,6 +66,8 @@ file, so no external services are required.
   require confirmation before acting. `--dry-run` should always work.
 - **PRs as the output format.** Never push directly to a user's main
   branch. Generate PRs.
+- **Preserve view identity.** Column renames leave `CREATE VIEW` target names
+  unchanged while updating column references in the query.
 - **Connectors stay modular.** Don't couple connector logic to core
   propagation logic. Each connector implements `base.Connector`.
 - **Two graph backends.** SQLite is the default; Postgres is opt-in via
