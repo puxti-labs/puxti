@@ -92,16 +92,19 @@ puxti capture --entity "model.jaffle_shop.orders.order_date" --before "order_dat
 
 Puxti will:
 
-1. Call the LLM to enrich your description and reason about affected entities
-2. Scan your dbt models for references to `order_date`
-3. Generate diffs replacing all occurrences with `recorded_date`
-4. Show unified diffs and any models needing manual review, then ask for confirmation
-5. Open PRs in the configured repositories only after an explicit `y`
+1. Refuse the rename if the model already has a `recorded_date` column, before any LLM call
+2. Call the LLM to enrich your description and reason about affected entities
+3. Scan your dbt models for references to `order_date`
+4. Generate diffs replacing all occurrences with `recorded_date`, plus the matching `schema.yml` changes: the column's entry (with its tests, description, meta and contract `data_type`), model constraint column lists, and `relationships` tests on other models that point at the renamed column
+5. Show unified diffs and any models needing manual review, then ask for confirmation
+6. Open PRs in the configured repositories only after an explicit `y`
 
 Declining or leaving the PR prompt blank creates no branches or PRs. This is
 separate from the earlier Knowledge Graph prompt: cancelling PR creation does
 not undo enrichment you already chose to save. `--dry-run` still estimates cost
 without generating diffs or opening PRs.
+
+If a model the rename would rewrite already has a `recorded_date` column, nothing is generated and the command exits with an error. A model whose rewritten SQL no longer parses is listed as unverified and left unchanged.
 
 ### `capture` options
 

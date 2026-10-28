@@ -3,7 +3,11 @@ from pathlib import Path
 
 import pytest
 
-from puxti.connectors.dbt import DbtConnector, _rename_column_in_sql
+from puxti.connectors.dbt import (
+    ColumnRenameCollisionError,
+    DbtConnector,
+    _rename_column_in_sql,
+)
 from puxti.connectors.sql_utils import mentions_in_jinja, rename_column_fully
 from puxti.models import ChangeType, EdgeType, EntityStatus, EntityType, SemanticChangeEvent
 
@@ -911,6 +915,325 @@ async def test_column_rename_plain_sql_with_jinja_elsewhere_still_renames(tmp_pa
     assert unverified == []
     assert len(diffs) == 1
     assert diffs[0].after == "select recorded_date from {{ ref('stg_orders') }}"
+
+
+# ── column rename — schema.yml and pre-flight checks (#49) ───────────────────
+
+YAML_ORDERS_SQL = """
+select
+    order_id,
+    order_date,
+    customer_id
+from {{ ref('stg_orders') }}
+""".strip()
+
+YAML_CUSTOMER_ORDERS_SQL = """
+select
+    customer_id,
+    order_id,
+    order_date
+from {{ ref('orders') }}
+""".strip()
+
+YAML_SHIPMENTS_SQL = (
+    "select id as shipment_id, order_ref, placed_on from {{ ref('raw_shipments') }}"
+)
+
+SCHEMA_YML = """version: 2
+
+models:
+  # Orders mart: one row per order.
+  - name: orders
+    config:
+      contract:
+        enforced: true
+    constraints:
+      - type: primary_key
+        columns: [order_id]
+      - type: unique
+        columns: [order_id, order_date]
+    columns:
+      - name: order_id
+        data_type: integer
+        data_tests: [unique, not_null]
+      - name: order_date   # when the order was placed
+        description: Date the order was placed.
+        data_type: date
+        meta:
+          owner: finance
+        data_tests:
+          - not_null
+
+      - name: customer_id
+        data_type: integer
+
+  - name: customer_orders
+    columns:
+      - name: "order_date"
+        description: Placed date, carried from orders.
+        data_tests:
+          - relationships:
+              to: ref('orders')
+              field: order_date
+"""
+
+MARTS_YML = """version: 2
+
+models:
+  - name: shipments
+    columns:
+      - name: order_ref
+        tests:
+          - relationships:
+              arguments:
+                to: ref("orders")
+                field: order_date
+      - name: placed_on
+        tests:
+          # Same field name, different model: must not change.
+          - relationships:
+              to: ref('customers')
+              field: order_date
+"""
+
+
+def _relationships_test(name: str, model: str, to: str, path: str) -> dict:
+    return {
+        "resource_type": "test",
+        "name": name,
+        "original_file_path": path,
+        "attached_node": f"model.jaffle_shop.{model}",
+        "test_metadata": {
+            "name": "relationships",
+            "kwargs": {"to": to, "field": "order_date", "column_name": "x"},
+        },
+        "depends_on": {"nodes": []},
+    }
+
+
+def _yaml_project(tmp_path: Path, *, orders_columns: tuple[str, ...] = ()) -> DbtConnector:
+    """A project whose models are documented in schema.yml, with a contract,
+    column tests, model constraints and relationships tests from other models."""
+
+    def model(name: str, sql_path: str, patch: str | None, columns: tuple[str, ...]) -> dict:
+        return {
+            "resource_type": "model",
+            "name": name,
+            "original_file_path": sql_path,
+            "patch_path": f"jaffle_shop://{patch}" if patch else None,
+            "schema": "public", "database": "dev", "description": "", "tags": [],
+            "columns": {c: {"name": c, "description": ""} for c in columns},
+            "depends_on": {"nodes": []},
+        }
+
+    manifest = {
+        "metadata": {
+            "dbt_schema_version": "v12", "project_name": "jaffle_shop", "adapter_type": "duckdb",
+        },
+        "nodes": {
+            "model.jaffle_shop.orders": model(
+                "orders", "models/orders.sql", "models/schema.yml",
+                ("order_id", "order_date", "customer_id", *orders_columns),
+            ),
+            "model.jaffle_shop.customer_orders": model(
+                "customer_orders", "models/customer_orders.sql", "models/schema.yml",
+                ("order_date",),
+            ),
+            "model.jaffle_shop.shipments": model(
+                "shipments", "models/marts/shipments.sql", "models/marts/marts.yml",
+                ("order_ref", "placed_on"),
+            ),
+            "test.jaffle_shop.rel_customer_orders": _relationships_test(
+                "rel_customer_orders", "customer_orders", "ref('orders')", "models/schema.yml",
+            ),
+            "test.jaffle_shop.rel_shipments_orders": _relationships_test(
+                "rel_shipments_orders", "shipments", 'ref("orders")', "models/marts/marts.yml",
+            ),
+            "test.jaffle_shop.rel_shipments_customers": _relationships_test(
+                "rel_shipments_customers", "shipments", "ref('customers')",
+                "models/marts/marts.yml",
+            ),
+        },
+        "sources": {},
+    }
+    (tmp_path / "target").mkdir()
+    (tmp_path / "target" / "manifest.json").write_text(json.dumps(manifest))
+    (tmp_path / "models" / "marts").mkdir(parents=True)
+    (tmp_path / "models" / "orders.sql").write_text(YAML_ORDERS_SQL)
+    (tmp_path / "models" / "customer_orders.sql").write_text(YAML_CUSTOMER_ORDERS_SQL)
+    (tmp_path / "models" / "marts" / "shipments.sql").write_text(YAML_SHIPMENTS_SQL)
+    (tmp_path / "models" / "schema.yml").write_text(SCHEMA_YML)
+    (tmp_path / "models" / "marts" / "marts.yml").write_text(MARTS_YML)
+    return DbtConnector(config={"project_dir": str(tmp_path)})
+
+
+def _yaml_rename_event(new_name: str = "recorded_date") -> SemanticChangeEvent:
+    return SemanticChangeEvent(
+        change_event_id="evt-49",
+        entity_id="model.jaffle_shop.orders.order_date",
+        change_type=ChangeType.STRUCTURAL,
+        semantic_context="rename order_date",
+        affected_entity_ids=["model.jaffle_shop.orders", "model.jaffle_shop.customer_orders"],
+        reasoning="",
+        change={"before": {"name": "order_date"}, "after": {"name": new_name}},
+    )
+
+
+async def test_column_rename_keeps_schema_yml_consistent(tmp_path):
+    """The renamed column's entry (with its tests, description, meta and contract
+    data_type), the model's constraint columns, the dependent model's entry and
+    the relationships tests pointing at the renamed model all move to the new
+    name. Nothing else in the file changes: comments, quoting and blank lines stay."""
+    connector = _yaml_project(tmp_path)
+
+    diffs, unverified = await connector.generate_changes(_yaml_rename_event())
+
+    assert unverified == []
+    by_path = {d.file_path: d for d in diffs}
+    assert set(by_path) == {
+        "models/orders.sql",
+        "models/customer_orders.sql",
+        "models/schema.yml",
+        "models/marts/marts.yml",
+    }
+    assert by_path["models/schema.yml"].before == SCHEMA_YML
+    assert by_path["models/schema.yml"].after == (
+        SCHEMA_YML
+        .replace("columns: [order_id, order_date]", "columns: [order_id, recorded_date]")
+        .replace("- name: order_date   #", "- name: recorded_date   #")
+        .replace('- name: "order_date"', '- name: "recorded_date"')
+        .replace("field: order_date", "field: recorded_date")
+    )
+    assert by_path["models/marts/marts.yml"].after == MARTS_YML.replace(
+        "                field: order_date", "                field: recorded_date"
+    )
+    # The decoy relationships test (to: ref('customers')) is untouched.
+    assert "to: ref('customers')\n              field: order_date" in (
+        by_path["models/marts/marts.yml"].after
+    )
+
+
+async def test_column_rename_writes_no_yaml_for_an_undocumented_model(connector):
+    """A model without a patch_path has no schema.yml to keep in sync."""
+    event = _yaml_rename_event()
+    event.affected_entity_ids = ["model.jaffle_shop.orders", "model.jaffle_shop.revenue"]
+
+    diffs, _ = await connector.generate_changes(event)
+
+    assert diffs
+    assert all(d.file_path.endswith(".sql") for d in diffs)
+
+
+async def test_column_rename_collision_in_manifest_columns_aborts(tmp_path):
+    """#49 repro: renaming order_date to recorded_date when the model already has
+    recorded_date would produce `select recorded_date, recorded_date`."""
+    connector = _yaml_project(tmp_path, orders_columns=("recorded_date",))
+
+    with pytest.raises(ColumnRenameCollisionError) as exc_info:
+        await connector.generate_changes(_yaml_rename_event())
+
+    message = str(exc_info.value)
+    assert "orders" in message and "recorded_date" in message
+
+
+async def test_column_rename_collision_in_select_list_aborts(tmp_path):
+    """An undocumented column counts too: the SELECT list already outputs new_name."""
+    connector = _single_model_project(
+        tmp_path, "select order_date, created_at as recorded_date from raw_orders"
+    )
+
+    with pytest.raises(ColumnRenameCollisionError):
+        await connector.generate_changes(_rename_event())
+
+
+async def test_column_rename_collision_matches_case_insensitively(tmp_path):
+    connector = _single_model_project(
+        tmp_path, "select order_date, RECORDED_DATE from raw_orders"
+    )
+
+    with pytest.raises(ColumnRenameCollisionError):
+        await connector.generate_changes(_rename_event())
+
+
+async def test_column_rename_collision_in_a_dependent_aborts(tmp_path):
+    """A dependent that already outputs new_name would end up with two of them."""
+    connector = _yaml_project(tmp_path)
+    (tmp_path / "models" / "customer_orders.sql").write_text(
+        "select order_date, shipped_at as recorded_date from {{ ref('orders') }}"
+    )
+
+    with pytest.raises(ColumnRenameCollisionError) as exc_info:
+        await connector.generate_changes(_yaml_rename_event())
+
+    assert "customer_orders" in str(exc_info.value)
+
+
+async def test_column_rename_new_name_on_an_untouched_model_is_not_a_collision(tmp_path):
+    """A dependent that has new_name but never uses old_name is not rewritten,
+    so its own recorded_date column cannot collide."""
+    connector = _yaml_project(tmp_path)
+    (tmp_path / "models" / "customer_orders.sql").write_text(
+        "select customer_id, recorded_date from {{ ref('orders') }}"
+    )
+
+    diffs, unverified = await connector.generate_changes(_yaml_rename_event())
+
+    assert unverified == []
+    assert "models/customer_orders.sql" not in {d.file_path for d in diffs}
+
+
+def test_check_column_rename_refuses_a_collision_on_the_source_model(tmp_path):
+    connector = _yaml_project(tmp_path, orders_columns=("recorded_date",))
+
+    with pytest.raises(ColumnRenameCollisionError):
+        connector.check_column_rename(
+            "model.jaffle_shop.orders.order_date", "order_date", "recorded_date"
+        )
+
+
+def test_check_column_rename_passes_without_a_collision(tmp_path):
+    connector = _yaml_project(tmp_path)
+
+    connector.check_column_rename(
+        "model.jaffle_shop.orders.order_date", "order_date", "recorded_date"
+    )
+
+
+def test_check_column_rename_without_a_manifest_does_not_raise(tmp_path):
+    """No manifest means nothing to check against; generation reports that itself."""
+    DbtConnector(config={"project_dir": str(tmp_path)}).check_column_rename(
+        "model.jaffle_shop.orders.order_date", "order_date", "recorded_date"
+    )
+
+
+async def test_column_rename_that_breaks_parsing_goes_to_unverified(tmp_path, caplog):
+    """`where` is a valid identifier to the renamer but not as a bare column:
+    the rewrite no longer parses, so the model is flagged and nothing is written
+    for it, its schema.yml entry included."""
+    connector = _yaml_project(tmp_path)
+
+    with caplog.at_level("WARNING", logger="puxti.connectors.dbt"):
+        diffs, unverified = await connector.generate_changes(_yaml_rename_event("where"))
+
+    assert unverified == ["model.jaffle_shop.orders", "model.jaffle_shop.customer_orders"]
+    assert diffs == []
+    assert "no longer parses" in caplog.text
+
+
+async def test_column_rename_of_sql_that_did_not_parse_before_is_not_flagged(tmp_path):
+    """Masked Jinja control flow can leave SQL that never parsed (two WHEREs from
+    an incremental block). The check flags only a rewrite that breaks parsing."""
+    connector = _single_model_project(
+        tmp_path,
+        "select order_date from raw_orders where 1 = 1\n"
+        "{% if is_incremental() %} where order_date > (select max(order_date) "
+        "from {{ this }}) {% endif %}",
+    )
+
+    diffs, unverified = await connector.generate_changes(_rename_event())
+
+    assert unverified == []
+    assert len(diffs) == 1
 
 
 # ── find_model_path — the public seam engines use to locate sources ───────────

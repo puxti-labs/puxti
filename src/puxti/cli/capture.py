@@ -1,15 +1,16 @@
 """`puxti capture` — propagate a structural change as a reviewable PR."""
 
 from difflib import unified_diff
-from typing import Optional
+from typing import NoReturn, Optional
 
 import typer
+from rich.markup import escape
 from rich.panel import Panel
 from rich.text import Text
 
 from puxti.cli._app import app
 from puxti.cli._shared import _load_workspace, _run, console, err_console
-from puxti.connectors.dbt import DbtConnector
+from puxti.connectors.dbt import ColumnRenameCollisionError, DbtConnector
 from puxti.connectors.github import GitHubConnector
 from puxti.connectors.registry import build_configured_connectors
 from puxti.core.capture import SemanticCapture, _build_user_message
@@ -134,6 +135,15 @@ async def _run_capture(
         change={"before": {"name": before}, "after": {"name": after}},
     )
 
+    # Refuse a rename onto an existing column before the LLM call, so it costs
+    # nothing and saves no enrichment for a rename that will not happen.
+    try:
+        DbtConnector(config={"project_dir": project_dir}).check_column_rename(
+            entity, before, after
+        )
+    except ColumnRenameCollisionError as exc:
+        _refuse_rename(exc)
+
     graph = KnowledgeGraph()
     try:
         await graph.connect()
@@ -236,7 +246,13 @@ async def _run_capture(
                 c for c in build_configured_connectors(ws_for_propagation)
                 if c.name != "dbt"
             ]
-            results = await PropagationEngine(connectors=connectors).propagate(semantic_event)
+            try:
+                results = await PropagationEngine(connectors=connectors).propagate(
+                    semantic_event
+                )
+            except ColumnRenameCollisionError as exc:
+                # A model the rename would rewrite already has the new name.
+                _refuse_rename(exc)
 
         if not results:
             affected = semantic_event.affected_entity_ids or []
@@ -382,3 +398,10 @@ async def _run_capture(
 
     finally:
         await graph.close()
+
+
+def _refuse_rename(exc: ColumnRenameCollisionError) -> NoReturn:
+    """Report a refused rename and exit; nothing has been written or opened."""
+    err_console.print(f"[red]Error:[/red] {escape(str(exc))}")
+    err_console.print("No diffs were generated and no PR was opened.")
+    raise typer.Exit(1) from exc

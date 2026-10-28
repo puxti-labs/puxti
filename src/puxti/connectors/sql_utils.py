@@ -2,6 +2,9 @@
 
 import re
 
+import sqlglot
+from sqlglot.dialects.dialect import Dialect
+
 # A quoted Jinja string, so a closing delimiter inside it ("}}", "%}") does not
 # end the span. Unquoted characters exclude quotes, which keeps the pattern
 # unambiguous and free of catastrophic backtracking.
@@ -87,6 +90,59 @@ def mentions_in_jinja(sql: str, name: str) -> bool:
     """
     pattern = re.compile(rf"\b{re.escape(name)}\b", re.IGNORECASE)
     return any(pattern.search(span) for span in _JINJA_SPAN.findall(sql))
+
+
+# What a masked {{ }} expression becomes: an identifier, which is valid wherever
+# dbt expressions usually render (a relation after FROM, a select item, a value).
+_JINJA_PLACEHOLDER = "__puxti_jinja__"
+_CONFIG_CALL = re.compile(r"\{\{-?\s*config\s*\(", re.IGNORECASE)
+
+
+def mask_jinja(sql: str) -> str:
+    """Replace Jinja with what plain SQL needs in its place, for parsing only.
+
+    {{ config(...) }} renders to nothing and so do statements and comments
+    ({% %}, {# #}); any other {{ }} expression becomes a placeholder identifier.
+    Both branches of an {% if %} are kept, so the result may not parse even when
+    every rendering of the model does.
+    """
+
+    def replace(m: re.Match) -> str:
+        span = m.group(0)
+        if span.startswith("{{") and not _CONFIG_CALL.match(span):
+            return _JINJA_PLACEHOLDER
+        return ""
+
+    return _JINJA_SPAN.sub(replace, sql)
+
+
+def sql_dialect(name: str | None) -> str | None:
+    """Return name if sqlglot knows the dialect, else None (sqlglot's generic one)."""
+    if not name:
+        return None
+    try:
+        Dialect.get_or_raise(name)
+    except ValueError:
+        return None
+    return name
+
+
+def parses(sql: str, dialect: str | None = None) -> bool:
+    """Return True if the Jinja-masked SQL parses."""
+    try:
+        sqlglot.parse(mask_jinja(sql), read=dialect)
+    except sqlglot.errors.SqlglotError:
+        return False
+    return True
+
+
+def output_columns(sql: str, dialect: str | None = None) -> set[str] | None:
+    """Casefolded names the model's final SELECT outputs, or None if it does not parse."""
+    try:
+        statement = sqlglot.parse_one(mask_jinja(sql), read=dialect)
+    except sqlglot.errors.SqlglotError:
+        return None
+    return {name.casefold() for name in statement.named_selects}
 
 
 # Characters of a qualifier chain such as proj.ds.tbl, "s"."t", [s].[t] or a
