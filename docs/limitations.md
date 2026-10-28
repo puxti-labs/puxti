@@ -38,6 +38,12 @@ matching on the model name when `is_source` is `None`. Legacy ID-only connector 
 reason. The read-only `unverified_entity_ids` property remains available; newly
 serialized results use `unverified_entities` to retain reasons and details.
 
+## Column renames and schema.yml
+
+The rename updates the YAML that dbt validates: the column's entry in the model's `schema.yml` (found through the manifest's `patch_path`), the model's constraint column lists, and `relationships` tests (`field:`) that point at a renamed model. Edits change only the renamed names, so comments and formatting stay as you wrote them. Other mentions of the column in YAML are not rewritten, such as arguments of package tests (`dbt_utils.unique_combination_of_columns`), free-text descriptions and `docs` blocks. Review those in the PR.
+
+The parse check renders Jinja approximately (both branches of an `{% if %}` are kept), so it flags a model only when its SQL parsed before the rename and does not after.
+
 ## Finding entity IDs
 
 Commands like `capture`, `redefine`, and `correct` require a full entity ID (e.g. `model.jaffle_shop.orders.order_date`). If you are not sure of an entity's ID, run `puxti describe` first — it lists all entities with their full IDs.
