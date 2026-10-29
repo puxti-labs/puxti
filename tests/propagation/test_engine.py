@@ -143,3 +143,33 @@ async def test_propagate_uses_connector_name_for_unverified_only_results():
     assert len(results) == 1
     assert results[0].connector == "sql_views"
     assert results[0].unverified_entity_ids == ["view.public.user_stats"]
+
+
+async def test_propagate_preserves_unverified_reason_and_detail():
+    from puxti.models import UnverifiedEntity, UnverifiedReason
+
+    skipped = UnverifiedEntity(
+        entity_id="model.jaffle_shop.orders",
+        reason=UnverifiedReason.JINJA_REFERENCE,
+        detail="macro argument",
+    )
+    connector = _make_connector([REVENUE_DIFF], name="dbt")
+    connector.generate_changes.return_value = ([REVENUE_DIFF], [skipped])
+    (result,) = await PropagationEngine([connector]).propagate(EVENT)
+    assert result.unverified_entities == [skipped]
+    assert result.unverified_entity_ids == [skipped.entity_id]
+    assert PropagationResult.model_validate_json(result.model_dump_json()) == result
+
+
+def test_legacy_propagation_result_does_not_invent_a_reason():
+    from puxti.models import UnverifiedReason
+
+    result = PropagationResult(
+        change_event_id="evt",
+        connector="dbt",
+        target_entity_id=EVENT.entity_id,
+        diffs=[],
+        unverified_entity_ids=["model.jaffle_shop.orders"],
+    )
+    assert result.unverified_entity_ids == ["model.jaffle_shop.orders"]
+    assert result.unverified_entities[0].reason == UnverifiedReason.UNSPECIFIED

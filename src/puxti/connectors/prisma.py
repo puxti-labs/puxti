@@ -24,6 +24,8 @@ from puxti.models import (
     EntityType,
     FileDiff,
     SemanticChangeEvent,
+    UnverifiedEntity,
+    UnverifiedReason,
 )
 
 _BLOCK_RE = re.compile(
@@ -191,7 +193,7 @@ class PrismaConnector(BaseConnector):
 
     async def generate_changes(
         self, event: SemanticChangeEvent
-    ) -> tuple[list[FileDiff], list[str]]:
+    ) -> tuple[list[FileDiff], list[UnverifiedEntity]]:
         """Patch schema.prisma for a column rename originating in Prisma.
 
         Only acts when the changed entity is a Prisma field. Two cases:
@@ -216,7 +218,12 @@ class PrismaConnector(BaseConnector):
         models = self._load_models()
         model = models.get(model_name)
         if model is None:
-            return [], [event.entity_id]
+            return [], [
+                UnverifiedEntity(
+                    entity_id=event.entity_id,
+                    reason=UnverifiedReason.MODEL_NOT_FOUND,
+                )
+            ]
 
         target = next(
             (f for f in model.fields
@@ -224,7 +231,12 @@ class PrismaConnector(BaseConnector):
             None,
         )
         if target is None:
-            return [], [event.entity_id]
+            return [], [
+                UnverifiedEntity(
+                    entity_id=event.entity_id,
+                    reason=UnverifiedReason.COLUMN_NOT_FOUND,
+                )
+            ]
 
         schema_text = self._load_schema_text()
         migration_note = (
@@ -252,7 +264,12 @@ class PrismaConnector(BaseConnector):
             )
 
         if updated == schema_text:
-            return [], [event.entity_id]
+            return [], [
+                UnverifiedEntity(
+                    entity_id=event.entity_id,
+                    reason=UnverifiedReason.NO_CHANGE,
+                )
+            ]
 
         return [FileDiff(
             file_path=self._schema_rel_path(),

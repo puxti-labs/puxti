@@ -3,7 +3,14 @@
 import pytest
 
 from puxti.connectors.sql_views import SqlViewsConnector
-from puxti.models import ChangeType, EdgeType, EntityType, SemanticChangeEvent
+from puxti.models import (
+    ChangeType,
+    EdgeType,
+    EntityType,
+    SemanticChangeEvent,
+    UnverifiedEntity,
+    UnverifiedReason,
+)
 
 USER_STATS = """\
 create view user_stats as
@@ -193,7 +200,12 @@ async def test_rename_flags_affected_view_without_direct_reference(connector):
         )
     )
     assert diffs == []
-    assert unverified == ["view.public.user_stats"]
+    assert unverified == [
+        UnverifiedEntity(
+            entity_id="view.public.user_stats",
+            reason=UnverifiedReason.NOT_DIRECT_DEPENDENT,
+        )
+    ]
 
 
 async def test_rename_own_view_column_patches_the_view(connector):
@@ -234,7 +246,12 @@ async def test_rename_with_only_qualified_references_flags_unverified(tmp_path):
                       affected=["view.public.q"])
     )
     assert diffs == []
-    assert unverified == ["view.public.q"]
+    assert unverified == [
+        UnverifiedEntity(
+            entity_id="view.public.q",
+            reason=UnverifiedReason.QUALIFIED_REFERENCE,
+        )
+    ]
 
 
 async def test_rename_with_mixed_bare_and_qualified_references_flags_unverified(tmp_path):
@@ -249,7 +266,12 @@ async def test_rename_with_mixed_bare_and_qualified_references_flags_unverified(
                       affected=["view.public.q"])
     )
     assert diffs == []
-    assert unverified == ["view.public.q"]
+    assert unverified == [
+        UnverifiedEntity(
+            entity_id="view.public.q",
+            reason=UnverifiedReason.QUALIFIED_REFERENCE,
+        )
+    ]
 
 
 async def test_non_structural_event_produces_no_changes(connector):
@@ -265,3 +287,18 @@ async def test_non_structural_event_produces_no_changes(connector):
     diffs, unverified = await connector.generate_changes(event)
     assert diffs == []
     assert unverified == []
+
+
+async def test_rename_missing_column_reports_reason(connector):
+    diffs, unverified = await connector.generate_changes(
+        _rename_event(
+            "view.public.user_stats.nope", "nope", "yep", affected=["view.public.user_stats"]
+        )
+    )
+    assert diffs == []
+    assert unverified == [
+        UnverifiedEntity(
+            entity_id="view.public.user_stats",
+            reason=UnverifiedReason.NO_CHANGE,
+        )
+    ]

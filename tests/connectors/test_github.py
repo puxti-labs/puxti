@@ -11,7 +11,13 @@ from puxti.connectors.github import (
     _pr_body,
     _pr_title,
 )
-from puxti.models import ChangeType, FileDiff, PropagationResult, SemanticChangeEvent
+from puxti.models import (
+    ChangeType,
+    FileDiff,
+    PropagationResult,
+    SemanticChangeEvent,
+    UnverifiedReason,
+)
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -551,3 +557,51 @@ async def test_open_pr_includes_companions_in_body(httpx_mock, connector):
     payload = json.loads(pr_req.read())
     assert "## Related PRs" in payload["body"]
     assert "acme/airflow#3" in payload["body"]
+
+
+@pytest.mark.parametrize("reason", list(UnverifiedReason))
+def test_pr_body_reports_actual_unverified_reason(reason):
+    from puxti.models import UnverifiedEntity
+
+    result = RESULT.model_copy(
+        update={
+            "unverified_entities": [
+                UnverifiedEntity(
+                    entity_id=EVENT.entity_id.rsplit(".", 1)[0],
+                    reason=reason,
+                )
+            ]
+        }
+    )
+    body = _pr_body(EVENT, result)
+    assert reason.description in body
+    assert "model.jaffle_shop.orders" in body
+    assert "No changes were generated for the entities below" in body
+    assert "Transitive dependents" not in body
+    assert "manually update the source model to add the alias" not in body
+
+
+def test_pr_body_quotes_unverified_id_and_detail():
+    from puxti.models import UnverifiedEntity, UnverifiedReason
+
+    result = RESULT.model_copy(
+        update={
+            "unverified_entities": [
+                UnverifiedEntity(
+                    entity_id="model.<script>`[orders](https://example.com)",
+                    reason=UnverifiedReason.JINJA_REFERENCE,
+                    detail="</code><img src=x>\n## forged heading",
+                )
+            ]
+        }
+    )
+    from markdown_it import MarkdownIt
+
+    body = _pr_body(EVENT, result)
+    rendered = MarkdownIt().render(body)
+    assert "<script>" not in rendered
+    assert "<img src=x>" not in rendered
+    assert '<a href="https://example.com">' not in rendered
+    assert "\n## forged heading" not in body
+    assert "model.&lt;script&gt;`[orders](https://example.com)" in rendered
+    assert "&lt;/code&gt;&lt;img src=x&gt; ## forged heading" in rendered
