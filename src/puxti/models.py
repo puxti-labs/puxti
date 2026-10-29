@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class EntityType(str, Enum):
@@ -127,19 +127,79 @@ class FileDiff(BaseModel):
     description: str                        # human-readable explanation of this change
 
 
+class UnverifiedReason(str, Enum):
+    NOT_DIRECT_DEPENDENT = "not_direct_dependent"
+    JINJA_REFERENCE = "jinja_reference"
+    QUALIFIED_REFERENCE = "qualified_reference"
+    COLUMN_NOT_FOUND = "column_not_found"
+    INVALID_ENTITY_ID = "invalid_entity_id"
+    SOURCE_FILE_NOT_FOUND = "source_file_not_found"
+    TASK_ANNOTATION_UNAVAILABLE = "task_annotation_unavailable"
+    MODEL_NOT_FOUND = "model_not_found"
+    NO_CHANGE = "no_change"
+    UNSPECIFIED = "unspecified"
+
+    @property
+    def description(self) -> str:
+        return {
+            self.NOT_DIRECT_DEPENDENT: "not a verified direct dependent of the source",
+            self.JINJA_REFERENCE: "column is referenced inside Jinja",
+            self.QUALIFIED_REFERENCE: "qualified column references cannot be renamed safely",
+            self.COLUMN_NOT_FOUND: "column was not found in the source",
+            self.INVALID_ENTITY_ID: "entity ID is malformed",
+            self.SOURCE_FILE_NOT_FOUND: "source file was not found",
+            self.TASK_ANNOTATION_UNAVAILABLE: "task docstring could not be annotated",
+            self.MODEL_NOT_FOUND: "model was not found in the schema",
+            self.NO_CHANGE: "no change could be generated",
+            self.UNSPECIFIED: "no reason was provided by the connector",
+        }[self]
+
+
+class UnverifiedEntity(BaseModel):
+    """An entity skipped by a connector, with the reason for manual review."""
+
+    entity_id: str
+    reason: UnverifiedReason
+    detail: str | None = None
+
+
 class PropagationResult(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     change_event_id: str
     connector: str
     target_entity_id: str
     diffs: list[FileDiff]
-    unverified_entity_ids: list[str] = Field(default_factory=list)
-    """Entity IDs that were flagged as potentially affected but could not be
-    safely propagated (e.g. transitive dependents where the column may come
-    from a different upstream source). These should be reviewed manually."""
+    unverified_entities: list[UnverifiedEntity] = Field(default_factory=list)
     pr_url: str | None = None
     status: str = "pending"                 # pending | opened | merged | rejected
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_unverified_ids(cls, data: Any) -> Any:
+        """Accept results from integrations using the former ID-only field."""
+        if isinstance(data, dict) and "unverified_entity_ids" in data:
+            data = dict(data)
+            ids = data.pop("unverified_entity_ids")
+            data.setdefault("unverified_entities", ids)
+        return data
+
+    @field_validator("unverified_entities", mode="before")
+    @classmethod
+    def _accept_legacy_connector_ids(cls, value: Any) -> Any:
+        if isinstance(value, list):
+            return [
+                UnverifiedEntity(entity_id=item, reason=UnverifiedReason.UNSPECIFIED)
+                if isinstance(item, str)
+                else item
+                for item in value
+            ]
+        return value
+
+    @property
+    def unverified_entity_ids(self) -> list[str]:
+        """Compatibility view; use unverified_entities to retain skip reasons."""
+        return [item.entity_id for item in self.unverified_entities]
 
 
 # ── Correction ────────────────────────────────────────────────────────────────

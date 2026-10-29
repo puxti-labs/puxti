@@ -41,7 +41,7 @@ class PropagationEngine:
                     connector=connector.name or (diffs[0].connector if diffs else "dbt"),
                     target_entity_id=event.entity_id,
                     diffs=diffs,
-                    unverified_entity_ids=unverified,
+                    unverified_entities=unverified,
                 )
             )
 

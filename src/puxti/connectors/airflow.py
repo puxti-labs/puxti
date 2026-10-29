@@ -4,7 +4,16 @@ from datetime import date
 from pathlib import Path
 
 from puxti.connectors.base import BaseConnector
-from puxti.models import Edge, EdgeType, Entity, EntityType, FileDiff, SemanticChangeEvent
+from puxti.models import (
+    Edge,
+    EdgeType,
+    Entity,
+    EntityType,
+    FileDiff,
+    SemanticChangeEvent,
+    UnverifiedEntity,
+    UnverifiedReason,
+)
 
 
 class AirflowConnector(BaseConnector):
@@ -75,7 +84,7 @@ class AirflowConnector(BaseConnector):
 
     async def generate_changes(
         self, event: SemanticChangeEvent
-    ) -> tuple[list[FileDiff], list[str]]:
+    ) -> tuple[list[FileDiff], list[UnverifiedEntity]]:
         """Generate docstring annotation diffs for Airflow tasks in the affected set."""
         affected_task_ids = [
             eid for eid in (event.affected_entity_ids or [])
@@ -90,18 +99,28 @@ class AirflowConnector(BaseConnector):
         capture_date = date.today().isoformat()
 
         diffs: list[FileDiff] = []
-        unverified: list[str] = []
+        unverified: list[UnverifiedEntity] = []
 
         for entity_id in affected_task_ids:
             parts = entity_id.split(".")
             if len(parts) < 4:
-                unverified.append(entity_id)
+                unverified.append(
+                    UnverifiedEntity(
+                        entity_id=entity_id,
+                        reason=UnverifiedReason.INVALID_ENTITY_ID,
+                    )
+                )
                 continue
             dag_id, task_id = parts[2], parts[3]
 
             dag_file = _find_dag_file(self.dags_dir, dag_id)
             if not dag_file:
-                unverified.append(entity_id)
+                unverified.append(
+                    UnverifiedEntity(
+                        entity_id=entity_id,
+                        reason=UnverifiedReason.SOURCE_FILE_NOT_FOUND,
+                    )
+                )
                 continue
 
             original = dag_file.read_text()
@@ -114,7 +133,12 @@ class AirflowConnector(BaseConnector):
                 capture_date=capture_date,
             )
             if updated is None or updated == original:
-                unverified.append(entity_id)
+                unverified.append(
+                    UnverifiedEntity(
+                        entity_id=entity_id,
+                        reason=UnverifiedReason.TASK_ANNOTATION_UNAVAILABLE,
+                    )
+                )
                 continue
 
             diffs.append(FileDiff(

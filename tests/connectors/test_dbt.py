@@ -5,7 +5,15 @@ import pytest
 
 from puxti.connectors.dbt import DbtConnector, _rename_column_in_sql
 from puxti.connectors.sql_utils import mentions_in_jinja, rename_column_fully
-from puxti.models import ChangeType, EdgeType, EntityStatus, EntityType, SemanticChangeEvent
+from puxti.models import (
+    ChangeType,
+    EdgeType,
+    EntityStatus,
+    EntityType,
+    SemanticChangeEvent,
+    UnverifiedEntity,
+    UnverifiedReason,
+)
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -436,11 +444,18 @@ async def test_column_rename_skips_transitive_dependents(connector, tmp_path):
         change={"before": {"name": "order_date"}, "after": {"name": "recorded_date"}},
     )
 
-    diffs, _ = await connector.generate_changes(event)
+    diffs, unverified = await connector.generate_changes(event)
     affected_files = {d.file_path for d in diffs}
 
     assert any("orders.sql" in f for f in affected_files)       # source model — processed
     assert not any("stg_orders.sql" in f for f in affected_files)  # upstream — skipped
+
+    assert unverified == [
+        UnverifiedEntity(
+            entity_id="model.jaffle_shop.stg_orders",
+            reason=UnverifiedReason.NOT_DIRECT_DEPENDENT,
+        )
+    ]
 
 
 async def test_column_rename_source_with_only_qualified_refs_goes_to_unverified(tmp_path):
@@ -490,7 +505,13 @@ async def test_column_rename_source_with_only_qualified_refs_goes_to_unverified(
     # No diff for the source — qualified ref, not renameable automatically
     assert diffs == []
     # Source model must appear in unverified so the PR can warn the user
-    assert "model.jaffle_shop.orders" in unverified
+    assert (
+        UnverifiedEntity(
+            entity_id="model.jaffle_shop.orders",
+            reason=UnverifiedReason.QUALIFIED_REFERENCE,
+        )
+        in unverified
+    )
 
 
 @pytest.mark.parametrize("is_source", [True, False])
@@ -536,7 +557,13 @@ async def test_column_rename_mixed_refs_goes_to_unverified(tmp_path, is_source):
 
     mixed_id = "model.jaffle_shop.orders" if is_source else "model.jaffle_shop.report"
     mixed_file = "models/orders.sql" if is_source else "models/report.sql"
-    assert mixed_id in unverified
+    assert (
+        UnverifiedEntity(
+            entity_id=mixed_id,
+            reason=UnverifiedReason.QUALIFIED_REFERENCE,
+        )
+        in unverified
+    )
     assert all(d.file_path != mixed_file for d in diffs)
 
 
@@ -885,7 +912,12 @@ async def test_column_rename_model_with_jinja_reference_goes_to_unverified(tmp_p
         diffs, unverified = await connector.generate_changes(_rename_event())
 
     assert diffs == []
-    assert unverified == ["model.jaffle_shop.orders"]
+    assert unverified == [
+        UnverifiedEntity(
+            entity_id="model.jaffle_shop.orders",
+            reason=UnverifiedReason.JINJA_REFERENCE,
+        )
+    ]
     assert "inside a Jinja expression" in caplog.text
 
 
@@ -897,7 +929,12 @@ async def test_column_rename_name_inside_source_args_goes_to_unverified(tmp_path
 
     diffs, unverified = await connector.generate_changes(_rename_event())
 
-    assert unverified == ["model.jaffle_shop.orders"]  # 'order_date' inside source()
+    assert unverified == [
+        UnverifiedEntity(
+            entity_id="model.jaffle_shop.orders",
+            reason=UnverifiedReason.JINJA_REFERENCE,
+        )
+    ]  # 'order_date' inside source()
     assert diffs == []
 
 
@@ -1006,3 +1043,15 @@ def test_seed_definitions_without_a_resolvable_measure(tmp_path):
     assert defs["metric.jaffle_shop.no_measure_cumulative"] == (
         "Cumulative metric, over all time."
     )
+
+
+async def test_column_rename_source_without_column_reports_reason(tmp_path):
+    connector = _single_model_project(tmp_path, "select id from raw_orders")
+    diffs, unverified = await connector.generate_changes(_rename_event())
+    assert diffs == []
+    assert unverified == [
+        UnverifiedEntity(
+            entity_id="model.jaffle_shop.orders",
+            reason=UnverifiedReason.NO_CHANGE,
+        )
+    ]

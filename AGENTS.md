@@ -66,6 +66,10 @@ file, so no external services are required.
   require confirmation before acting. `--dry-run` should always work.
 - **PRs as the output format.** Never push directly to a user's main
   branch. Generate PRs.
+- **Skipped changes keep their reasons.** Producer connectors return
+  `UnverifiedEntity` records with an `UnverifiedReason` and optional detail.
+  Pass these through propagation to CLI/PR output without guessing the reason
+  from the entity name; quote entity IDs and details as data when rendering.
 - **Connectors stay modular.** Don't couple connector logic to core
   propagation logic. Each connector implements `base.Connector`.
 - **Two graph backends.** SQLite is the default; Postgres is opt-in via

@@ -32,6 +32,8 @@ from puxti.models import (
     EntityType,
     FileDiff,
     SemanticChangeEvent,
+    UnverifiedEntity,
+    UnverifiedReason,
 )
 
 SQLREF_PREFIX = "sqlref."
@@ -201,7 +203,7 @@ class SqlViewsConnector(BaseConnector):
 
     async def generate_changes(
         self, event: SemanticChangeEvent
-    ) -> tuple[list[FileDiff], list[str]]:
+    ) -> tuple[list[FileDiff], list[UnverifiedEntity]]:
         """Rename a column in the view files affected by a structural change.
 
         Mirrors the dbt connector's single-hop safety rule: a view is patched
@@ -228,7 +230,7 @@ class SqlViewsConnector(BaseConnector):
         views = self._load_views()
 
         diffs: list[FileDiff] = []
-        unverified: list[str] = []
+        unverified: list[UnverifiedEntity] = []
         patched_files: set[Path] = set()
 
         for view in views.values():
@@ -241,7 +243,12 @@ class SqlViewsConnector(BaseConnector):
                 ref_name == source_parent_name for _, ref_name in view.table_refs
             )
             if not (is_source or is_direct):
-                unverified.append(view.entity_id)
+                unverified.append(
+                    UnverifiedEntity(
+                        entity_id=view.entity_id,
+                        reason=UnverifiedReason.NOT_DIRECT_DEPENDENT,
+                    )
+                )
                 continue
 
             if view.file in patched_files:
@@ -252,11 +259,21 @@ class SqlViewsConnector(BaseConnector):
             if updated_sql is None:
                 # Qualified refs are never rewritten; a partial rename would
                 # leave broken SQL, so flag the whole view for manual review.
-                unverified.append(view.entity_id)
+                unverified.append(
+                    UnverifiedEntity(
+                        entity_id=view.entity_id,
+                        reason=UnverifiedReason.QUALIFIED_REFERENCE,
+                    )
+                )
                 continue
             if updated_sql == original_sql:
-                # No reference to the column was found; flag for manual review.
-                unverified.append(view.entity_id)
+                # No replacement was made; flag for manual review.
+                unverified.append(
+                    UnverifiedEntity(
+                        entity_id=view.entity_id,
+                        reason=UnverifiedReason.NO_CHANGE,
+                    )
+                )
                 continue
 
             patched_files.add(view.file)

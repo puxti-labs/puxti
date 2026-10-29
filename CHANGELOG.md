@@ -6,6 +6,10 @@
 
 - **One-time GitHub star request.** After the first successful command in an interactive terminal, the CLI prints a single dim line on stderr asking for a star on GitHub. The shown flag is stored in `~/.puxti/config.toml` under `[notices]`, so the message never repeats. Non-interactive runs (CI, pipes, coding agents) never see it and write nothing.
 
+### Fixed
+
+- **Skipped entities now carry their actual reason into `capture` warnings and PR descriptions.** Jinja references, qualified references, missing columns or files, and unverified direct dependencies are reported separately. PR text no longer guesses the cause from the entity name or prescribes an alias for unrelated cases. Connector results carry structured `UnverifiedEntity` records; legacy ID-only results remain readable with an explicit unspecified reason. (#60)
+
 ## [0.17.0] — 2026-10-23
 
 ### Added

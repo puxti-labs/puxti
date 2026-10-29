@@ -12,6 +12,25 @@ The rename is a text replacement and never edits Jinja (`{{ }}`, `{% %}`, `{# #}
 
 Qualified references such as `o.order_date` or `{{ ref('orders') }}.order_date` are never rewritten, because the text alone does not say which table the qualifier points to. Any model or view with a qualified reference to the renamed column is skipped entirely and listed as unverified, so the PR never carries a half-renamed model. Relation names such as `from raw.order_date` do not count as column references.
 
+## Reviewing skipped changes
+
+`puxti capture` lists each skipped entity with the connector's reason. The same
+reason appears in the generated PR: for example, a Jinja reference, a qualified
+column reference, a missing column, or a dependency that cannot be verified as
+a direct reference to the source. Airflow and Prisma also report missing source
+files, unavailable task docstrings, or missing schema models as applicable.
+Review these entities manually before merging; generated diffs do not resolve
+the skipped cases. A connector with no diffs opens no PR, but its skipped
+entities still appear in the CLI.
+
+Connector integrations should return `UnverifiedEntity` records (with `entity_id`, `reason`,
+and optional `detail` keyword arguments) from `generate_changes` and consume
+`PropagationResult.unverified_entities`. `reason` is an `UnverifiedReason` enum;
+`detail` is optional. Legacy ID-only connector results and the
+`unverified_entity_ids` constructor argument are accepted with an `unspecified`
+reason. The read-only `unverified_entity_ids` property remains available; newly
+serialized results use `unverified_entities` to retain reasons and details.
+
 ## Finding entity IDs
 
 Commands like `capture`, `redefine`, and `correct` require a full entity ID (e.g. `model.jaffle_shop.orders.order_date`). If you are not sure of an entity's ID, run `puxti describe` first — it lists all entities with their full IDs.

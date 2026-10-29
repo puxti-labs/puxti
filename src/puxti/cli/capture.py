@@ -296,19 +296,19 @@ async def _run_capture(
                 f"across {len(actionable)} connector(s)."
             )
 
-        all_unverified = [eid for r in results for eid in r.unverified_entity_ids]
+        all_unverified = [item for r in results for item in r.unverified_entities]
         if all_unverified:
-            unverified_list = "\n".join(f"  • {eid}" for eid in all_unverified)
             console.print(
-                f"[yellow]⚠ {len(all_unverified)} model(s) were flagged as potentially "
-                f"affected but could not be safely propagated.[/yellow]\n"
-                f"  Puxti could not confirm the "
-                f"`{semantic_event.change.get('before', {}).get('name', '')}` "
-                f"column in these models traces back to the renamed source — "
-                f"this can happen with non-standard dbt layering, shared column names, "
-                f"or table names that differ from their entity name (e.g. Prisma @@map).\n"
-                f"  Review manually:\n{unverified_list}"
+                f"[yellow]⚠ {len(all_unverified)} entity record(s) were flagged as potentially "
+                "affected but could not be safely propagated. Review manually:[/yellow]"
             )
+            for item in all_unverified:
+                detail = f" ({item.detail})" if item.detail else ""
+                console.print(
+                    f"  • {item.entity_id}: {item.reason.description}{detail}",
+                    markup=False,
+                    highlight=False,
+                )
 
         if not actionable:
             console.print(

@@ -10,7 +10,13 @@ from puxti.connectors.airflow import (
     _extract_task_ids,
     _find_dag_file,
 )
-from puxti.models import EdgeType, EntityType, SemanticChangeEvent
+from puxti.models import (
+    EdgeType,
+    EntityType,
+    SemanticChangeEvent,
+    UnverifiedEntity,
+    UnverifiedReason,
+)
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -200,7 +206,12 @@ async def test_generate_changes_no_docstring_goes_to_unverified(dags_dir: Path) 
     event = _make_event(["task.airflow.nodoc_dag.no_doc_task"])
     diffs, unverified = await connector.generate_changes(event)
     assert diffs == []
-    assert "task.airflow.nodoc_dag.no_doc_task" in unverified
+    assert unverified == [
+        UnverifiedEntity(
+            entity_id="task.airflow.nodoc_dag.no_doc_task",
+            reason=UnverifiedReason.TASK_ANNOTATION_UNAVAILABLE,
+        )
+    ]
 
 
 @pytest.mark.asyncio
@@ -209,7 +220,12 @@ async def test_generate_changes_missing_dag_goes_to_unverified(dags_dir: Path) -
     event = _make_event(["task.airflow.ghost_dag.some_task"])
     diffs, unverified = await connector.generate_changes(event)
     assert diffs == []
-    assert "task.airflow.ghost_dag.some_task" in unverified
+    assert unverified == [
+        UnverifiedEntity(
+            entity_id="task.airflow.ghost_dag.some_task",
+            reason=UnverifiedReason.SOURCE_FILE_NOT_FOUND,
+        )
+    ]
 
 
 # ── _annotate_task_docstring ──────────────────────────────────────────────────
@@ -322,3 +338,15 @@ def test_optional_capabilities_have_safe_defaults(tmp_path: Path) -> None:
     assert connector.get_model_sql_map() == {}
     assert connector.find_model_path("task.airflow.some_dag.some_task") is None
     assert connector.get_project_name() == ""
+
+
+async def test_generate_changes_malformed_task_reports_reason(dags_dir):
+    connector = AirflowConnector(config={"dags_dir": str(dags_dir)})
+    diffs, unverified = await connector.generate_changes(_make_event(["task.airflow.invalid"]))
+    assert diffs == []
+    assert unverified == [
+        UnverifiedEntity(
+            entity_id="task.airflow.invalid",
+            reason=UnverifiedReason.INVALID_ENTITY_ID,
+        )
+    ]

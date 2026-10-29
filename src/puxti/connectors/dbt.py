@@ -17,6 +17,8 @@ from puxti.models import (
     EntityType,
     FileDiff,
     SemanticChangeEvent,
+    UnverifiedEntity,
+    UnverifiedReason,
 )
 
 _logger = logging.getLogger(__name__)
@@ -253,10 +255,10 @@ class DbtConnector(BaseConnector):
 
     async def generate_changes(
         self, event: SemanticChangeEvent
-    ) -> tuple[list[FileDiff], list[str]]:
+    ) -> tuple[list[FileDiff], list[UnverifiedEntity]]:
         """Generate file diffs for a semantic change event.
 
-        Returns (diffs, unverified_entity_ids). unverified_entity_ids contains
+        Returns (diffs, unverified_entities). unverified_entities contains
         entities flagged as potentially affected but skipped because they could
         not be safely propagated (e.g. no direct ref() to the source model).
 
@@ -275,7 +277,7 @@ class DbtConnector(BaseConnector):
 
     async def _generate_column_rename_diffs(
         self, event: SemanticChangeEvent
-    ) -> tuple[list[FileDiff], list[str]]:
+    ) -> tuple[list[FileDiff], list[UnverifiedEntity]]:
         """Case 1 — column rename.
 
         Only touches models that DIRECTLY reference the source model via
@@ -284,7 +286,7 @@ class DbtConnector(BaseConnector):
         reference to old_name traces back to the renamed column or to an
         unrelated column with the same name in a different upstream model.
 
-        Returns (diffs, unverified_entity_ids). unverified_entity_ids lists
+        Returns (diffs, unverified_entities). unverified_entities lists
         entities that were in affected_entity_ids but skipped — these may
         still need manual review, especially in non-standard layered models.
 
@@ -308,7 +310,7 @@ class DbtConnector(BaseConnector):
         manifest = self._load_manifest()
         affected_ids = set(event.affected_entity_ids or [])
         diffs: list[FileDiff] = []
-        unverified: list[str] = []
+        unverified: list[UnverifiedEntity] = []
 
         for node_id, node in manifest.get("nodes", {}).items():
             if node.get("resource_type") != "model":
@@ -331,7 +333,12 @@ class DbtConnector(BaseConnector):
             is_source = node["name"] == source_model_name
             is_direct_dependent = _references_model(original_sql, source_model_name)
             if source_model_name and not (is_source or is_direct_dependent):
-                unverified.append(node_id)
+                unverified.append(
+                    UnverifiedEntity(
+                        entity_id=node_id,
+                        reason=UnverifiedReason.NOT_DIRECT_DEPENDENT,
+                    )
+                )
                 continue
 
             # A reference inside a Jinja span (macro argument, {% set %}, comment)
@@ -344,7 +351,12 @@ class DbtConnector(BaseConnector):
                     old_name,
                     node["name"],
                 )
-                unverified.append(node_id)
+                unverified.append(
+                    UnverifiedEntity(
+                        entity_id=node_id,
+                        reason=UnverifiedReason.JINJA_REFERENCE,
+                    )
+                )
                 continue
 
             try:
@@ -365,14 +377,24 @@ class DbtConnector(BaseConnector):
                     old_name,
                     node["name"],
                 )
-                unverified.append(node_id)
+                unverified.append(
+                    UnverifiedEntity(
+                        entity_id=node_id,
+                        reason=UnverifiedReason.QUALIFIED_REFERENCE,
+                    )
+                )
                 continue
 
             if updated_sql == original_sql:
-                # The model does not reference the column at all. Flag the
-                # source model anyway: its rename did not land anywhere.
+                # No replacement was made. Flag the source model anyway:
+                # its rename did not land anywhere.
                 if is_source:
-                    unverified.append(node_id)
+                    unverified.append(
+                        UnverifiedEntity(
+                            entity_id=node_id,
+                            reason=UnverifiedReason.NO_CHANGE,
+                        )
+                    )
                 continue
 
             diffs.append(

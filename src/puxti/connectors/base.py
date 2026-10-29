@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 
-from puxti.models import Edge, Entity, FileDiff, SemanticChangeEvent
+from puxti.models import Edge, Entity, FileDiff, SemanticChangeEvent, UnverifiedEntity
 
 
 class BaseConnector(ABC):
@@ -36,15 +36,15 @@ class BaseConnector(ABC):
     @abstractmethod
     async def generate_changes(
         self, event: SemanticChangeEvent
-    ) -> tuple[list[FileDiff], list[str]]:
+    ) -> tuple[list[FileDiff], list[UnverifiedEntity]]:
         """Given a semantic change event, generate required file changes.
 
-        Returns (diffs, unverified_entity_ids).
+        Returns (diffs, unverified_entities).
         - diffs: file changes to apply
-        - unverified_entity_ids: entities that were potentially affected but
+        - unverified_entities: entities that were potentially affected but
           could not be safely propagated (e.g. transitive dependents whose
           column may come from a different upstream source). Must be reviewed
-          manually.
+          manually. Each entry must include a reason and may include detail.
 
         MUST NOT write anything — returns diffs only.
         Warehouse connectors must return ([], []).

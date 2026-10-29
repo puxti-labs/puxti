@@ -701,3 +701,23 @@ def test_capture_rebases_and_routes_sql_views_diffs_to_their_repo():
     # one PR per connector, each to its own repo
     pr_repos = [c["repo"] for c in gh_configs if "base_branch" in c]
     assert pr_repos == ["acme/data", "acme/app"]
+
+
+def test_capture_reports_reason_and_literal_detail_without_opening_pr():
+    from puxti.models import UnverifiedEntity, UnverifiedReason
+
+    result = _prop_result("dbt", with_diff=False)
+    result.unverified_entities = [
+        UnverifiedEntity(
+            entity_id="model.jaffle_shop.orders[red]",
+            reason=UnverifiedReason.JINJA_REFERENCE,
+            detail="macro [bold]argument[/bold]",
+        )
+    ]
+    cli_result, _, mock_gh, _ = _run_capture_with_results([result])
+    assert cli_result.exit_code == 0, cli_result.output
+    assert "model.jaffle_shop.orders[red]" in cli_result.output
+    assert "column is referenced inside Jinja" in cli_result.output
+    assert "macro [bold]argument[/bold]" in " ".join(cli_result.output.split())
+    assert "could not confirm" not in cli_result.output.lower()
+    mock_gh.open_pr.assert_not_called()
