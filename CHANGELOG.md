@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-10-30
+
 ### Added
 
 - **One-time GitHub star request.** After the first successful command in an interactive terminal, the CLI prints a single dim line on stderr asking for a star on GitHub. The shown flag is stored in `~/.puxti/config.toml` under `[notices]`, so the message never repeats. Non-interactive runs (CI, pipes, coding agents) never see it and write nothing.
