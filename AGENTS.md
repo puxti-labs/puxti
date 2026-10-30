@@ -68,6 +68,8 @@ file, so no external services are required.
   branch. Generate PRs.
 - **Connectors stay modular.** Don't couple connector logic to core
   propagation logic. Each connector implements `base.Connector`.
+- **Validate LLM edge types.** The scanner logs and skips an invalid relationship
+  type per proposal, preserving valid edges and their confirmation step.
 - **Two graph backends.** SQLite is the default; Postgres is opt-in via
   `DATABASE_URL` (`puxti[postgres]`). Don't add others.
 - **No new dependencies without justification.** The package's install

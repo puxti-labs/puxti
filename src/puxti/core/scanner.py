@@ -396,10 +396,17 @@ class SemanticScanner:
             # Only accept edges FROM the source batch to known entities
             if from_id not in source_ids_set or to_id not in known_ids:
                 continue
+            try:
+                edge_type = EdgeType(ed.get("type", "derived_from"))
+            except ValueError:
+                _logger.warning(
+                    "Skipping semantic edge with invalid type (%s -> %s)", from_id, to_id
+                )
+                continue
             edges.append(SemanticEdge(
                 from_entity_id=from_id,
                 to_entity_id=to_id,
-                type=EdgeType(ed.get("type", "derived_from")),
+                type=edge_type,
                 description=ed["description"],
                 created_by="scan",
             ))
