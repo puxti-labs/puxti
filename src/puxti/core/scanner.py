@@ -358,7 +358,8 @@ class SemanticScanner:
 
         Returns:
             (edges, truncated) — truncated is True when max_tokens was hit.
-            Empty list is returned rather than raising so the scan can continue.
+            A response with the wrong shape returns an empty list rather than
+            raising so the scan can continue; unparseable JSON still raises.
         """
         source_block = "\n".join(
             f"- {e.id}: {definitions.get(e.id, '(no definition)')}"
@@ -379,7 +380,7 @@ class SemanticScanner:
         raw = strip_markdown_fences(response.text)
 
         try:
-            edges_data = json.loads(raw).get("edges", [])
+            payload = json.loads(raw)
         except json.JSONDecodeError as exc:
             if response.truncated:
                 return [], True
@@ -388,11 +389,31 @@ class SemanticScanner:
                 f"Raw response preview: {raw[:200]!r}"
             ) from exc
 
+        # A missing or null "edges" means no edges. Any other shape loses only
+        # this batch, so the other batches' edges still reach confirmation.
+        edges_data = payload.get("edges") if isinstance(payload, dict) else None
+        if isinstance(payload, dict) and edges_data is None:
+            edges_data = []
+        if not isinstance(edges_data, list):
+            if response.truncated:
+                return [], True
+            _logger.warning(
+                "Skipping semantic edge batch: response is not an object with an "
+                "\"edges\" list"
+            )
+            return [], False
+
         source_ids_set = {e.id for e in source_entities}
         edges: list[SemanticEdge] = []
         for ed in edges_data:
+            if not isinstance(ed, dict):
+                _logger.warning("Skipping semantic edge proposal that is not an object")
+                continue
             from_id = ed.get("from_entity_id", "")
             to_id = ed.get("to_entity_id", "")
+            if not isinstance(from_id, str) or not isinstance(to_id, str):
+                _logger.warning("Skipping semantic edge proposal with non-string entity IDs")
+                continue
             # Only accept edges FROM the source batch to known entities
             if from_id not in source_ids_set or to_id not in known_ids:
                 continue
@@ -403,11 +424,17 @@ class SemanticScanner:
                     "Skipping semantic edge with invalid type (%s -> %s)", from_id, to_id
                 )
                 continue
+            description = ed.get("description")
+            if not isinstance(description, str) or not description.strip():
+                _logger.warning(
+                    "Skipping semantic edge without a description (%s -> %s)", from_id, to_id
+                )
+                continue
             edges.append(SemanticEdge(
                 from_entity_id=from_id,
                 to_entity_id=to_id,
                 type=edge_type,
-                description=ed["description"],
+                description=description.strip(),
                 created_by="scan",
             ))
         return edges, False

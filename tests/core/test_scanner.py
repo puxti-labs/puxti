@@ -249,6 +249,176 @@ async def test_propose_semantic_edges_skips_invalid_types(
     assert "Skipping semantic edge with invalid type" in caplog.text
 
 
+@pytest.mark.parametrize("bad_description", ["<missing>", None, "", "   ", 42, ["CLV"]])
+async def test_propose_semantic_edges_skips_missing_descriptions(
+    bad_description: object, caplog: pytest.LogCaptureFixture,
+) -> None:
+    valid = {
+        "from_entity_id": CUSTOMERS_ENTITY.id,
+        "to_entity_id": ORDERS_ENTITY.id,
+        "type": "derived_from",
+        "description": "CLV from orders.",
+    }
+    bad = {**valid, "from_entity_id": ORDERS_ENTITY.id, "to_entity_id": CUSTOMERS_ENTITY.id}
+    if bad_description == "<missing>":
+        del bad["description"]
+    else:
+        bad["description"] = bad_description
+    backend = _make_backend({"edges": [bad, valid]})
+
+    edges, truncated = await SemanticScanner(backend=backend).propose_semantic_edges(
+        [ORDERS_ENTITY, CUSTOMERS_ENTITY],
+        {ORDERS_ENTITY.id: "Orders.", CUSTOMERS_ENTITY.id: "Customers."},
+    )
+
+    assert [(edge.from_entity_id, edge.to_entity_id, edge.description) for edge in edges] == [
+        (CUSTOMERS_ENTITY.id, ORDERS_ENTITY.id, "CLV from orders."),
+    ]
+    assert truncated == 0
+    assert "Skipping semantic edge without a description" in caplog.text
+
+
+@pytest.mark.parametrize("bad_entry", [None, "derived_from", 42, ["edge"]])
+async def test_propose_semantic_edges_skips_non_object_entries(
+    bad_entry: object, caplog: pytest.LogCaptureFixture,
+) -> None:
+    valid = {
+        "from_entity_id": CUSTOMERS_ENTITY.id,
+        "to_entity_id": ORDERS_ENTITY.id,
+        "type": "derived_from",
+        "description": "CLV from orders.",
+    }
+    backend = _make_backend({"edges": [bad_entry, valid]})
+
+    edges, truncated = await SemanticScanner(backend=backend).propose_semantic_edges(
+        [ORDERS_ENTITY, CUSTOMERS_ENTITY],
+        {ORDERS_ENTITY.id: "Orders.", CUSTOMERS_ENTITY.id: "Customers."},
+    )
+
+    assert [(edge.from_entity_id, edge.to_entity_id) for edge in edges] == [
+        (CUSTOMERS_ENTITY.id, ORDERS_ENTITY.id),
+    ]
+    assert truncated == 0
+    assert "Skipping semantic edge proposal that is not an object" in caplog.text
+
+
+@pytest.mark.parametrize("payload", [{"edges": None}, {}])
+async def test_propose_semantic_edges_treats_null_edges_as_none(payload: dict) -> None:
+    edges, truncated = await SemanticScanner(backend=_make_backend(payload)).propose_semantic_edges(
+        [ORDERS_ENTITY, CUSTOMERS_ENTITY],
+        {ORDERS_ENTITY.id: "Orders.", CUSTOMERS_ENTITY.id: "Customers."},
+    )
+
+    assert edges == []
+    assert truncated == 0
+
+
+_UNUSABLE_SHAPES = [None, [], [{"edges": []}], "edges", {"edges": "none"}, {"edges": {}}]
+
+
+@pytest.mark.parametrize("payload", _UNUSABLE_SHAPES)
+async def test_propose_semantic_edges_skips_batch_with_unusable_shape(
+    payload: object, caplog: pytest.LogCaptureFixture,
+) -> None:
+    backend = _make_backend({})
+    backend.complete = AsyncMock(
+        return_value=LLMResponse(text=json.dumps(payload), truncated=False)
+    )
+
+    edges, truncated = await SemanticScanner(backend=backend).propose_semantic_edges(
+        [ORDERS_ENTITY, CUSTOMERS_ENTITY],
+        {ORDERS_ENTITY.id: "Orders.", CUSTOMERS_ENTITY.id: "Customers."},
+    )
+
+    assert edges == []
+    assert truncated == 0
+    assert 'not an object with an "edges" list' in caplog.text
+
+
+@pytest.mark.parametrize("payload", _UNUSABLE_SHAPES)
+async def test_propose_semantic_edges_counts_truncated_unusable_shape(payload: object) -> None:
+    backend = _make_backend({})
+    backend.complete = AsyncMock(
+        return_value=LLMResponse(text=json.dumps(payload), truncated=True)
+    )
+
+    edges, truncated = await SemanticScanner(backend=backend).propose_semantic_edges(
+        [ORDERS_ENTITY, CUSTOMERS_ENTITY],
+        {ORDERS_ENTITY.id: "Orders.", CUSTOMERS_ENTITY.id: "Customers."},
+    )
+
+    assert edges == []
+    assert truncated == 1
+
+
+async def test_propose_semantic_edges_keeps_other_batches_after_unusable_shape() -> None:
+    entities = _make_entities(2 * SemanticScanner._EDGES_SOURCE_BATCH)
+    batch_size = SemanticScanner._EDGES_SOURCE_BATCH
+    valid = {
+        "from_entity_id": entities[batch_size].id,
+        "to_entity_id": entities[0].id,
+        "type": "derived_from",
+        "description": "From the first batch.",
+    }
+
+    async def complete(*, system: str, user_message: str, max_tokens: int) -> LLMResponse:
+        if entities[batch_size].id in user_message.split("FROM these source entities only:")[1]:
+            return _make_llm_response({"edges": [valid]})
+        return LLMResponse(text="[]", truncated=False)
+
+    backend = _make_backend({})
+    backend.complete = AsyncMock(side_effect=complete)
+
+    edges, truncated = await SemanticScanner(backend=backend).propose_semantic_edges(
+        entities, {e.id: "Def." for e in entities},
+    )
+
+    assert [(edge.from_entity_id, edge.to_entity_id) for edge in edges] == [
+        (entities[batch_size].id, entities[0].id),
+    ]
+    assert truncated == 0
+
+
+@pytest.mark.parametrize("field", ["from_entity_id", "to_entity_id"])
+async def test_propose_semantic_edges_skips_non_string_ids(
+    field: str, caplog: pytest.LogCaptureFixture,
+) -> None:
+    valid = {
+        "from_entity_id": CUSTOMERS_ENTITY.id,
+        "to_entity_id": ORDERS_ENTITY.id,
+        "type": "derived_from",
+        "description": "CLV from orders.",
+    }
+    backend = _make_backend({"edges": [{**valid, field: [ORDERS_ENTITY.id]}, valid]})
+
+    edges, truncated = await SemanticScanner(backend=backend).propose_semantic_edges(
+        [ORDERS_ENTITY, CUSTOMERS_ENTITY],
+        {ORDERS_ENTITY.id: "Orders.", CUSTOMERS_ENTITY.id: "Customers."},
+    )
+
+    assert [(edge.from_entity_id, edge.to_entity_id) for edge in edges] == [
+        (CUSTOMERS_ENTITY.id, ORDERS_ENTITY.id),
+    ]
+    assert truncated == 0
+    assert "Skipping semantic edge proposal with non-string entity IDs" in caplog.text
+
+
+async def test_propose_semantic_edges_strips_description() -> None:
+    backend = _make_backend({"edges": [{
+        "from_entity_id": CUSTOMERS_ENTITY.id,
+        "to_entity_id": ORDERS_ENTITY.id,
+        "type": "derived_from",
+        "description": "  CLV from orders.\n\n",
+    }]})
+
+    edges, _ = await SemanticScanner(backend=backend).propose_semantic_edges(
+        [ORDERS_ENTITY, CUSTOMERS_ENTITY],
+        {ORDERS_ENTITY.id: "Orders.", CUSTOMERS_ENTITY.id: "Customers."},
+    )
+
+    assert edges[0].description == "CLV from orders."
+
+
 async def test_propose_semantic_edges_defaults_missing_type() -> None:
     backend = _make_backend({"edges": [{
         "from_entity_id": CUSTOMERS_ENTITY.id,
