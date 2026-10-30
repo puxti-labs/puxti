@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **`capture` previews diffs and confirms PR creation.** Generated SQL changes are shown before a separate approval prompt. Only an explicit `y` allows branches and PRs to be created; blank input cancels. This addresses the PR-confirmation part of #51; `--dry-run` remains a cost estimate.
+
 ### Added
 
 - **One-time GitHub star request.** After the first successful command in an interactive terminal, the CLI prints a single dim line on stderr asking for a star on GitHub. The shown flag is stored in `~/.puxti/config.toml` under `[notices]`, so the message never repeats. Non-interactive runs (CI, pipes, coding agents) never see it and write nothing.

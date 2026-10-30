@@ -304,7 +304,7 @@ def test_cli_capture_uses_workspace_repo(tmp_path):
             "--after", "recorded_date",
             "--description", "renamed",
             # no --repo — should come from workspace
-        ], input="y\n")
+        ], input="y\ny\n")
 
     assert result.exit_code == 0, result.output
     assert "https://github.com/acme/data/pull/1" in result.output

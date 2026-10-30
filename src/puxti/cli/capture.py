@@ -1,9 +1,11 @@
 """`puxti capture` — propagate a structural change as a reviewable PR."""
 
+from difflib import unified_diff
 from typing import Optional
 
 import typer
 from rich.panel import Panel
+from rich.text import Text
 
 from puxti.cli._app import app
 from puxti.cli._shared import _load_workspace, _run, console, err_console
@@ -58,7 +60,8 @@ def capture(
     """Propagate a schema change safely across the stack as a reviewable PR.
 
     Captures the semantic meaning of a column rename or other structural change,
-    reasons about downstream impact, and opens a GitHub PR with the generated diffs.
+    reasons about downstream impact, and previews the generated diffs before
+    asking for confirmation to open GitHub PRs.
 
     Use --dry-run to estimate the API cost before committing. --repo is not
     required when --dry-run is set.
@@ -315,6 +318,25 @@ async def _run_capture(
                 "[yellow]No PR opened.[/yellow] No diffs were generated; every affected "
                 "model needs manual review (listed above)."
             )
+            return
+
+        for result in actionable:
+            console.print(Text(f"\n{result.connector} diffs:", style="bold"))
+            for diff in result.diffs:
+                lines = unified_diff(
+                    diff.before.splitlines(),
+                    diff.after.splitlines(),
+                    fromfile=f"a/{diff.file_path}",
+                    tofile=f"b/{diff.file_path}",
+                    lineterm="",
+                )
+                console.print(Text("\n".join(lines)))
+
+        confirm_prs = console.input(
+            f"\nOpen {len(actionable)} pull request(s)? ([bold]y[/bold]=yes, n=cancel) > "
+        ).strip().lower()
+        if confirm_prs != "y":
+            console.print("[yellow]No PR opened.[/yellow] Cancelled before creating branches.")
             return
 
         # Step 3 — open PRs (one per connector, each to its configured repo)

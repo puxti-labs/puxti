@@ -64,6 +64,8 @@ file, so no external services are required.
 - **Read-first, write-on-confirm.** Commands that modify external state
   (PRs to user repos, writes to the knowledge graph) must show a plan and
   require confirmation before acting. `--dry-run` should always work.
+  `capture` previews unified diffs and confirms PR creation separately from
+  its earlier Knowledge Graph enrichment prompt.
 - **PRs as the output format.** Never push directly to a user's main
   branch. Generate PRs.
 - **Connectors stay modular.** Don't couple connector logic to core

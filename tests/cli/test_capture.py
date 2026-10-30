@@ -2,6 +2,8 @@
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from puxti.cli import app
 from tests.cli._helpers import plain, runner
 
@@ -143,7 +145,7 @@ def test_capture_happy_path_prints_pr_url():
             "--after", "recorded_date",
             "--description", "Renamed for clarity",
             "--repo", "acme/data",
-        ], input="y\n")
+        ], input="y\ny\n")
 
     assert result.exit_code == 0, result.output
     assert "https://github.com/acme/data/pull/42" in result.output
@@ -211,7 +213,7 @@ def test_capture_no_diffs_exits_cleanly():
     assert "no diffs" in result.output.lower()
 
 
-def _run_capture_with_results(results, extra_args=(), input_="y\n"):
+def _run_capture_with_results(results, extra_args=(), input_="y\ny\n"):
     """Run `puxti capture` with a mocked engine returning `results`.
 
     Returns (cli_result, github_connector_class_mock, engine_class_mock).
@@ -340,6 +342,44 @@ def test_capture_mixed_results_opens_pr_only_for_connectors_with_diffs():
     assert gh_cls.call_count == 2          # health check + the one PR connector
     assert "dag.nightly_orders" in cli_result.output   # still listed for manual review
     mock_gh.add_companion_note.assert_not_called()
+
+
+@pytest.mark.parametrize("answer", ["n", "", "yes please"])
+def test_capture_declining_pr_confirmation_opens_nothing(answer):
+    results = [
+        _prop_result("dbt", with_diff=True),
+        _prop_result("sql_views", with_diff=True),
+    ]
+
+    cli_result, gh_cls, mock_gh, _ = _run_capture_with_results(
+        results, input_=f"y\n{answer}\n"
+    )
+
+    assert cli_result.exit_code == 0, cli_result.output
+    mock_gh.open_pr.assert_not_called()
+    mock_gh.add_companion_note.assert_not_called()
+    assert gh_cls.call_count == 1  # read-only health check only
+    assert "No PR opened" in cli_result.output
+
+
+def test_capture_previews_diff_before_confirming_pr():
+    results = [_prop_result("dbt", with_diff=True, unverified=["model.demo.manual"])]
+    results[0].diffs[0].before = "select '[red]' as label, order_date from stg"
+    results[0].diffs[0].after = "select '[red]' as label, recorded_date from stg"
+
+    cli_result, _, mock_gh, _ = _run_capture_with_results(
+        results, extra_args=("--repo-subdir", "warehouse"), input_="n\ny\n"
+    )
+
+    assert cli_result.exit_code == 0, cli_result.output
+    output = plain(cli_result.output)
+    prompt_at = output.index("Open 1 pull request(s)?")
+    assert output.index("--- a/warehouse/models/orders.sql") < prompt_at
+    assert output.index("+++ b/warehouse/models/orders.sql") < prompt_at
+    assert output.index("-select '[red]' as label, order_date from stg") < prompt_at
+    assert output.index("+select '[red]' as label, recorded_date from stg") < prompt_at
+    assert output.index("model.demo.manual") < prompt_at
+    mock_gh.open_pr.assert_awaited_once()
 
 
 def test_capture_dry_run_with_unverified_results_opens_nothing():
@@ -691,7 +731,7 @@ def test_capture_rebases_and_routes_sql_views_diffs_to_their_repo():
             "--before", "email",
             "--after", "contact_email",
             "--description", "renamed",
-        ], input="y\n")
+        ], input="y\ny\n")
 
     assert result.exit_code == 0, result.output
     # sql_views diff was rebased onto the connector's repo_subdir

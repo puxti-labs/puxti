@@ -95,7 +95,13 @@ Puxti will:
 1. Call the LLM to enrich your description and reason about affected entities
 2. Scan your dbt models for references to `order_date`
 3. Generate diffs replacing all occurrences with `recorded_date`
-4. Open a PR on `your-org/your-dbt-repo` with the diffs and semantic context
+4. Show unified diffs and any models needing manual review, then ask for confirmation
+5. Open PRs in the configured repositories only after an explicit `y`
+
+Declining or leaving the PR prompt blank creates no branches or PRs. This is
+separate from the earlier Knowledge Graph prompt: cancelling PR creation does
+not undo enrichment you already chose to save. `--dry-run` still estimates cost
+without generating diffs or opening PRs.
 
 ### `capture` options
 
