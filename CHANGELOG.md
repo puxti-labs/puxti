@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Column renames preserve `CREATE VIEW` target names, including quoted and schema-qualified names. A view named after the renamed column no longer gets renamed along with its SQL references.
+
 ### Added
 
 - **One-time GitHub star request.** After the first successful command in an interactive terminal, the CLI prints a single dim line on stderr asking for a star on GitHub. The shown flag is stored in `~/.puxti/config.toml` under `[notices]`, so the message never repeats. Non-interactive runs (CI, pipes, coding agents) never see it and write nothing.

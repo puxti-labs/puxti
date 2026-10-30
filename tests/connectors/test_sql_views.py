@@ -1,5 +1,8 @@
 """SqlViewsConnector — parsing, entities, lineage, and rename diffs."""
 
+import sqlite3
+from pathlib import Path
+
 import pytest
 
 from puxti.connectors.sql_views import SqlViewsConnector
@@ -265,3 +268,33 @@ async def test_non_structural_event_produces_no_changes(connector):
     diffs, unverified = await connector.generate_changes(event)
     assert diffs == []
     assert unverified == []
+
+
+async def test_rename_preserves_name_of_executable_view(tmp_path: Path) -> None:
+    views = tmp_path / "views"
+    views.mkdir()
+    view_file = views / "summary.sql"
+    original = "create view order_date as select order_date from orders"
+    view_file.write_text(original)
+    connector = SqlViewsConnector(config={"project_dir": str(tmp_path), "views_dir": "views"})
+
+    diffs, unverified = await connector.generate_changes(
+        _rename_event(
+            "model.shop.orders.order_date", "order_date", "recorded_date",
+            affected=["view.public.order_date"],
+        )
+    )
+
+    assert unverified == []
+    assert len(diffs) == 1
+    assert diffs[0].before == original
+    assert view_file.read_text() == original
+    with sqlite3.connect(":memory:") as db:
+        db.execute("create table orders (order_date integer)")
+        db.execute("insert into orders values (42)")
+        db.execute(original)
+        assert db.execute("select order_date from order_date").fetchall() == [(42,)]
+        db.execute("drop view order_date")
+        db.execute("alter table orders rename column order_date to recorded_date")
+        db.execute(diffs[0].after)
+        assert db.execute("select recorded_date from order_date").fetchall() == [(42,)]
