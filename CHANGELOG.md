@@ -2,17 +2,15 @@
 
 ## [Unreleased]
 
-### Fixed
-
-- **`capture` previews diffs and confirms PR creation.** Generated SQL changes are shown before a separate approval prompt. Only an explicit `y` allows branches and PRs to be created; blank input cancels. This addresses the PR-confirmation part of #51; `--dry-run` remains a cost estimate.
-
 ### Added
 
 - **One-time GitHub star request.** After the first successful command in an interactive terminal, the CLI prints a single dim line on stderr asking for a star on GitHub. The shown flag is stored in `~/.puxti/config.toml` under `[notices]`, so the message never repeats. Non-interactive runs (CI, pipes, coding agents) never see it and write nothing.
 
 ### Fixed
 
+- **`capture` previews diffs and confirms PR creation.** Generated SQL changes are shown before a separate approval prompt. Only an explicit `y` allows branches and PRs to be created; blank input cancels. This addresses the PR-confirmation part of #51; `--dry-run` remains a cost estimate. `capture` now asks twice (Knowledge Graph enrichment, then PR creation), so a script that pipes a single `y` cancels before any PR is opened; pipe `y` twice instead.
 - **Scan continues after an invalid semantic-edge type.** An unsupported relationship type in an LLM response is logged and skipped instead of aborting the scan. Valid proposals in the same batch are preserved and still require confirmation before being written. Addresses the invalid-type crash reported in #56; lineage and definition validation remain separate work.
+- **Scan continues after a malformed semantic edge proposal.** A proposed edge whose `description` is missing, empty or not a string, whose entity IDs are not strings, or that is not an object at all is logged and skipped instead of aborting the scan, the same way as an invalid relationship type. A null `edges` value counts as no edges. A batch response that is not an object with an `edges` list is logged and skipped, so edges from the other batches still reach confirmation; a truncated one counts toward the "re-run scan" warning. Accepted descriptions are stored without surrounding whitespace.
 
 ## [0.17.0] — 2026-10-23
 
