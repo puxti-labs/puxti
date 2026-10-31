@@ -100,8 +100,12 @@ Puxti will:
 
 Declining or leaving the PR prompt blank creates no branches or PRs. This is
 separate from the earlier Knowledge Graph prompt: cancelling PR creation does
-not undo enrichment you already chose to save. `--dry-run` still estimates cost
-without generating diffs or opening PRs.
+not undo enrichment you already chose to save.
+
+`--dry-run` shows the cost estimate, then runs steps 1 to 4 for real and prints
+the same diffs and manual-review list a real run would. It never saves the
+enrichment and never calls GitHub, so it needs neither `--repo` nor
+`GITHUB_TOKEN`. It makes the same LLM call as a real run, so it costs the same.
 
 ### `capture` options
 
@@ -114,7 +118,7 @@ without generating diffs or opening PRs.
 | `--repo` | No | GitHub repo for the PR (`owner/repo`) — required unless `--dry-run` or set in `.puxti.yml` |
 | `--base-branch` | No | Base branch for the PR (default: `main`, or from `.puxti.yml`) |
 | `--dbt-project-dir` | No | Path to dbt project root (overrides `.puxti.yml` and `DBT_PROJECT_DIR`) |
-| `--dry-run` | No | Estimate token count and cost without running the capture |
+| `--dry-run` | No | Show the cost estimate and the generated diffs without saving to the Knowledge Graph or calling GitHub. Calls the LLM |
 
 ---
 
@@ -131,7 +135,15 @@ Puxti will:
 1. Traverse the semantic graph to find downstream entities whose meaning is now affected
 2. Walk the structural ancestor chain upstream for passthrough changes
 3. Generate SQL diffs with depth-aware confidence annotations
-4. Open a PR with both upstream passthrough diffs and downstream semantic diffs
+4. Show the unified diffs, then ask for confirmation
+5. Open a PR with both upstream passthrough diffs and downstream semantic diffs only after an explicit `y`, then save the new definition
+
+Declining or leaving the prompt blank opens no PR and saves nothing.
+
+`--dry-run` shows the affected entities and the cost estimate, then generates and
+prints the same diffs a real run would. It never saves the definition and never
+calls GitHub, so it needs neither `--repo` nor `GITHUB_TOKEN`. It makes the same
+LLM calls as a real run, so it costs the same.
 
 ### `redefine` options
 
@@ -142,7 +154,7 @@ Puxti will:
 | `--repo` | No | GitHub repo for the PR (`owner/repo`) — required unless `--dry-run` or set in `.puxti.yml` |
 | `--base-branch` | No | Base branch for the PR (default: `main`, or from `.puxti.yml`) |
 | `--dbt-project-dir` | No | Path to dbt project root (overrides `.puxti.yml` and `DBT_PROJECT_DIR`) |
-| `--dry-run` | No | Estimate token count and cost without calling the LLM or opening a PR |
+| `--dry-run` | No | Show the cost estimate and the generated diffs without saving the definition or calling GitHub. Calls the LLM |
 
 ---
 
@@ -153,6 +165,12 @@ Use this when Puxti inferred a wrong definition during scan, or when you want to
 ```bash
 puxti correct --entity "model.jaffle_shop.orders"
 ```
+
+If you classify the correction as a real change in meaning, `correct` prints the
+matching `redefine` command and asks `Run it now?`. Answering `y` runs `redefine`
+with the repo from `.puxti.yml`, which shows its diffs and asks again before
+opening the PR, so a script must answer both prompts. Closed input at either
+prompt cancels without writing anything.
 
 ### `correct` options
 

@@ -1,14 +1,21 @@
 """`puxti capture` — propagate a structural change as a reviewable PR."""
 
-from difflib import unified_diff
 from typing import Optional
 
 import typer
+from rich.markup import escape
 from rich.panel import Panel
 from rich.text import Text
 
 from puxti.cli._app import app
-from puxti.cli._shared import _load_workspace, _run, console, err_console
+from puxti.cli._shared import (
+    _confirm,
+    _load_workspace,
+    _print_diffs,
+    _run,
+    console,
+    err_console,
+)
 from puxti.connectors.dbt import DbtConnector
 from puxti.connectors.github import GitHubConnector
 from puxti.connectors.registry import build_configured_connectors
@@ -54,7 +61,11 @@ def capture(
              "Use when the dbt project is not at the repo root."
     ),
     dry_run: bool = typer.Option(
-        False, "--dry-run", help="Estimate token count and cost without running the capture."
+        False, "--dry-run",
+        help=(
+            "Show the cost estimate, then run the capture and print the diffs without "
+            "saving to the Knowledge Graph or calling GitHub. Calls the LLM."
+        ),
     ),
 ) -> None:
     """Propagate a schema change safely across the stack as a reviewable PR.
@@ -63,8 +74,9 @@ def capture(
     reasons about downstream impact, and previews the generated diffs before
     asking for confirmation to open GitHub PRs.
 
-    Use --dry-run to estimate the API cost before committing. --repo is not
-    required when --dry-run is set.
+    Use --dry-run to see the cost estimate and the exact diffs before anything is
+    written. It makes the same LLM call as a real run. --repo is not required when
+    --dry-run is set.
     """
     ws = _load_workspace()
     resolved_repo = repo or (ws.dbt.repo if ws.dbt else None)
@@ -162,7 +174,8 @@ async def _run_capture(
 
         capture = SemanticCapture()
 
-        # --dry-run: count tokens and show cost estimate, then exit.
+        # --dry-run: show the cost estimate, then run the capture and propagation
+        # as usual but stop before any write (Knowledge Graph or GitHub).
         # Build the same prompt the real capture sends — including the full
         # known-entity-ID list — so the estimate matches what will be billed.
         if dry_run:
@@ -197,7 +210,6 @@ async def _run_capture(
                     border_style="yellow",
                 )
             )
-            return
 
         # Step 1 — semantic capture
         try:
@@ -207,24 +219,29 @@ async def _run_capture(
             err_console.print(f"[red]Error:[/red] {exc}")
             raise typer.Exit(1) from exc
 
+        # LLM output is data, not markup: escape it so `[...]` renders literally.
         console.print("\n[bold]Enriched definition:[/bold]")
-        console.print(f"  {semantic_event.semantic_context}")
+        console.print(f"  {escape(semantic_event.semantic_context)}")
         if semantic_event.affected_entity_ids:
             console.print("\n[bold]Affected entities:[/bold]")
             for eid in semantic_event.affected_entity_ids:
-                console.print(f"  • {eid}")
+                console.print(f"  • {escape(eid)}")
         if semantic_event.reasoning:
-            console.print(f"\n[bold]Reasoning:[/bold] {semantic_event.reasoning[:200]}"
+            console.print(f"\n[bold]Reasoning:[/bold] {escape(semantic_event.reasoning[:200])}"
                           + ("…" if len(semantic_event.reasoning) > 200 else ""))
 
-        confirm_kg = console.input(
-            "\nSave this enrichment to the Knowledge Graph? ([bold]y[/bold]=yes, n=skip) > "
-        ).strip().lower()
-        if confirm_kg == "y":
-            await commit_to_graph()
-            console.print("[green]✓[/green] Enrichment saved to Knowledge Graph.")
+        if dry_run:
+            console.print(
+                "\n[yellow]Dry run:[/yellow] enrichment not saved to the Knowledge Graph."
+            )
         else:
-            console.print("[yellow]Skipping Knowledge Graph update.[/yellow]")
+            if _confirm(
+                "\nSave this enrichment to the Knowledge Graph? ([bold]y[/bold]=yes, n=skip) > "
+            ):
+                await commit_to_graph()
+                console.print("[green]✓[/green] Enrichment saved to Knowledge Graph.")
+            else:
+                console.print("[yellow]Skipping Knowledge Graph update.[/yellow]")
 
         # Step 2 — propagation. dbt is built here (its project_dir resolution
         # is flag/env-driven); every other configured producer comes from the
@@ -322,20 +339,18 @@ async def _run_capture(
 
         for result in actionable:
             console.print(Text(f"\n{result.connector} diffs:", style="bold"))
-            for diff in result.diffs:
-                lines = unified_diff(
-                    diff.before.splitlines(),
-                    diff.after.splitlines(),
-                    fromfile=f"a/{diff.file_path}",
-                    tofile=f"b/{diff.file_path}",
-                    lineterm="",
-                )
-                console.print(Text("\n".join(lines)))
+            _print_diffs(result.diffs)
 
-        confirm_prs = console.input(
+        if dry_run:
+            console.print(
+                f"\n[yellow]Dry run:[/yellow] {len(actionable)} pull request(s) would be "
+                "opened. Nothing was written."
+            )
+            return
+
+        if not _confirm(
             f"\nOpen {len(actionable)} pull request(s)? ([bold]y[/bold]=yes, n=cancel) > "
-        ).strip().lower()
-        if confirm_prs != "y":
+        ):
             console.print("[yellow]No PR opened.[/yellow] Cancelled before creating branches.")
             return
 

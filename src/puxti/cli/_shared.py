@@ -5,13 +5,15 @@ import threading
 import time
 import urllib.request
 from datetime import datetime, timedelta, timezone
+from difflib import unified_diff
 
 import typer
 from rich.console import Console
+from rich.text import Text
 
 from puxti import __version__
 from puxti.llm import LLMConfigError
-from puxti.models import EntityType
+from puxti.models import EntityType, FileDiff
 from puxti.workspace import WorkspaceConfig, load_workspace
 
 console = Console()
@@ -152,6 +154,29 @@ def _load_workspace() -> WorkspaceConfig:
     except ValueError as exc:
         err_console.print(f"[red bold]Config error:[/red bold] {exc}")
         raise typer.Exit(1)
+
+
+def _confirm(prompt: str) -> bool:
+    """Ask a y/N question. Only an explicit `y` is a yes; closed stdin is a no."""
+    try:
+        answer = console.input(prompt)
+    except EOFError:
+        console.print()
+        return False
+    return answer.strip().lower() == "y"
+
+
+def _print_diffs(diffs: list[FileDiff]) -> None:
+    """Print each diff as a unified diff. SQL is rendered as literal text, not markup."""
+    for diff in diffs:
+        lines = unified_diff(
+            diff.before.splitlines(),
+            diff.after.splitlines(),
+            fromfile=f"a/{diff.file_path}",
+            tofile=f"b/{diff.file_path}",
+            lineterm="",
+        )
+        console.print(Text("\n".join(lines)))
 
 
 def _parse_entity_id(entity_id: str) -> tuple[EntityType, str, str]:

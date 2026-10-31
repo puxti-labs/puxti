@@ -65,7 +65,10 @@ file, so no external services are required.
   (PRs to user repos, writes to the knowledge graph) must show a plan and
   require confirmation before acting. `--dry-run` should always work.
   `capture` previews unified diffs and confirms PR creation separately from
-  its earlier Knowledge Graph enrichment prompt.
+  its earlier Knowledge Graph enrichment prompt; `redefine` previews its diffs
+  and confirms before the PR. On both, `--dry-run` runs the real LLM calls and
+  prints the same diffs a real run would, then stops before any Knowledge Graph
+  or GitHub write.
 - **PRs as the output format.** Never push directly to a user's main
   branch. Generate PRs.
 - **Connectors stay modular.** Don't couple connector logic to core
