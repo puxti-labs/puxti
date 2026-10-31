@@ -127,6 +127,7 @@ class SemanticRedefiner:
         ancestors_with_depth: list[tuple[Entity, int]],
         connector: BaseConnector,
         graph: "KnowledgeGraph | None" = None,
+        prompts: list[tuple[str, int, str, str]] | None = None,
     ) -> list[FileDiff]:
         """Generate diffs to pass a new attribute through the upstream structural chain.
 
@@ -140,38 +141,18 @@ class SemanticRedefiner:
             ancestors_with_depth: (entity, depth) pairs from get_structural_ancestors().
             connector:            dbt connector to read model SQL.
             graph:                Knowledge Graph to fetch stored definitions (optional).
+            prompts:              Output of passthrough_prompts() for these arguments.
+                                  Pass it when the caller already built the prompts
+                                  (e.g. for a cost estimate) so exactly those are sent.
         """
-        sql_map = connector.get_model_sql_map()
         diffs: list[FileDiff] = []
-
-        # Include the entity itself at depth 0 — it needs the attribute too
-        targets = [(entity_id, 0)] + [(e.id, d) for e, d in ancestors_with_depth]
-
-        for target_id, depth in targets:
-            model_sql = sql_map.get(target_id)
-            if not model_sql:
-                continue
-
-            entity_name = target_id.split(".")[-1]
-
-            # Fetch stored definition from graph if available
-            definition_context = ""
-            if graph:
-                definition = await graph.get_latest_definition(target_id)
-                if definition:
-                    definition_context = f"Model definition: {definition.description}\n"
-
-            sql_fragment = model_sql[:_MAX_SQL_CHARS]
-            if len(model_sql) > _MAX_SQL_CHARS:
-                sql_fragment += f"\n-- [truncated at {_MAX_SQL_CHARS} chars]"
-            user_message = (
-                f"Model: {entity_name}\n"
-                f"{definition_context}"
-                f"New attribute to pass through: {new_attribute}\n"
-                f"This attribute exists in the upstream source — just add it to the SELECT.\n\n"
-                f"Current SQL:\n{sql_fragment}"
+        if prompts is None:
+            prompts = await passthrough_prompts(
+                entity_id, new_attribute, ancestors_with_depth, connector, graph
             )
 
+        for target_id, depth, model_sql, user_message in prompts:
+            entity_name = target_id.split(".")[-1]
             response = await self._call_llm(_PASSTHROUGH_SYSTEM_PROMPT, user_message)
             raw = strip_markdown_fences(response.text)
             try:
@@ -274,20 +255,9 @@ class SemanticRedefiner:
         depth: int,
         connector: BaseConnector,
     ) -> FileDiff | None:
-        old_def_line = (
-            f"Old definition: {old_definition}" if old_definition else "No previous definition."
+        user_message = redefine_user_message(
+            entity_id, old_definition, new_definition, entity.name, depth, model_sql
         )
-        sql_fragment = model_sql[:_MAX_SQL_CHARS]
-        if len(model_sql) > _MAX_SQL_CHARS:
-            sql_fragment += f"\n-- [truncated at {_MAX_SQL_CHARS} chars]"
-        user_message = (
-            f"Entity redefined: {entity_id}\n"
-            f"{old_def_line}\n"
-            f"New definition: {new_definition}\n\n"
-            f"Downstream model: {entity.name} (semantic hop depth: {depth})\n\n"
-            f"Current SQL:\n{sql_fragment}"
-        )
-
         response = await self._call_llm(_REDEFINE_SYSTEM_PROMPT, user_message)
         raw = strip_markdown_fences(response.text)
         try:
@@ -353,6 +323,73 @@ class SemanticRedefiner:
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _sql_fragment(model_sql: str) -> str:
+    """Model SQL as sent to the LLM: capped at _MAX_SQL_CHARS, with a marker if cut."""
+    fragment = model_sql[:_MAX_SQL_CHARS]
+    if len(model_sql) > _MAX_SQL_CHARS:
+        fragment += f"\n-- [truncated at {_MAX_SQL_CHARS} chars]"
+    return fragment
+
+
+def redefine_user_message(
+    entity_id: str,
+    old_definition: str | None,
+    new_definition: str,
+    model_name: str,
+    depth: int,
+    model_sql: str,
+) -> str:
+    """The user message for one hop-1/2 semantic diff call. The dry-run estimate
+    counts this exact message, so it must stay the only place it is built."""
+    old_def_line = (
+        f"Old definition: {old_definition}" if old_definition else "No previous definition."
+    )
+    return (
+        f"Entity redefined: {entity_id}\n"
+        f"{old_def_line}\n"
+        f"New definition: {new_definition}\n\n"
+        f"Downstream model: {model_name} (semantic hop depth: {depth})\n\n"
+        f"Current SQL:\n{_sql_fragment(model_sql)}"
+    )
+
+
+async def passthrough_prompts(
+    entity_id: str,
+    new_attribute: str,
+    ancestors_with_depth: list[tuple[Entity, int]],
+    connector: BaseConnector,
+    graph: "KnowledgeGraph | None" = None,
+) -> list[tuple[str, int, str, str]]:
+    """(target_id, depth, model_sql, user_message) for every passthrough LLM call.
+
+    The entity itself is included at depth 0, since it needs the attribute too.
+    Targets without a SQL file are skipped. `redefine` builds these once, counts
+    them for the dry-run estimate and passes the same list to
+    generate_passthrough_diffs, so the estimate covers exactly what is sent.
+    """
+    sql_map = connector.get_model_sql_map()
+    targets = [(entity_id, 0)] + [(e.id, d) for e, d in ancestors_with_depth]
+    prompts: list[tuple[str, int, str, str]] = []
+    for target_id, depth in targets:
+        model_sql = sql_map.get(target_id)
+        if not model_sql:
+            continue
+        definition_context = ""
+        if graph:
+            definition = await graph.get_latest_definition(target_id)
+            if definition:
+                definition_context = f"Model definition: {definition.description}\n"
+        user_message = (
+            f"Model: {target_id.split('.')[-1]}\n"
+            f"{definition_context}"
+            f"New attribute to pass through: {new_attribute}\n"
+            f"This attribute exists in the upstream source — just add it to the SELECT.\n\n"
+            f"Current SQL:\n{_sql_fragment(model_sql)}"
+        )
+        prompts.append((target_id, depth, model_sql, user_message))
+    return prompts
+
 
 def _conflict_annotation_diff(
     entity: Entity,

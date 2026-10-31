@@ -4,13 +4,27 @@ from typing import Optional
 
 import typer
 from rich.panel import Panel
+from rich.text import Text
 
 from puxti.cli._app import app
-from puxti.cli._shared import _load_workspace, _run, console, err_console
+from puxti.cli._shared import (
+    _confirm,
+    _load_workspace,
+    _print_diffs,
+    _run,
+    console,
+    err_console,
+)
 from puxti.connectors.dbt import DbtConnector
 from puxti.connectors.github import GitHubConnector
 from puxti.core.graph import KnowledgeGraph
-from puxti.core.redefine import SemanticRedefiner
+from puxti.core.redefine import (
+    _PASSTHROUGH_SYSTEM_PROMPT,
+    _REDEFINE_SYSTEM_PROMPT,
+    SemanticRedefiner,
+    passthrough_prompts,
+    redefine_user_message,
+)
 from puxti.llm import COST_UNKNOWN_HINT, get_backend
 from puxti.models import ChangeEvent, ChangeStatus, ChangeType
 from puxti.settings import settings
@@ -42,7 +56,10 @@ def redefine(
     ),
     dry_run: bool = typer.Option(
         False, "--dry-run",
-        help="Show affected entities and cost estimate without generating diffs or opening a PR.",
+        help=(
+            "Show affected entities and the cost estimate, then generate and print the "
+            "diffs without saving the definition or calling GitHub. Calls the LLM."
+        ),
     ),
 ) -> None:
     """Propagate a semantic definition change safely as a reviewable PR.
@@ -52,7 +69,10 @@ def redefine(
 
     Puxti traverses the semantic graph to find downstream entities whose meaning
     is now affected, generates SQL diffs with depth-aware confidence annotations,
-    and opens a PR for human review.
+    and previews them before asking for confirmation to open a PR for human review.
+
+    Use --dry-run to see the cost estimate and the exact diffs before anything is
+    written. It makes the same LLM calls as a real run.
 
     Run `puxti scan` first to bootstrap the semantic graph.
     """
@@ -149,44 +169,59 @@ async def _run_redefine(
                 console.print(f"  [dim]hop {depth}[/dim]  {dep_entity.name}")
 
         all_dependents = dependents_with_depth or structural_fallback
+        old_definition = existing_definition.description if existing_definition else None
+
+        dbt = DbtConnector(config={"project_dir": project_dir})
+        ancestors_with_depth = await graph.get_structural_ancestors(entity)
+        model_ancestors = [(e, d) for e, d in ancestors_with_depth if e.type.value == "model"]
+
+        if model_ancestors:
+            console.print(
+                f"[green]✓[/green] Found {len(model_ancestors)} upstream model(s) to update:"
+            )
+            for anc_entity, depth in model_ancestors:
+                console.print(f"  [dim]upstream hop {depth}[/dim]  {anc_entity.name}")
+
+        # Built once: the dry-run estimate counts these and the diff step sends them.
+        upstream_prompts = await passthrough_prompts(
+            entity, description, model_ancestors, dbt, graph
+        )
 
         if dry_run:
-            # Count tokens for each LLM diff call (hop 1 and 2 only)
-            dbt = DbtConnector(config={"project_dir": project_dir})
-            sql_map = dbt.get_model_sql_map()
+            # Count every LLM call the diff step below makes, using the same
+            # prompt builders: one passthrough call per target with SQL (the
+            # entity itself plus each upstream model) and one semantic call per
+            # hop-1/2 dependent with SQL.
             backend = get_backend()
-            from puxti.core.redefine import _REDEFINE_SYSTEM_PROMPT
-
-            old_def_line = (
-                f"Old definition: {existing_definition.description}"
-                if existing_definition else "No previous definition."
-            )
-            total_input_tokens = 0
-            tokens_exact = True
-            llm_calls = 0
+            sql_map = dbt.get_model_sql_map()
+            calls: list[tuple[str, str]] = [
+                (_PASSTHROUGH_SYSTEM_PROMPT, message)
+                for _, _, _, message in upstream_prompts
+            ]
+            passthrough_calls = len(calls)
             skipped_deep = 0
-
             for dep_entity, depth in all_dependents:
                 if depth > 2:
                     skipped_deep += 1
                     continue
-                model_sql = sql_map.get(dep_entity.id, "")
+                model_sql = sql_map.get(dep_entity.id)
                 if not model_sql:
                     continue
-                user_message = (
-                    f"Entity redefined: {entity}\n"
-                    f"{old_def_line}\n"
-                    f"New definition: {description}\n\n"
-                    f"Downstream model: {dep_entity.name} (semantic hop depth: {depth})\n\n"
-                    f"Current SQL:\n{model_sql}"
-                )
-                count = await backend.count_input_tokens(
-                    user_message, system=_REDEFINE_SYSTEM_PROMPT
-                )
+                calls.append((
+                    _REDEFINE_SYSTEM_PROMPT,
+                    redefine_user_message(
+                        entity, old_definition, description, dep_entity.name, depth, model_sql
+                    ),
+                ))
+
+            total_input_tokens = 0
+            tokens_exact = True
+            for system_prompt, user_message in calls:
+                count = await backend.count_input_tokens(user_message, system=system_prompt)
                 total_input_tokens += count.tokens
                 tokens_exact = tokens_exact and count.exact
-                llm_calls += 1
 
+            llm_calls = len(calls)
             est_output_tokens = llm_calls * 512
             est_cost: float | None = None
             if backend.input_cost_per_mtok is not None and backend.output_cost_per_mtok is not None:
@@ -213,7 +248,8 @@ async def _run_redefine(
                     f"\n"
                     f"{depth_summary}\n"
                     f"\n"
-                    f"LLM diff calls:         {llm_calls}  (hop 1–2 only)\n"
+                    f"LLM diff calls:         {llm_calls}  ({passthrough_calls} upstream "
+                    f"passthrough, {llm_calls - passthrough_calls} downstream hop 1–2)\n"
                     f"Annotation-only:        {skipped_deep}  (hop 3+, no LLM)\n"
                     f"\n"
                     f"Input tokens:           {total_input_tokens:,}{approx}\n"
@@ -223,21 +259,9 @@ async def _run_redefine(
                     border_style="yellow",
                 )
             )
-            return
 
         # 2. Generate diffs — upstream passthrough + downstream semantic
-        dbt = DbtConnector(config={"project_dir": project_dir})
         redefiner = SemanticRedefiner()
-
-        ancestors_with_depth = await graph.get_structural_ancestors(entity)
-        model_ancestors = [(e, d) for e, d in ancestors_with_depth if e.type.value == "model"]
-
-        if model_ancestors:
-            console.print(
-                f"[green]✓[/green] Found {len(model_ancestors)} upstream model(s) to update:"
-            )
-            for anc_entity, depth in model_ancestors:
-                console.print(f"  [dim]upstream hop {depth}[/dim]  {anc_entity.name}")
 
         try:
             with console.status("[bold]Generating diffs...[/bold]"):
@@ -248,10 +272,11 @@ async def _run_redefine(
                     ancestors_with_depth=model_ancestors,
                     connector=dbt,
                     graph=graph,
+                    prompts=upstream_prompts,
                 )
                 semantic_diffs = await redefiner.generate_diffs(
                     entity_id=entity,
-                    old_definition=existing_definition.description if existing_definition else None,
+                    old_definition=old_definition,
                     new_definition=description,
                     dependents_with_depth=all_dependents,
                     connector=dbt,
@@ -277,6 +302,29 @@ async def _run_redefine(
             f"{len(passthrough_diffs)} upstream passthrough, "
             f"{len(semantic_diffs)} downstream semantic."
         )
+        upstream_diffs = diffs[: len(diffs) - len(semantic_diffs)]
+        for heading, group in (
+            ("upstream passthrough diffs:", upstream_diffs),
+            ("downstream semantic diffs:", semantic_diffs),
+        ):
+            if group:
+                console.print(Text(f"\n{heading}", style="bold"))
+                _print_diffs(group)
+
+        # Nothing has been written yet: the definition and change event are only
+        # saved after the PR opens.
+        if dry_run:
+            console.print(
+                "\n[yellow]Dry run:[/yellow] 1 pull request would be opened. "
+                "Nothing was written."
+            )
+            return
+
+        if not _confirm("\nOpen 1 pull request? ([bold]y[/bold]=yes, n=cancel) > "):
+            console.print(
+                "[yellow]No PR opened.[/yellow] Cancelled; the definition was not saved."
+            )
+            return
 
         # 3. Build event and propagation objects — IDs needed before PR creation.
         # Writes to the graph are deferred until after the PR succeeds so a failed

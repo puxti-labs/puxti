@@ -213,10 +213,30 @@ def test_capture_no_diffs_exits_cleanly():
     assert "no diffs" in result.output.lower()
 
 
-def _run_capture_with_results(results, extra_args=(), input_="y\ny\n"):
+_DEFAULT_ESTIMATE = {
+    "input_tokens": 450,
+    "tokens_exact": True,
+    "estimated_output_tokens": 614,
+    "estimated_cost_usd": 0.0108,
+}
+
+
+def _run_capture_with_results(
+    results,
+    extra_args=(),
+    input_="y\ny\n",
+    *,
+    estimate=None,
+    commit_to_graph=None,
+    repo_args=("--repo", "acme/data"),
+    github_token="ghp_test",
+
+    semantic_context="order_date renamed to recorded_date.",
+):
     """Run `puxti capture` with a mocked engine returning `results`.
 
-    Returns (cli_result, github_connector_class_mock, engine_class_mock).
+    Pass `commit_to_graph` to assert on the Knowledge Graph write.
+    Returns (cli_result, github_connector_class_mock, github_mock, engine_class_mock).
     """
     from puxti.models import ChangeType, SemanticChangeEvent
 
@@ -224,7 +244,7 @@ def _run_capture_with_results(results, extra_args=(), input_="y\ny\n"):
         change_event_id="evt-059",
         entity_id="model.jaffle_shop.orders.order_date",
         change_type=ChangeType.STRUCTURAL,
-        semantic_context="order_date renamed to recorded_date.",
+        semantic_context=semantic_context,
         affected_entity_ids=["model.jaffle_shop.orders"],
         reasoning="Column rename propagates to all referencing models.",
         change={"before": {"name": "order_date"}, "after": {"name": "recorded_date"}},
@@ -244,13 +264,10 @@ def _run_capture_with_results(results, extra_args=(), input_="y\ny\n"):
     mock_graph.save_change_event = AsyncMock()
 
     mock_capture = MagicMock()
-    mock_capture.capture = AsyncMock(return_value=(semantic_event, AsyncMock()))
-    mock_capture.estimate_cost = AsyncMock(return_value={
-        "input_tokens": 450,
-        "tokens_exact": True,
-        "estimated_output_tokens": 614,
-        "estimated_cost_usd": 0.0108,
-    })
+    mock_capture.capture = AsyncMock(
+        return_value=(semantic_event, commit_to_graph or AsyncMock())
+    )
+    mock_capture.estimate_cost = AsyncMock(return_value=estimate or _DEFAULT_ESTIMATE)
 
     engine_cls = MagicMock()
     engine_cls.return_value.propagate = AsyncMock(return_value=results)
@@ -277,7 +294,7 @@ def _run_capture_with_results(results, extra_args=(), input_="y\ny\n"):
         patch("puxti.cli.capture.DbtConnector", return_value=mock_dbt),
     ):
         mock_settings.dbt_project_dir = "/some/dbt"
-        mock_settings.github_token = "ghp_test"
+        mock_settings.github_token = github_token
 
         cli_result = runner.invoke(app, [
             "capture",
@@ -285,7 +302,7 @@ def _run_capture_with_results(results, extra_args=(), input_="y\ny\n"):
             "--before", "order_date",
             "--after", "recorded_date",
             "--description", "test",
-            "--repo", "acme/data",
+            *repo_args,
             *extra_args,
         ], input=input_)
 
@@ -383,15 +400,17 @@ def test_capture_previews_diff_before_confirming_pr():
 
 
 def test_capture_dry_run_with_unverified_results_opens_nothing():
-    """--dry-run stops at the cost estimate, before propagation or any PR."""
+    """--dry-run propagates and lists unverified models, but never touches GitHub."""
     results = [_prop_result("dbt", with_diff=False, unverified=["model.jaffle_shop.orders"])]
 
     cli_result, gh_cls, mock_gh, engine_cls = _run_capture_with_results(
-        results, extra_args=("--dry-run",)
+        results, extra_args=("--dry-run",), input_=""
     )
 
     assert cli_result.exit_code == 0, cli_result.output
-    engine_cls.return_value.propagate.assert_not_called()
+    engine_cls.return_value.propagate.assert_awaited_once()
+    assert "model.jaffle_shop.orders" in plain(cli_result.output)
+    gh_cls.assert_not_called()
     mock_gh.open_pr.assert_not_called()
 
 
@@ -468,177 +487,80 @@ def test_capture_warns_when_entity_not_in_graph():
 
 # ── capture --dry-run ─────────────────────────────────────────────────────────
 
-def test_capture_dry_run_shows_cost_estimate():
-    mock_graph = MagicMock()
-    mock_graph.connect = AsyncMock()
-    mock_graph.close = AsyncMock()
-    mock_graph.get_latest_definition = AsyncMock(return_value=None)
-    mock_graph.get_semantic_dependents = AsyncMock(return_value=[])
-    mock_graph.get_structural_dependents = AsyncMock(return_value=[])
-    mock_graph.get_structural_ancestors = AsyncMock(return_value=[])
-    mock_graph.get_all_entity_ids = AsyncMock(return_value=[])
-    mock_graph.get_entity_by_id = AsyncMock(return_value=MagicMock())
+def test_capture_dry_run_shows_estimate_then_diffs_and_writes_nothing():
+    """--dry-run runs capture and propagation, previews the real diffs, and
+    stops before the Knowledge Graph write and any GitHub call."""
+    commit = AsyncMock()
+    results = [_prop_result("dbt", with_diff=True)]
 
-    mock_capture = MagicMock()
-    mock_capture.estimate_cost = AsyncMock(return_value={
-        "input_tokens": 450,
-        "tokens_exact": True,
-        "estimated_output_tokens": 614,
-        "estimated_cost_usd": 0.0108,
-    })
+    cli_result, gh_cls, mock_gh, engine_cls = _run_capture_with_results(
+        results, extra_args=("--dry-run",), input_="", commit_to_graph=commit,
+    )
 
-    with (
-        patch("puxti.cli.capture.settings") as mock_settings,
-        patch("puxti.cli.capture.KnowledgeGraph", return_value=mock_graph),
-        patch("puxti.cli.capture.SemanticCapture", return_value=mock_capture),
-    ):
-        mock_settings.dbt_project_dir = "/some/dbt"
-        mock_settings.github_token = "ghp_test"
-
-        result = runner.invoke(app, [
-            "capture",
-            "--entity", "model.jaffle_shop.orders.order_date",
-            "--before", "order_date",
-            "--after", "recorded_date",
-            "--description", "Renamed for clarity",
-            "--repo", "acme/data",
-            "--dry-run",
-        ])
-
-    assert result.exit_code == 0
-    assert "450" in result.output       # input tokens
-    assert "0.0108" in result.output    # cost
-    # Must not have opened a PR
-    assert "PR opened" not in result.output
+    assert cli_result.exit_code == 0, cli_result.output
+    output = plain(cli_result.output)
+    estimate_at = output.index("0.0108")
+    assert "450" in output
+    assert estimate_at < output.index("-select order_date from stg")
+    assert estimate_at < output.index("+select recorded_date from stg")
+    assert "1 pull request(s) would be opened. Nothing was written." in output
+    assert "Save this enrichment" not in output
+    assert "Open 1 pull request(s)?" not in output
+    engine_cls.return_value.propagate.assert_awaited_once()
+    commit.assert_not_awaited()
+    gh_cls.assert_not_called()  # not even the write-access health check
+    mock_gh.open_pr.assert_not_called()
 
 
-def test_capture_dry_run_does_not_require_github_token():
-    mock_graph = MagicMock()
-    mock_graph.connect = AsyncMock()
-    mock_graph.close = AsyncMock()
-    mock_graph.get_latest_definition = AsyncMock(return_value=None)
-    mock_graph.get_semantic_dependents = AsyncMock(return_value=[])
-    mock_graph.get_structural_dependents = AsyncMock(return_value=[])
-    mock_graph.get_structural_ancestors = AsyncMock(return_value=[])
-    mock_graph.get_all_entity_ids = AsyncMock(return_value=[])
-    mock_graph.get_entity_by_id = AsyncMock(return_value=MagicMock())
+def test_capture_without_dry_run_writes_after_confirmation():
+    """The other side of the dry-run test: the same inputs without --dry-run
+    save the enrichment and open the PR once both prompts get `y`."""
+    commit = AsyncMock()
+    results = [_prop_result("dbt", with_diff=True)]
 
-    mock_capture = MagicMock()
-    mock_capture.estimate_cost = AsyncMock(return_value={
-        "input_tokens": 300,
-        "tokens_exact": True,
-        "estimated_output_tokens": 614,
-        "estimated_cost_usd": 0.0100,
-    })
+    cli_result, gh_cls, mock_gh, _ = _run_capture_with_results(
+        results, input_="y\ny\n", commit_to_graph=commit,
+    )
 
-    with (
-        patch("puxti.cli.capture.settings") as mock_settings,
-        patch("puxti.cli.capture.KnowledgeGraph", return_value=mock_graph),
-        patch("puxti.cli.capture.SemanticCapture", return_value=mock_capture),
-    ):
-        mock_settings.dbt_project_dir = "/some/dbt"
-        mock_settings.github_token = None  # no token
-
-        result = runner.invoke(app, [
-            "capture",
-            "--entity", "model.jaffle_shop.orders.order_date",
-            "--before", "order_date",
-            "--after", "recorded_date",
-            "--description", "test",
-            "--repo", "acme/data",
-            "--dry-run",
-        ])
-
-    assert result.exit_code == 0  # should not fail without GitHub token
+    assert cli_result.exit_code == 0, cli_result.output
+    commit.assert_awaited_once()
+    mock_gh.open_pr.assert_awaited_once()
+    assert "Dry run" not in plain(cli_result.output)
 
 
-# ── regression: capture --dry-run succeeds without --repo ────────────────────
+def test_capture_dry_run_needs_no_github_token_or_repo():
+    results = [_prop_result("dbt", with_diff=True)]
 
-def test_capture_dry_run_succeeds_without_repo():
-    """--dry-run must not require --repo — exits cleanly and shows cost estimate."""
-    mock_graph = MagicMock()
-    mock_graph.connect = AsyncMock()
-    mock_graph.close = AsyncMock()
-    mock_graph.get_latest_definition = AsyncMock(return_value=None)
-    mock_graph.get_semantic_dependents = AsyncMock(return_value=[])
-    mock_graph.get_structural_dependents = AsyncMock(return_value=[])
-    mock_graph.get_structural_ancestors = AsyncMock(return_value=[])
-    mock_graph.get_all_entity_ids = AsyncMock(return_value=[])
-    mock_graph.get_entity_by_id = AsyncMock(return_value=MagicMock())
+    cli_result, gh_cls, _, _ = _run_capture_with_results(
+        results, extra_args=("--dry-run",), input_="", repo_args=(), github_token=None,
+    )
 
-    mock_capture = MagicMock()
-    mock_capture.estimate_cost = AsyncMock(return_value={
-        "input_tokens": 350,
-        "tokens_exact": True,
-        "estimated_output_tokens": 614,
-        "estimated_cost_usd": 0.0105,
-    })
-
-    with (
-        patch("puxti.cli.capture.settings") as mock_settings,
-        patch("puxti.cli.capture.KnowledgeGraph", return_value=mock_graph),
-        patch("puxti.cli.capture.SemanticCapture", return_value=mock_capture),
-    ):
-        mock_settings.dbt_project_dir = "/some/dbt"
-        mock_settings.github_token = None
-
-        result = runner.invoke(app, [
-            "capture",
-            "--entity", "model.jaffle_shop.orders.order_date",
-            "--before", "order_date",
-            "--after", "recorded_date",
-            "--description", "Renamed for clarity",
-            "--dry-run",
-            # no --repo
-        ])
-
-    assert result.exit_code == 0, result.output
-    assert "350" in result.output
-    assert "PR opened" not in result.output
+    assert cli_result.exit_code == 0, cli_result.output
+    assert "+select recorded_date from stg" in plain(cli_result.output)
+    gh_cls.assert_not_called()
 
 
 def test_capture_dry_run_without_pricing_shows_hint_not_cost():
     """Unknown model pricing → dry-run shows tokens and the override hint,
     never a dollar figure."""
-    mock_graph = MagicMock()
-    mock_graph.connect = AsyncMock()
-    mock_graph.close = AsyncMock()
-    mock_graph.get_latest_definition = AsyncMock(return_value=None)
-    mock_graph.get_semantic_dependents = AsyncMock(return_value=[])
-    mock_graph.get_structural_dependents = AsyncMock(return_value=[])
-    mock_graph.get_all_entity_ids = AsyncMock(return_value=[])
-    mock_graph.get_entity_by_id = AsyncMock(return_value=MagicMock())
+    cli_result, _, _, _ = _run_capture_with_results(
+        [_prop_result("dbt", with_diff=True)],
+        extra_args=("--dry-run",),
+        input_="",
+        github_token=None,
+        estimate={
+            "input_tokens": 900,
+            "tokens_exact": False,
+            "estimated_output_tokens": 614,
+            "estimated_cost_usd": None,
+        },
+    )
 
-    mock_capture = MagicMock()
-    mock_capture.estimate_cost = AsyncMock(return_value={
-        "input_tokens": 900,
-        "tokens_exact": False,
-        "estimated_output_tokens": 614,
-        "estimated_cost_usd": None,
-    })
-
-    with (
-        patch("puxti.cli.capture.settings") as mock_settings,
-        patch("puxti.cli.capture.KnowledgeGraph", return_value=mock_graph),
-        patch("puxti.cli.capture.SemanticCapture", return_value=mock_capture),
-    ):
-        mock_settings.dbt_project_dir = "/some/dbt"
-        mock_settings.github_token = None
-
-        result = runner.invoke(app, [
-            "capture",
-            "--entity", "model.jaffle_shop.orders.order_date",
-            "--before", "order_date",
-            "--after", "recorded_date",
-            "--description", "test",
-            "--dry-run",
-        ])
-
-    assert result.exit_code == 0, result.output
-    assert "900" in result.output
-    assert "approximate" in result.output
-    assert "LLM_INPUT_COST_PER_MTOK" in result.output
-    assert "$" not in result.output.replace("$0", "")  # no dollar figure rendered
+    assert cli_result.exit_code == 0, cli_result.output
+    assert "900" in cli_result.output
+    assert "approximate" in cli_result.output
+    assert "LLM_INPUT_COST_PER_MTOK" in cli_result.output
+    assert "$" not in cli_result.output.replace("$0", "")  # no dollar figure rendered
 
 
 def test_capture_rebases_and_routes_sql_views_diffs_to_their_repo():
@@ -741,3 +663,33 @@ def test_capture_rebases_and_routes_sql_views_diffs_to_their_repo():
     # one PR per connector, each to its own repo
     pr_repos = [c["repo"] for c in gh_configs if "base_branch" in c]
     assert pr_repos == ["acme/data", "acme/app"]
+
+
+def test_capture_prints_llm_enrichment_as_literal_text():
+    """LLM output can contain `[...]`; it must not be parsed as Rich markup."""
+    cli_result, _, _, _ = _run_capture_with_results(
+        [_prop_result("dbt", with_diff=True)],
+        extra_args=("--dry-run",),
+        input_="",
+        semantic_context="Renamed [/bold] see [link=https://example.com]docs[/link]",
+    )
+
+    assert cli_result.exit_code == 0, cli_result.output
+    assert "Renamed [/bold] see [link=https://example.com]docs[/link]" in plain(
+        cli_result.output
+    )
+
+
+def test_capture_closed_input_skips_enrichment_and_cancels_prs():
+    commit = AsyncMock()
+    cli_result, _, mock_gh, _ = _run_capture_with_results(
+        [_prop_result("dbt", with_diff=True)], input_="", commit_to_graph=commit,
+    )
+
+    assert cli_result.exit_code == 0, cli_result.output
+    output = plain(cli_result.output)
+    assert "Skipping Knowledge Graph update." in output
+    assert "No PR opened" in output
+    assert "Unexpected error" not in output
+    commit.assert_not_awaited()
+    mock_gh.open_pr.assert_not_called()

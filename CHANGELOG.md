@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **`--dry-run` on `capture` and `redefine` shows the real diffs.** It used to stop at a cost estimate, so nothing showed what a run would change before it ran. It now prints the cost estimate, then makes the same LLM calls as a real run and prints the same diffs and manual-review list. It never writes to the Knowledge Graph and never calls GitHub, so it still needs neither `--repo` nor `GITHUB_TOKEN`. **This is a cost change:** a dry run now costs as much as a real run (one LLM call for `capture`; for `redefine`, one per hop-1/2 dependent plus one passthrough call for the entity and each upstream model). Scripts that used `--dry-run` as a free cost check will now be billed. ([#51](https://github.com/puxti-labs/puxti/issues/51))
+
+### Fixed
+
+- **`redefine` dry-run estimate counts every LLM call.** It skipped the passthrough calls (one for the entity and one per upstream model) and counted untruncated SQL, so the figure did not match what the run sends. Both the estimate and the real calls now build their prompts in one place.
+- **Closed input cancels `capture` and `redefine` prompts.** End of input at a confirmation prompt used to crash with the "unexpected error" report; it now counts as no.
+- **`capture` prints the LLM's enrichment as plain text.** Brackets in the enriched description, reasoning or entity IDs were parsed as Rich markup, which could crash the command or restyle the text under review.
+- **`redefine` previews diffs and confirms before opening a PR.** It used to open the PR as soon as the diffs were generated. It now prints the unified diffs, labelled as upstream passthrough or downstream semantic, and asks for an explicit `y`; blank, closed or any other input cancels, and nothing is saved. Scripts that run `redefine` must now pipe `y`, including through `correct`'s "Run it now?" handoff, which now asks twice. ([#51](https://github.com/puxti-labs/puxti/issues/51))
+
 ## [0.18.0] — 2026-10-30
 
 ### Added
