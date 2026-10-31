@@ -337,27 +337,27 @@ def test_capture_refuses_a_rename_that_collides_before_the_llm_call():
 
     output = " ".join(cli_result.output.split())  # Rich wraps long lines
     assert cli_result.exit_code == 1
-    assert "already has a column named `recorded_date`" in output
+    assert "already outputs a column named `recorded_date`" in output
     assert "no pr was opened" in output.lower()
     capture.capture.assert_not_awaited()
     engine_cls.assert_not_called()
     mock_gh.open_pr.assert_not_called()
 
 
-def test_capture_refuses_a_rename_that_collides_in_a_dependent():
-    """A collision only generation can see (in a dependent model) is refused too."""
+def test_capture_refuses_a_collision_that_surfaces_during_generation():
+    """A source-model collision the pre-flight missed is still a clean refusal."""
     from puxti.connectors.dbt import ColumnRenameCollisionError
 
     cli_result, _, mock_gh, _ = _run_capture_with_results(
         [],
         propagate_error=ColumnRenameCollisionError(
-            "customer_orders", "order_date", "recorded_date"
+            "orders", "order_date", "recorded_date"
         ),
     )
 
     output = " ".join(cli_result.output.split())  # Rich wraps long lines
     assert cli_result.exit_code == 1
-    assert "model `customer_orders` already has a column" in output
+    assert "on model `orders`" in output
     assert "Unexpected error" not in output
     mock_gh.open_pr.assert_not_called()
 

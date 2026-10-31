@@ -251,7 +251,7 @@ async def _run_capture(
                     semantic_event
                 )
             except ColumnRenameCollisionError as exc:
-                # A model the rename would rewrite already has the new name.
+                # Only the source model refuses: dependents come back unverified.
                 _refuse_rename(exc)
 
         if not results:

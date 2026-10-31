@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from puxti.connectors.base import BaseConnector
 from puxti.connectors.dbt import (
     ColumnRenameCollisionError,
     DbtConnector,
@@ -10,6 +11,7 @@ from puxti.connectors.dbt import (
 )
 from puxti.connectors.sql_utils import mentions_in_jinja, rename_column_fully
 from puxti.models import ChangeType, EdgeType, EntityStatus, EntityType, SemanticChangeEvent
+from puxti.propagation.engine import PropagationEngine
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -1011,7 +1013,35 @@ def _relationships_test(name: str, model: str, to: str, path: str) -> dict:
     }
 
 
-def _yaml_project(tmp_path: Path, *, orders_columns: tuple[str, ...] = ()) -> DbtConnector:
+class _StubConnector(BaseConnector):
+    """Stands in for any connector that runs after dbt."""
+
+    name = "stub"
+
+    def __init__(self) -> None:
+        super().__init__({})
+        self.called = False
+
+    async def health_check(self) -> bool:
+        return True
+
+    async def extract_entities(self) -> list:
+        return []
+
+    async def extract_lineage(self) -> list:
+        return []
+
+    async def generate_changes(self, event: SemanticChangeEvent) -> tuple[list, list]:
+        self.called = True
+        return [], []
+
+
+def _yaml_project(
+    tmp_path: Path,
+    *,
+    orders_columns: tuple[str, ...] = (),
+    customer_orders_columns: tuple[str, ...] = (),
+) -> DbtConnector:
     """A project whose models are documented in schema.yml, with a contract,
     column tests, model constraints and relationships tests from other models."""
 
@@ -1037,7 +1067,7 @@ def _yaml_project(tmp_path: Path, *, orders_columns: tuple[str, ...] = ()) -> Db
             ),
             "model.jaffle_shop.customer_orders": model(
                 "customer_orders", "models/customer_orders.sql", "models/schema.yml",
-                ("order_date",),
+                ("order_date", *customer_orders_columns),
             ),
             "model.jaffle_shop.shipments": model(
                 "shipments", "models/marts/shipments.sql", "models/marts/marts.yml",
@@ -1133,7 +1163,9 @@ async def test_column_rename_collision_in_manifest_columns_aborts(tmp_path):
         await connector.generate_changes(_yaml_rename_event())
 
     message = str(exc_info.value)
-    assert "orders" in message and "recorded_date" in message
+    assert "model `orders`" in message
+    assert "its YAML documents a column named `recorded_date`" in message
+    assert "stale" in message
 
 
 async def test_column_rename_collision_in_select_list_aborts(tmp_path):
@@ -1142,8 +1174,10 @@ async def test_column_rename_collision_in_select_list_aborts(tmp_path):
         tmp_path, "select order_date, created_at as recorded_date from raw_orders"
     )
 
-    with pytest.raises(ColumnRenameCollisionError):
+    with pytest.raises(ColumnRenameCollisionError) as exc_info:
         await connector.generate_changes(_rename_event())
+
+    assert "its SQL already outputs a column named `recorded_date`" in str(exc_info.value)
 
 
 async def test_column_rename_collision_matches_case_insensitively(tmp_path):
@@ -1155,17 +1189,51 @@ async def test_column_rename_collision_matches_case_insensitively(tmp_path):
         await connector.generate_changes(_rename_event())
 
 
-async def test_column_rename_collision_in_a_dependent_aborts(tmp_path):
-    """A dependent that already outputs new_name would end up with two of them."""
+async def test_column_rename_collision_in_a_dependent_flags_only_that_model(tmp_path, caplog):
+    """A dependent that already outputs new_name is left for manual review. The
+    source model still renames, and the dependent's own schema.yml entry stays."""
     connector = _yaml_project(tmp_path)
     (tmp_path / "models" / "customer_orders.sql").write_text(
         "select order_date, shipped_at as recorded_date from {{ ref('orders') }}"
     )
 
-    with pytest.raises(ColumnRenameCollisionError) as exc_info:
-        await connector.generate_changes(_yaml_rename_event())
+    with caplog.at_level("WARNING", logger="puxti.connectors.dbt"):
+        diffs, unverified = await connector.generate_changes(_yaml_rename_event())
 
-    assert "customer_orders" in str(exc_info.value)
+    assert unverified == ["model.jaffle_shop.customer_orders"]
+    assert "model `customer_orders`" in caplog.text
+    by_path = {d.file_path: d for d in diffs}
+    assert "models/orders.sql" in by_path
+    assert "models/customer_orders.sql" not in by_path
+    assert '- name: "order_date"' in by_path["models/schema.yml"].after
+
+
+async def test_column_rename_collision_in_a_dependent_leaves_other_connectors_running(tmp_path):
+    """One downstream model must not stop what other connectors would generate."""
+    connector = _yaml_project(tmp_path)
+    (tmp_path / "models" / "customer_orders.sql").write_text(
+        "select order_date, shipped_at as recorded_date from {{ ref('orders') }}"
+    )
+    other = _StubConnector()
+
+    results = await PropagationEngine(connectors=[connector, other]).propagate(
+        _yaml_rename_event()
+    )
+
+    assert other.called
+    assert [r.unverified_entity_ids for r in results if r.connector == "dbt"] == [
+        ["model.jaffle_shop.customer_orders"]
+    ]
+
+
+async def test_column_rename_stale_yaml_entry_on_a_dependent_flags_it(tmp_path):
+    """Only the YAML documents new_name on the dependent: flagged all the same."""
+    connector = _yaml_project(tmp_path, customer_orders_columns=("recorded_date",))
+
+    diffs, unverified = await connector.generate_changes(_yaml_rename_event())
+
+    assert unverified == ["model.jaffle_shop.customer_orders"]
+    assert "models/customer_orders.sql" not in {d.file_path for d in diffs}
 
 
 async def test_column_rename_new_name_on_an_untouched_model_is_not_a_collision(tmp_path):

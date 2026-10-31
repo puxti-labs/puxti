@@ -29,16 +29,23 @@ _logger = logging.getLogger(__name__)
 
 
 class ColumnRenameCollisionError(Exception):
-    """A column rename would give a model two columns with the same name."""
+    """A column rename would give the renamed model two columns with the same name."""
 
-    def __init__(self, model_name: str, old_name: str, new_name: str) -> None:
+    def __init__(
+        self, model_name: str, old_name: str, new_name: str, *, yaml_only: bool = False
+    ) -> None:
         self.model_name = model_name
         self.old_name = old_name
         self.new_name = new_name
+        found = (
+            f"its YAML documents a column named `{new_name}`, although its SQL does "
+            f"not output one. Remove that stale `columns:` entry or pick another name."
+            if yaml_only
+            else f"its SQL already outputs a column named `{new_name}`. Pick another "
+            f"name, or rename or drop the existing `{new_name}` first."
+        )
         super().__init__(
-            f"Refusing to rename `{old_name}` → `{new_name}`: model `{model_name}` "
-            f"already has a column named `{new_name}`. Pick another name, or rename "
-            f"or drop the existing `{new_name}` first."
+            f"Refusing to rename `{old_name}` → `{new_name}` on model `{model_name}`: {found}"
         )
 
 
@@ -86,22 +93,38 @@ class DbtConnector(BaseConnector):
         """The sqlglot dialect matching the project's adapter, if sqlglot has one."""
         return sql_dialect(self._load_manifest().get("metadata", {}).get("adapter_type"))
 
-    def _has_column(self, node: dict, sql: str, name: str) -> bool:
-        """True if the model documents a column `name` or its SELECT outputs one."""
-        wanted = name.casefold()
-        documented = {
+    def _outputs_column(self, sql: str, name: str) -> bool:
+        return name.casefold() in (output_columns(sql, self._dialect()) or set())
+
+    @staticmethod
+    def _documents_column(node: dict, name: str) -> bool:
+        return name.casefold() in {
             col.get("name", key).casefold() for key, col in node.get("columns", {}).items()
         }
-        if wanted in documented:
-            return True
-        return wanted in (output_columns(sql, self._dialect()) or set())
+
+    def _collision_error(
+        self, node: dict, sql: str, old_name: str, new_name: str
+    ) -> ColumnRenameCollisionError | None:
+        """The error for a rename whose new name is already on this model, if any.
+
+        A column only the YAML documents counts too: renaming onto it would leave
+        two `columns:` entries with one name, and dbt silently keeps the last, so
+        the stale entry would replace the renamed column's description and
+        contract data_type.
+        """
+        if self._outputs_column(sql, new_name):
+            return ColumnRenameCollisionError(node["name"], old_name, new_name)
+        if self._documents_column(node, new_name):
+            return ColumnRenameCollisionError(node["name"], old_name, new_name, yaml_only=True)
+        return None
 
     def check_column_rename(self, entity_id: str, old_name: str, new_name: str) -> None:
         """Refuse a rename whose new name already exists on the renamed model.
 
         Cheap enough to run before capture, so a doomed rename costs no LLM call
-        and leaves no enrichment behind. Generation repeats it for every model it
-        rewrites. Without a manifest there is nothing to check against.
+        and leaves no enrichment behind. Generation repeats it, and also flags any
+        dependent that already has new_name. Without a manifest there is nothing
+        to check against.
 
         Raises ColumnRenameCollisionError.
         """
@@ -115,8 +138,9 @@ class DbtConnector(BaseConnector):
                 continue
             model_path = self._model_file_path(node)
             sql = model_path.read_text() if model_path.exists() else ""
-            if self._has_column(node, sql, new_name):
-                raise ColumnRenameCollisionError(node["name"], old_name, new_name)
+            collision = self._collision_error(node, sql, old_name, new_name)
+            if collision:
+                raise collision
 
     # ── BaseConnector ─────────────────────────────────────────────────────────
 
@@ -349,10 +373,10 @@ class DbtConnector(BaseConnector):
         the new column name.
 
         Each rewritten model's schema.yml follows its SQL (see
-        _schema_yml_diffs). A model whose rewrite no longer parses is flagged
-        unverified and not written. If new_name already exists on a model the
-        rename would rewrite, the whole rename is refused: the method raises
-        ColumnRenameCollisionError and returns no diffs at all.
+        _schema_yml_diffs). A model whose rewrite no longer parses, or a
+        dependent that already has new_name, is flagged unverified and not
+        written. If the source model already has new_name the rename is refused:
+        the method raises ColumnRenameCollisionError and returns no diffs at all.
         """
         old_name: str = event.change.get("before", {}).get("name", "")
         new_name: str = event.change.get("after", {}).get("name", "")
@@ -434,8 +458,13 @@ class DbtConnector(BaseConnector):
                     unverified.append(node_id)
                 continue
 
-            if self._has_column(node, original_sql, new_name):
-                raise ColumnRenameCollisionError(node["name"], old_name, new_name)
+            collision = self._collision_error(node, original_sql, old_name, new_name)
+            if collision:
+                if is_source:
+                    raise collision
+                _logger.warning("Skipping dependent model, flagged as unverified: %s", collision)
+                unverified.append(node_id)
+                continue
 
             if parses(original_sql, dialect) and not parses(updated_sql, dialect):
                 _logger.warning(
@@ -448,7 +477,9 @@ class DbtConnector(BaseConnector):
                 unverified.append(node_id)
                 continue
 
-            if self._has_column(node, original_sql, old_name):
+            if self._documents_column(node, old_name) or self._outputs_column(
+                original_sql, old_name
+            ):
                 renamed_outputs.append(node)
 
             diffs.append(
