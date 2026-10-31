@@ -22,7 +22,6 @@ jobs:
         run: uv run pytest
         env:
           NO_COLOR: "1"
-          FORCE_COLOR: "0"
 
   publish-pypi:
     needs: test
