@@ -3,11 +3,17 @@ import logging
 import re
 from pathlib import Path
 
+import yaml
+
 from puxti.connectors.base import BaseConnector
 from puxti.connectors.sql_utils import (
+    _match_case,
     mentions_in_jinja,
+    output_columns,
+    parses,
     rename_column_fully,
     rename_column_in_sql,
+    sql_dialect,
 )
 from puxti.models import (
     ChangeType,
@@ -20,6 +26,27 @@ from puxti.models import (
 )
 
 _logger = logging.getLogger(__name__)
+
+
+class ColumnRenameCollisionError(Exception):
+    """A column rename would give the renamed model two columns with the same name."""
+
+    def __init__(
+        self, model_name: str, old_name: str, new_name: str, *, yaml_only: bool = False
+    ) -> None:
+        self.model_name = model_name
+        self.old_name = old_name
+        self.new_name = new_name
+        found = (
+            f"its YAML documents a column named `{new_name}`, although its SQL does "
+            f"not output one. Remove that stale `columns:` entry or pick another name."
+            if yaml_only
+            else f"its SQL already outputs a column named `{new_name}`. Pick another "
+            f"name, or rename or drop the existing `{new_name}` first."
+        )
+        super().__init__(
+            f"Refusing to rename `{old_name}` → `{new_name}` on model `{model_name}`: {found}"
+        )
 
 
 class DbtConnector(BaseConnector):
@@ -61,6 +88,59 @@ class DbtConnector(BaseConnector):
     def _model_file_path(self, node: dict) -> Path:
         """Absolute path to a model's SQL file."""
         return self.project_dir / node["original_file_path"]
+
+    def _dialect(self) -> str | None:
+        """The sqlglot dialect matching the project's adapter, if sqlglot has one."""
+        return sql_dialect(self._load_manifest().get("metadata", {}).get("adapter_type"))
+
+    def _outputs_column(self, sql: str, name: str) -> bool:
+        return name.casefold() in (output_columns(sql, self._dialect()) or set())
+
+    @staticmethod
+    def _documents_column(node: dict, name: str) -> bool:
+        return name.casefold() in {
+            col.get("name", key).casefold() for key, col in node.get("columns", {}).items()
+        }
+
+    def _collision_error(
+        self, node: dict, sql: str, old_name: str, new_name: str
+    ) -> ColumnRenameCollisionError | None:
+        """The error for a rename whose new name is already on this model, if any.
+
+        A column only the YAML documents counts too: renaming onto it would leave
+        two `columns:` entries with one name, and dbt silently keeps the last, so
+        the stale entry would replace the renamed column's description and
+        contract data_type.
+        """
+        if self._outputs_column(sql, new_name):
+            return ColumnRenameCollisionError(node["name"], old_name, new_name)
+        if self._documents_column(node, new_name):
+            return ColumnRenameCollisionError(node["name"], old_name, new_name, yaml_only=True)
+        return None
+
+    def check_column_rename(self, entity_id: str, old_name: str, new_name: str) -> None:
+        """Refuse a rename whose new name already exists on the renamed model.
+
+        Cheap enough to run before capture, so a doomed rename costs no LLM call
+        and leaves no enrichment behind. Generation repeats it, and also flags any
+        dependent that already has new_name. Without a manifest there is nothing
+        to check against.
+
+        Raises ColumnRenameCollisionError.
+        """
+        source_model_name = _source_model_name(entity_id)
+        try:
+            nodes = self._load_manifest().get("nodes", {})
+        except FileNotFoundError:
+            return
+        for node in nodes.values():
+            if node.get("resource_type") != "model" or node.get("name") != source_model_name:
+                continue
+            model_path = self._model_file_path(node)
+            sql = model_path.read_text() if model_path.exists() else ""
+            collision = self._collision_error(node, sql, old_name, new_name)
+            if collision:
+                raise collision
 
     # ── BaseConnector ─────────────────────────────────────────────────────────
 
@@ -291,6 +371,12 @@ class DbtConnector(BaseConnector):
         Deeper hops are handled by re-running capture after the first PR
         is merged, at which point the intermediate model already outputs
         the new column name.
+
+        Each rewritten model's schema.yml follows its SQL (see
+        _schema_yml_diffs). A model whose rewrite no longer parses, or a
+        dependent that already has new_name, is flagged unverified and not
+        written. If the source model already has new_name the rename is refused:
+        the method raises ColumnRenameCollisionError and returns no diffs at all.
         """
         old_name: str = event.change.get("before", {}).get("name", "")
         new_name: str = event.change.get("after", {}).get("name", "")
@@ -298,17 +384,14 @@ class DbtConnector(BaseConnector):
         if not old_name or not new_name:
             return [], []
 
-        # Derive source model name from entity_id.
-        # e.g. "model.jaffle_shop.orders.order_date" → "orders"
-        # e.g. "sports_sims.prep.nba_results_log.type" → "nba_results_log"
-        entity_parts = event.entity_id.rsplit(".", 1)
-        model_part = entity_parts[0] if len(entity_parts) == 2 else event.entity_id
-        source_model_name = model_part.rsplit(".", 1)[-1]
+        source_model_name = _source_model_name(event.entity_id)
 
         manifest = self._load_manifest()
+        dialect = self._dialect()
         affected_ids = set(event.affected_entity_ids or [])
         diffs: list[FileDiff] = []
         unverified: list[str] = []
+        renamed_outputs: list[dict] = []
 
         for node_id, node in manifest.get("nodes", {}).items():
             if node.get("resource_type") != "model":
@@ -375,6 +458,30 @@ class DbtConnector(BaseConnector):
                     unverified.append(node_id)
                 continue
 
+            collision = self._collision_error(node, original_sql, old_name, new_name)
+            if collision:
+                if is_source:
+                    raise collision
+                _logger.warning("Skipping dependent model, flagged as unverified: %s", collision)
+                unverified.append(node_id)
+                continue
+
+            if parses(original_sql, dialect) and not parses(updated_sql, dialect):
+                _logger.warning(
+                    "Skipping rename of `%s` → `%s` in model `%s`: the rewritten SQL "
+                    "no longer parses; flagged as unverified",
+                    old_name,
+                    new_name,
+                    node["name"],
+                )
+                unverified.append(node_id)
+                continue
+
+            if self._documents_column(node, old_name) or self._outputs_column(
+                original_sql, old_name
+            ):
+                renamed_outputs.append(node)
+
             diffs.append(
                 FileDiff(
                     file_path=str(model_path.relative_to(self.project_dir)),
@@ -388,7 +495,75 @@ class DbtConnector(BaseConnector):
                 )
             )
 
+        diffs.extend(self._schema_yml_diffs(renamed_outputs, old_name, new_name))
         return diffs, unverified
+
+    def _schema_yml_diffs(
+        self, models: list[dict], old_name: str, new_name: str
+    ) -> list[FileDiff]:
+        """Rename old_name in the YAML that documents the rewritten models.
+
+        In the file each model's patch_path names: its `columns:` entry, so the
+        column's tests, description, meta and contract data_type move with it,
+        and its model-level constraint column lists. In every file the manifest
+        defines a relationships test in: each test whose `to:` refs one of these
+        models and whose `field:` is old_name.
+
+        Only the renamed scalars' characters change (located with yaml.compose),
+        so comments, ordering and formatting stay exactly as the user wrote them.
+        """
+        if not models:
+            return []
+
+        documented: dict[str, set[str]] = {}  # yaml path → models it documents
+        for node in models:
+            if node.get("patch_path"):
+                path = node["patch_path"].split("://", 1)[-1]
+                documented.setdefault(path, set()).add(node["name"])
+
+        renamed = {node["name"] for node in models}
+        test_files = {
+            test["original_file_path"]
+            for test in self._load_manifest().get("nodes", {}).values()
+            if test.get("resource_type") == "test"
+            and test.get("test_metadata", {}).get("name") == "relationships"
+            and test.get("original_file_path")
+        }
+
+        diffs: list[FileDiff] = []
+        for rel_path in sorted(set(documented) | test_files):
+            yaml_path = self.project_dir / rel_path
+            if not yaml_path.exists():
+                _logger.warning("Schema file `%s` not found; not updated", rel_path)
+                continue
+            original = yaml_path.read_text()
+            try:
+                documents = list(yaml.compose_all(original))
+            except yaml.YAMLError as exc:
+                _logger.warning("Schema file `%s` does not parse (%s); not updated", rel_path, exc)
+                continue
+
+            scalars: list[yaml.ScalarNode] = []
+            for document in documents:
+                scalars += _documented_column_scalars(
+                    document, documented.get(rel_path, set()), old_name
+                )
+                scalars += _relationships_field_scalars(document, renamed, old_name)
+
+            updated = _replace_scalars(original, scalars, old_name, new_name)
+            if updated != original:
+                diffs.append(
+                    FileDiff(
+                        file_path=rel_path,
+                        before=original,
+                        after=updated,
+                        connector="dbt",
+                        description=(
+                            f"Renamed column `{old_name}` → `{new_name}` in `{rel_path}`"
+                        ),
+                    )
+                )
+        return diffs
 
     async def _generate_semantic_diffs(
         self, event: SemanticChangeEvent
@@ -405,6 +580,99 @@ class DbtConnector(BaseConnector):
         # calls the LLM and then calls generate_changes again with enriched
         # change data if it needs connector-specific file generation.
         return []
+
+
+def _source_model_name(entity_id: str) -> str:
+    """The renamed model's name, from a column entity id.
+
+    e.g. "model.jaffle_shop.orders.order_date" → "orders"
+    e.g. "sports_sims.prep.nba_results_log.type" → "nba_results_log"
+    """
+    entity_parts = entity_id.rsplit(".", 1)
+    model_part = entity_parts[0] if len(entity_parts) == 2 else entity_id
+    return model_part.rsplit(".", 1)[-1]
+
+
+# ── schema.yml utilities ──────────────────────────────────────────────────────
+
+# ref('model'), ref("model"), ref('package', 'model'), ref('model', v=2)
+_REF = re.compile(r"""^\s*ref\(\s*['"]([^'"]+)['"](?:\s*,\s*['"]([^'"]+)['"])?""")
+
+
+def _get(mapping: yaml.Node, key: str) -> yaml.Node | None:
+    if not isinstance(mapping, yaml.MappingNode):
+        return None
+    for key_node, value_node in mapping.value:
+        if isinstance(key_node, yaml.ScalarNode) and key_node.value == key:
+            return value_node
+    return None
+
+
+def _items(node: yaml.Node | None) -> list[yaml.Node]:
+    return node.value if isinstance(node, yaml.SequenceNode) else []
+
+
+def _is_name(node: yaml.Node | None, name: str) -> bool:
+    return isinstance(node, yaml.ScalarNode) and node.value.casefold() == name.casefold()
+
+
+def _documented_column_scalars(
+    document: yaml.Node, model_names: set[str], old_name: str
+) -> list[yaml.ScalarNode]:
+    """The old_name scalars of these models' columns: entries and constraint lists."""
+    found: list[yaml.ScalarNode] = []
+    for model in _items(_get(document, "models")):
+        name = _get(model, "name")
+        if not isinstance(name, yaml.ScalarNode) or name.value not in model_names:
+            continue
+        for column in _items(_get(model, "columns")):
+            column_name = _get(column, "name")
+            if _is_name(column_name, old_name):
+                found.append(column_name)
+        for constraint in _items(_get(model, "constraints")):
+            found += [c for c in _items(_get(constraint, "columns")) if _is_name(c, old_name)]
+    return found
+
+
+def _relationships_field_scalars(
+    node: yaml.Node, model_names: set[str], old_name: str
+) -> list[yaml.ScalarNode]:
+    """`field:` scalars of relationships tests that point old_name at these models.
+
+    Covers both argument styles: `relationships: {to:, field:}` and dbt 1.10's
+    `relationships: {arguments: {to:, field:}}`.
+    """
+    found: list[yaml.ScalarNode] = []
+    if isinstance(node, yaml.MappingNode):
+        for key_node, value_node in node.value:
+            if isinstance(key_node, yaml.ScalarNode) and key_node.value == "relationships":
+                args = _get(value_node, "arguments") or value_node
+                to, field = _get(args, "to"), _get(args, "field")
+                ref = _REF.match(to.value) if isinstance(to, yaml.ScalarNode) else None
+                if ref and (ref.group(2) or ref.group(1)) in model_names:
+                    if _is_name(field, old_name):
+                        found.append(field)
+            found += _relationships_field_scalars(value_node, model_names, old_name)
+    elif isinstance(node, yaml.SequenceNode):
+        for item in node.value:
+            found += _relationships_field_scalars(item, model_names, old_name)
+    return found
+
+
+def _replace_scalars(
+    text: str, scalars: list[yaml.ScalarNode], old_name: str, new_name: str
+) -> str:
+    """Rewrite each scalar's characters in place, keeping its quotes and case style."""
+    spans: dict[int, tuple[int, str]] = {}
+    for scalar in scalars:
+        start, end = scalar.start_mark.index, scalar.end_mark.index
+        if scalar.style in ("'", '"'):
+            start, end = start + 1, end - 1
+        spans[start] = (end, _match_case(scalar.value, old_name, new_name))
+    for start in sorted(spans, reverse=True):
+        end, replacement = spans[start]
+        text = text[:start] + replacement + text[end:]
+    return text
 
 
 # ── SQL utilities ─────────────────────────────────────────────────────────────

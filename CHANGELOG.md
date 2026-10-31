@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Column rename refuses a name the model already has.** Renaming onto a column the renamed model's SQL already outputs, or that its YAML documents, used to produce duplicate columns. The rename is now refused before the LLM call, and `puxti capture` exits with an error that says where the name was found. A downstream model with the same problem is listed as unverified and left unchanged, and everything else still propagates.
+- **Column rename skips a rewrite that no longer parses.** A model whose SQL parsed before the rename and does not parse after it is listed as unverified and not written.
+
+### Fixed
+
+- **Column rename keeps `schema.yml` consistent.** A rename PR used to change only `.sql` files, so `dbt test` and model contracts broke on the old name. The column's `columns:` entry in the model's `schema.yml` is now renamed too, so its tests, description, meta and contract `data_type` move with it. The model's constraint column lists and `relationships` tests on other models that point at the renamed column are updated as well. Only the renamed names change, so comments and formatting are kept. ([#49](https://github.com/puxti-labs/puxti/issues/49))
+
 ## [0.18.0] — 2026-10-30
 
 ### Added

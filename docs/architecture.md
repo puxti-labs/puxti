@@ -234,10 +234,16 @@ LLM enriches the description against existing
 knowledge graph context for the entity
       │
       ▼
+Refuse if the renamed model already has <new>
+      │
+      ▼
 Scan dbt models for references to <old>
       │
       ▼
-Generate diffs replacing <old> with <new>
+Generate diffs replacing <old> with <new>, plus the
+schema.yml entries and relationships tests that name it
+(a rewrite that no longer parses, or a downstream model
+that already has <new>, is flagged unverified)
       │
       ▼
 If Airflow connector configured:
