@@ -346,6 +346,41 @@ async def test_passthrough_diffs_generates_diff_for_entity_and_ancestors(tmp_pat
     assert all("passthrough" in d.after for d in diffs)
 
 
+async def test_passthrough_diffs_sends_prebuilt_prompts_without_rebuilding():
+    """Given prompts from passthrough_prompts(), generation sends exactly those
+    and does not re-read SQL or definitions."""
+    from puxti.core.redefine import passthrough_prompts
+
+    backend = _make_backend({
+        "reasoning": "Added order_segment to SELECT.",
+        "proposed_sql": "select id, subtotal, order_segment from raw_orders",
+        "confidence": "high",
+    })
+    connector = _make_passthrough_connector()
+    graph = MagicMock()
+    graph.get_latest_definition = AsyncMock(return_value=None)
+    prompts = await passthrough_prompts(
+        ORDERS_ENTITY.id, "order_segment", [(STG_ORDERS_ENTITY, 1)], connector, graph
+    )
+    connector.get_model_sql_map.reset_mock()
+    graph.get_latest_definition.reset_mock()
+
+    diffs = await SemanticRedefiner(backend=backend).generate_passthrough_diffs(
+        entity_id=ORDERS_ENTITY.id,
+        new_attribute="order_segment",
+        ancestors_with_depth=[(STG_ORDERS_ENTITY, 1)],
+        connector=connector,
+        graph=graph,
+        prompts=prompts,
+    )
+
+    sent = [c.kwargs["user_message"] for c in backend.complete.await_args_list]
+    assert sent == [message for _, _, _, message in prompts]
+    assert len(diffs) == 2
+    connector.get_model_sql_map.assert_not_called()
+    graph.get_latest_definition.assert_not_called()
+
+
 async def test_passthrough_diffs_skips_semantically_irrelevant_model(tmp_path):
     """When LLM returns no_change:true (model has no relation to attribute), skip it."""
     payload = {

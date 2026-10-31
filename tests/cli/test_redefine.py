@@ -353,7 +353,7 @@ def test_redefine_dry_run_estimate_counts_passthrough_calls():
     for the entity and one per upstream model with SQL, plus the hop-1 semantic one."""
     upstream = MagicMock(id="model.demo_shop.stg_orders", type=MagicMock(value="model"))
     upstream.name = "stg_orders"
-    result, _, _, _, _ = _run_redefine_with_diff(
+    result, graph, redefiner, _, _ = _run_redefine_with_diff(
         extra_args=("--dry-run",),
         ancestors=[(upstream, 1)],
         extra_sql={
@@ -367,6 +367,13 @@ def test_redefine_dry_run_estimate_counts_passthrough_calls():
     assert "3  (2 upstream passthrough, 1 downstream hop 1–2)" in output
     assert "900" in output  # 3 calls × 300 tokens
     assert result.backend.count_input_tokens.await_count == 3
+
+    # The passthrough prompts that were counted are the ones sent: built once,
+    # with one definition read per target, and handed to generation as-is.
+    counted = [c.args[0] for c in result.backend.count_input_tokens.await_args_list[:2]]
+    sent = redefiner.generate_passthrough_diffs.await_args.kwargs["prompts"]
+    assert [message for _, _, _, message in sent] == counted
+    assert graph.get_latest_definition.await_count == 1 + len(sent)  # existing + per target
 
 
 def test_redefine_preview_labels_upstream_and_downstream_diffs():

@@ -182,6 +182,11 @@ async def _run_redefine(
             for anc_entity, depth in model_ancestors:
                 console.print(f"  [dim]upstream hop {depth}[/dim]  {anc_entity.name}")
 
+        # Built once: the dry-run estimate counts these and the diff step sends them.
+        upstream_prompts = await passthrough_prompts(
+            entity, description, model_ancestors, dbt, graph
+        )
+
         if dry_run:
             # Count every LLM call the diff step below makes, using the same
             # prompt builders: one passthrough call per target with SQL (the
@@ -191,9 +196,7 @@ async def _run_redefine(
             sql_map = dbt.get_model_sql_map()
             calls: list[tuple[str, str]] = [
                 (_PASSTHROUGH_SYSTEM_PROMPT, message)
-                for _, _, _, message in await passthrough_prompts(
-                    entity, description, model_ancestors, dbt, graph
-                )
+                for _, _, _, message in upstream_prompts
             ]
             passthrough_calls = len(calls)
             skipped_deep = 0
@@ -269,6 +272,7 @@ async def _run_redefine(
                     ancestors_with_depth=model_ancestors,
                     connector=dbt,
                     graph=graph,
+                    prompts=upstream_prompts,
                 )
                 semantic_diffs = await redefiner.generate_diffs(
                     entity_id=entity,

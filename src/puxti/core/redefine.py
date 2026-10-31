@@ -127,6 +127,7 @@ class SemanticRedefiner:
         ancestors_with_depth: list[tuple[Entity, int]],
         connector: BaseConnector,
         graph: "KnowledgeGraph | None" = None,
+        prompts: list[tuple[str, int, str, str]] | None = None,
     ) -> list[FileDiff]:
         """Generate diffs to pass a new attribute through the upstream structural chain.
 
@@ -140,12 +141,17 @@ class SemanticRedefiner:
             ancestors_with_depth: (entity, depth) pairs from get_structural_ancestors().
             connector:            dbt connector to read model SQL.
             graph:                Knowledge Graph to fetch stored definitions (optional).
+            prompts:              Output of passthrough_prompts() for these arguments.
+                                  Pass it when the caller already built the prompts
+                                  (e.g. for a cost estimate) so exactly those are sent.
         """
         diffs: list[FileDiff] = []
+        if prompts is None:
+            prompts = await passthrough_prompts(
+                entity_id, new_attribute, ancestors_with_depth, connector, graph
+            )
 
-        for target_id, depth, model_sql, user_message in await passthrough_prompts(
-            entity_id, new_attribute, ancestors_with_depth, connector, graph
-        ):
+        for target_id, depth, model_sql, user_message in prompts:
             entity_name = target_id.split(".")[-1]
             response = await self._call_llm(_PASSTHROUGH_SYSTEM_PROMPT, user_message)
             raw = strip_markdown_fences(response.text)
@@ -358,8 +364,9 @@ async def passthrough_prompts(
     """(target_id, depth, model_sql, user_message) for every passthrough LLM call.
 
     The entity itself is included at depth 0, since it needs the attribute too.
-    Targets without a SQL file are skipped. The dry-run estimate counts exactly
-    these messages, so generate_passthrough_diffs must not build its own.
+    Targets without a SQL file are skipped. `redefine` builds these once, counts
+    them for the dry-run estimate and passes the same list to
+    generate_passthrough_diffs, so the estimate covers exactly what is sent.
     """
     sql_map = connector.get_model_sql_map()
     targets = [(entity_id, 0)] + [(e.id, d) for e, d in ancestors_with_depth]
