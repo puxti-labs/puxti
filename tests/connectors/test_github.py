@@ -559,7 +559,10 @@ async def test_open_pr_includes_companions_in_body(httpx_mock, connector):
     assert "acme/airflow#3" in payload["body"]
 
 
-@pytest.mark.parametrize("reason", list(UnverifiedReason))
+@pytest.mark.parametrize(
+    "reason",
+    [r for r in UnverifiedReason if r is not UnverifiedReason.QUALIFIED_REFERENCE],
+)
 def test_pr_body_reports_actual_unverified_reason(reason):
     from puxti.models import UnverifiedEntity
 
@@ -579,6 +582,55 @@ def test_pr_body_reports_actual_unverified_reason(reason):
     assert "No changes were generated for the entities below" in body
     assert "Transitive dependents" not in body
     assert "manually update the source model to add the alias" not in body
+
+
+def test_pr_body_source_qualified_reference_shows_do_not_merge():
+    from puxti.models import UnverifiedEntity, UnverifiedReason
+
+    source_id = EVENT.entity_id.rsplit(".", 1)[0]
+    result = RESULT.model_copy(
+        update={
+            "unverified_entities": [
+                UnverifiedEntity(
+                    entity_id=source_id,
+                    reason=UnverifiedReason.QUALIFIED_REFERENCE,
+                    detail="o.order_date",
+                )
+            ]
+        }
+    )
+    body = _pr_body(EVENT, result)
+    assert "🛑 Do not merge until this is resolved" in body
+    assert "manually update the source model to add the alias" in body
+    assert "alias.order_date AS recorded_date" in body
+    assert "model.jaffle_shop.orders" in body
+    assert "No changes were generated for the entities below" not in body
+
+
+def test_pr_body_mixed_qualified_source_and_other_uses_both_sections():
+    from puxti.models import UnverifiedEntity, UnverifiedReason
+
+    source_id = EVENT.entity_id.rsplit(".", 1)[0]
+    result = RESULT.model_copy(
+        update={
+            "unverified_entities": [
+                UnverifiedEntity(
+                    entity_id=source_id,
+                    reason=UnverifiedReason.QUALIFIED_REFERENCE,
+                ),
+                UnverifiedEntity(
+                    entity_id="model.jaffle_shop.staging_orders",
+                    reason=UnverifiedReason.NOT_DIRECT_DEPENDENT,
+                ),
+            ]
+        }
+    )
+    body = _pr_body(EVENT, result)
+    assert "🛑 Do not merge until this is resolved" in body
+    assert "manually update the source model to add the alias" in body
+    assert "No changes were generated for the entities below" in body
+    assert "staging_orders" in body
+    assert UnverifiedReason.NOT_DIRECT_DEPENDENT.description in body
 
 
 def test_pr_body_quotes_unverified_id_and_detail():

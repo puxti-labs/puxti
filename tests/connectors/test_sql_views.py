@@ -250,6 +250,7 @@ async def test_rename_with_only_qualified_references_flags_unverified(tmp_path):
         UnverifiedEntity(
             entity_id="view.public.q",
             reason=UnverifiedReason.QUALIFIED_REFERENCE,
+            detail="u.email",
         )
     ]
 
@@ -270,6 +271,7 @@ async def test_rename_with_mixed_bare_and_qualified_references_flags_unverified(
         UnverifiedEntity(
             entity_id="view.public.q",
             reason=UnverifiedReason.QUALIFIED_REFERENCE,
+            detail="u.email",
         )
     ]
 

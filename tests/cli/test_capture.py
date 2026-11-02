@@ -711,5 +711,6 @@ def test_capture_reports_reason_and_literal_detail_without_opening_pr():
     assert "model.jaffle_shop.orders[red]" in cli_result.output
     assert "column is referenced inside Jinja" in cli_result.output
     assert "macro [bold]argument[/bold]" in " ".join(cli_result.output.split())
-    assert "could not confirm" not in cli_result.output.lower()
+    assert "non-standard dbt layering" in cli_result.output
+    assert "could not confirm" in cli_result.output.lower()
     mock_gh.open_pr.assert_not_called()

@@ -318,10 +318,19 @@ async def _run_capture(
 
         all_unverified = [item for r in results for item in r.unverified_entities]
         if all_unverified:
+            column_name = semantic_event.change.get("before", {}).get("name", "")
             console.print(
                 f"[yellow]⚠ {len(all_unverified)} entity record(s) were flagged as potentially "
-                "affected but could not be safely propagated. Review manually:[/yellow]"
+                "affected but could not be safely propagated.[/yellow]"
             )
+            console.print(
+                "  Puxti could not confirm the "
+                f"`{column_name}` column in these entities traces back to the "
+                "renamed source — this can happen with non-standard dbt layering, "
+                "shared column names, or table names that differ from their entity "
+                "name (e.g. Prisma @@map)."
+            )
+            console.print("  Review manually:")
             for item in all_unverified:
                 detail = f" ({item.detail})" if item.detail else ""
                 console.print(

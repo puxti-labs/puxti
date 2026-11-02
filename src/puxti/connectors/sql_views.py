@@ -23,7 +23,7 @@ import sqlglot
 from sqlglot import expressions as exp
 
 from puxti.connectors.base import BaseConnector
-from puxti.connectors.sql_utils import rename_column_fully
+from puxti.connectors.sql_utils import first_qualified_column_ref, rename_column_fully
 from puxti.models import (
     ChangeType,
     Edge,
@@ -263,6 +263,7 @@ class SqlViewsConnector(BaseConnector):
                     UnverifiedEntity(
                         entity_id=view.entity_id,
                         reason=UnverifiedReason.QUALIFIED_REFERENCE,
+                        detail=first_qualified_column_ref(original_sql, old_name),
                     )
                 )
                 continue

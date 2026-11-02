@@ -509,6 +509,7 @@ async def test_column_rename_source_with_only_qualified_refs_goes_to_unverified(
         UnverifiedEntity(
             entity_id="model.jaffle_shop.orders",
             reason=UnverifiedReason.QUALIFIED_REFERENCE,
+            detail="s.order_date",
         )
         in unverified
     )
@@ -561,6 +562,7 @@ async def test_column_rename_mixed_refs_goes_to_unverified(tmp_path, is_source):
         UnverifiedEntity(
             entity_id=mixed_id,
             reason=UnverifiedReason.QUALIFIED_REFERENCE,
+            detail="s.order_date",
         )
         in unverified
     )
@@ -916,6 +918,7 @@ async def test_column_rename_model_with_jinja_reference_goes_to_unverified(tmp_p
         UnverifiedEntity(
             entity_id="model.jaffle_shop.orders",
             reason=UnverifiedReason.JINJA_REFERENCE,
+            detail="{{ dbt_utils.generate_surrogate_key(['order_date']) }}",
         )
     ]
     assert "inside a Jinja expression" in caplog.text
@@ -933,6 +936,7 @@ async def test_column_rename_name_inside_source_args_goes_to_unverified(tmp_path
         UnverifiedEntity(
             entity_id="model.jaffle_shop.orders",
             reason=UnverifiedReason.JINJA_REFERENCE,
+            detail="{{ source('raw', 'order_date') }}",
         )
     ]  # 'order_date' inside source()
     assert diffs == []

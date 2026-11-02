@@ -5,6 +5,8 @@ from pathlib import Path
 
 from puxti.connectors.base import BaseConnector
 from puxti.connectors.sql_utils import (
+    first_jinja_span_containing,
+    first_qualified_column_ref,
     mentions_in_jinja,
     rename_column_fully,
     rename_column_in_sql,
@@ -355,6 +357,7 @@ class DbtConnector(BaseConnector):
                     UnverifiedEntity(
                         entity_id=node_id,
                         reason=UnverifiedReason.JINJA_REFERENCE,
+                        detail=first_jinja_span_containing(original_sql, old_name),
                     )
                 )
                 continue
@@ -381,6 +384,7 @@ class DbtConnector(BaseConnector):
                     UnverifiedEntity(
                         entity_id=node_id,
                         reason=UnverifiedReason.QUALIFIED_REFERENCE,
+                        detail=first_qualified_column_ref(original_sql, old_name),
                     )
                 )
                 continue
