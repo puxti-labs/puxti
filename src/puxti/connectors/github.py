@@ -1,8 +1,9 @@
 import base64
+import re
 
 import httpx
 
-from puxti.models import PropagationResult, SemanticChangeEvent
+from puxti.models import PropagationResult, SemanticChangeEvent, UnverifiedReason
 
 _BASE_URL = "https://api.github.com"
 
@@ -302,31 +303,44 @@ def _pr_body(
         )
         sections.append(f"## Requires your attention\n{attention_list}")
 
-    if result.unverified_entity_ids:
-        # Derive source model name to distinguish the two unverified cases.
+    if result.unverified_entities:
         entity_parts = event.entity_id.rsplit(".", 1)
         model_part = entity_parts[0] if len(entity_parts) == 2 else event.entity_id
         source_model_name = model_part.rsplit(".", 1)[-1]
 
-        source_unverified = [
-            eid for eid in result.unverified_entity_ids
-            if eid.rsplit(".", 1)[-1] == source_model_name
+        def _is_source_model(entity_id: str) -> bool:
+            return entity_id.rsplit(".", 1)[-1] == source_model_name
+
+        source_qualified = [
+            item
+            for item in result.unverified_entities
+            if item.reason == UnverifiedReason.QUALIFIED_REFERENCE
+            and _is_source_model(item.entity_id)
         ]
-        transitive_unverified = [
-            eid for eid in result.unverified_entity_ids
-            if eid not in source_unverified
+        source_qualified_ids = {item.entity_id for item in source_qualified}
+        other_unverified = [
+            item
+            for item in result.unverified_entities
+            if item.entity_id not in source_qualified_ids
         ]
 
         unverified_sections: list[str] = []
 
-        if source_unverified:
-            source_list = "\n".join(f"- `{eid}`" for eid in source_unverified)
-            old_name = event.change.get("before", {}).get("name", "?") if event.change else "?"
-            new_name = event.change.get("after", {}).get("name", "?") if event.change else "?"
+        if source_qualified:
+            source_list = "\n".join(
+                f"- {_inline_code(item.entity_id)}" for item in source_qualified
+            )
+            old_name = (
+                event.change.get("before", {}).get("name", "?") if event.change else "?"
+            )
+            new_name = (
+                event.change.get("after", {}).get("name", "?") if event.change else "?"
+            )
             unverified_sections.append(
                 f"### 🛑 Do not merge until this is resolved\n"
-                f"The source model uses a qualified column reference (e.g. `alias.{old_name}`) "
-                f"which puxti cannot safely rename without a SQL parser.\n\n"
+                f"The source model uses a qualified column reference (e.g. "
+                f"`alias.{old_name}`) which puxti cannot safely rename without a "
+                f"SQL parser.\n\n"
                 f"**Before merging this PR**, manually update the source model "
                 f"to add the alias:\n\n"
                 f"```sql\n-- In the SELECT list of the source model, change:\n"
@@ -336,23 +350,26 @@ def _pr_body(
                 f"```\n\n"
                 f"Source model that needs the manual update:\n\n"
                 f"{source_list}\n\n"
-                f"Once that change is live, the files in **Files changed** above will be correct."
+                f"Once that change is live, the files in **Files changed** above "
+                f"will be correct."
             )
 
-        if transitive_unverified:
-            transitive_list = "\n".join(f"- `{eid}`" for eid in transitive_unverified)
+        if other_unverified:
+            unverified_list = []
+            for item in other_unverified:
+                entity_id = _inline_code(item.entity_id)
+                detail = f" ({_inline_code(item.detail)})" if item.detail else ""
+                unverified_list.append(
+                    f"- {entity_id} — {item.reason.description}{detail}"
+                )
             unverified_sections.append(
-                f"### Transitive dependents — scope unclear\n"
-                f"These models were flagged as potentially affected but puxti could not "
-                f"confirm the renamed column traces back to the source. "
-                f"This can happen with non-standard dbt layering or shared "
-                f"column names across unrelated models.\n\n"
-                f"{transitive_list}"
+                "No changes were generated for the entities below. Review each "
+                "skipped entity before merging; the generated diffs do not resolve "
+                "these cases.\n\n" + "\n".join(unverified_list)
             )
 
         sections.append(
-            "## Could not verify — review manually\n"
-            + "\n\n".join(unverified_sections)
+            "## Could not verify — review manually\n" + "\n\n".join(unverified_sections)
         )
 
     if companions:
@@ -360,6 +377,13 @@ def _pr_body(
 
     sections.append(f"---\n*Generated by Puxti — change ID: `{result.change_event_id}`*")
     return "\n\n".join(sections)
+
+
+def _inline_code(value: str) -> str:
+    """Quote arbitrary single-line data as a Markdown code span."""
+    text = " ".join(value.splitlines())
+    delimiter = "`" * (1 + max((len(run) for run in re.findall(r"`+", text)), default=0))
+    return f"{delimiter} {text} {delimiter}"
 
 
 def _attention_reason(description: str) -> str:

@@ -89,6 +89,35 @@ def mentions_in_jinja(sql: str, name: str) -> bool:
     return any(pattern.search(span) for span in _JINJA_SPAN.findall(sql))
 
 
+def first_jinja_span_containing(sql: str, name: str) -> str | None:
+    """Return the first Jinja span that mentions name, truncated for display."""
+    pattern = re.compile(rf"\b{re.escape(name)}\b", re.IGNORECASE)
+    for span in _JINJA_SPAN.findall(sql):
+        if pattern.search(span):
+            one_line = " ".join(span.split())
+            if len(one_line) > 120:
+                return one_line[:117] + "..."
+            return one_line
+    return None
+
+
+def first_qualified_column_ref(sql: str, old_name: str) -> str | None:
+    """Return the first qualified column reference to old_name, e.g. ``s.order_date``."""
+    old = re.escape(old_name)
+    pattern = re.compile(rf"""\.{_GAP}\b(?P<col>{old})\b""", re.DOTALL | re.IGNORECASE)
+    for m in pattern.finditer(sql):
+        dot = _dot_before(sql, m.start("col"))
+        if dot is None or _is_relation_segment(sql, dot):
+            continue
+        head = sql[:dot]
+        chain = _QUALIFIER_CHARS.search(head)
+        if not chain:
+            continue
+        qual = chain.group(0).rstrip(".")
+        return f"{qual}.{m.group('col')}"
+    return None
+
+
 # Characters of a qualifier chain such as proj.ds.tbl, "s"."t", [s].[t] or a
 # Jinja placeholder, walked back over to find the keyword before a relation.
 _QUALIFIER_CHARS = re.compile(r"""[\w$."`\[\]\x00]*$""")

@@ -3,7 +3,14 @@
 import pytest
 
 from puxti.connectors.prisma import PrismaConnector
-from puxti.models import ChangeType, EdgeType, EntityType, SemanticChangeEvent
+from puxti.models import (
+    ChangeType,
+    EdgeType,
+    EntityType,
+    SemanticChangeEvent,
+    UnverifiedEntity,
+    UnverifiedReason,
+)
 
 SCHEMA = '''\
 generator client {
@@ -219,7 +226,12 @@ async def test_rename_unknown_field_flags_unverified(connector):
         _rename_event("table.prisma.User.nope", "nope", "yep")
     )
     assert diffs == []
-    assert unverified == ["table.prisma.User.nope"]
+    assert unverified == [
+        UnverifiedEntity(
+            entity_id="table.prisma.User.nope",
+            reason=UnverifiedReason.COLUMN_NOT_FOUND,
+        )
+    ]
 
 
 async def test_rename_unknown_model_flags_unverified(connector):
@@ -227,7 +239,12 @@ async def test_rename_unknown_model_flags_unverified(connector):
         _rename_event("table.prisma.Ghost.name", "name", "label")
     )
     assert diffs == []
-    assert unverified == ["table.prisma.Ghost.name"]
+    assert unverified == [
+        UnverifiedEntity(
+            entity_id="table.prisma.Ghost.name",
+            reason=UnverifiedReason.MODEL_NOT_FOUND,
+        )
+    ]
 
 
 async def test_non_prisma_entity_produces_no_changes(connector):
@@ -251,3 +268,16 @@ async def test_non_structural_event_produces_no_changes(connector):
     diffs, unverified = await connector.generate_changes(event)
     assert diffs == []
     assert unverified == []
+
+
+async def test_rename_without_change_reports_reason(connector):
+    diffs, unverified = await connector.generate_changes(
+        _rename_event("table.prisma.User.email", "email", "email")
+    )
+    assert diffs == []
+    assert unverified == [
+        UnverifiedEntity(
+            entity_id="table.prisma.User.email",
+            reason=UnverifiedReason.NO_CHANGE,
+        )
+    ]
