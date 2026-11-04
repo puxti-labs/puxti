@@ -161,6 +161,10 @@ class UnverifiedEntity(BaseModel):
     entity_id: str
     reason: UnverifiedReason
     detail: str | None = None
+    is_source: bool | None = None
+    """True when the connector identified this entity as the changed entity's
+    own model or view, False for a downstream dependent. None means the
+    connector did not say; the PR body then falls back to matching on the name."""
 
 
 class PropagationResult(BaseModel):

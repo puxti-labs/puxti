@@ -72,7 +72,9 @@ file, so no external services are required.
 - **PRs as the output format.** Never push directly to a user's main
   branch. Generate PRs.
 - **Skipped changes keep their reasons.** Producer connectors return
-  `UnverifiedEntity` records with an `UnverifiedReason` and optional detail.
+  `UnverifiedEntity` records with an `UnverifiedReason`, optional detail, and
+  `is_source` (True for the changed entity's own model or view, False for a
+  dependent, None when the connector cannot tell).
   Pass these through propagation to CLI/PR output without guessing the reason
   from the entity name; quote entity IDs and details as data when rendering.
 - **Connectors stay modular.** Don't couple connector logic to core

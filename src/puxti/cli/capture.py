@@ -163,10 +163,10 @@ async def _run_capture(
                 if parent_entity:
                     parent_hint = (
                         f" For more precise results, use the model entity ID: "
-                        f"[bold]{parent_id}[/bold]"
+                        f"[bold]{escape(parent_id)}[/bold]"
                     )
             console.print(
-                f"[yellow]Note:[/yellow] Entity [bold]{entity}[/bold] not found in the "
+                f"[yellow]Note:[/yellow] Entity [bold]{escape(entity)}[/bold] not found in the "
                 f"Knowledge Graph — resolving lineage by model name. "
                 f"Run [bold]puxti describe[/bold] to see canonical entity IDs."
                 + parent_hint
@@ -268,7 +268,7 @@ async def _run_capture(
                 and len(eid.split(".")) >= 2 and eid.split(".")[1] != current_project
             }
             if foreign_projects:
-                projects_hint = ", ".join(f"`{p}`" for p in sorted(foreign_projects))
+                projects_hint = ", ".join(f"`{escape(p)}`" for p in sorted(foreign_projects))
                 console.print(
                     f"[yellow]No diffs generated.[/yellow] The affected models belong to "
                     f"a different dbt project ({projects_hint}). Re-run with "
@@ -325,7 +325,7 @@ async def _run_capture(
             )
             console.print(
                 "  Puxti could not confirm the "
-                f"`{column_name}` column in these entities traces back to the "
+                f"`{escape(column_name)}` column in these entities traces back to the "
                 "renamed source — this can happen with non-standard dbt layering, "
                 "shared column names, or table names that differ from their entity "
                 "name (e.g. Prisma @@map)."

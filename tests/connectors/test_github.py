@@ -595,6 +595,7 @@ def test_pr_body_source_qualified_reference_shows_do_not_merge():
                     entity_id=source_id,
                     reason=UnverifiedReason.QUALIFIED_REFERENCE,
                     detail="o.order_date",
+                    is_source=True,
                 )
             ]
         }
@@ -617,6 +618,7 @@ def test_pr_body_mixed_qualified_source_and_other_uses_both_sections():
                 UnverifiedEntity(
                     entity_id=source_id,
                     reason=UnverifiedReason.QUALIFIED_REFERENCE,
+                    is_source=True,
                 ),
                 UnverifiedEntity(
                     entity_id="model.jaffle_shop.staging_orders",
@@ -657,3 +659,43 @@ def test_pr_body_quotes_unverified_id_and_detail():
     assert "\n## forged heading" not in body
     assert "model.&lt;script&gt;`[orders](https://example.com)" in rendered
     assert "&lt;/code&gt;&lt;img src=x&gt; ## forged heading" in rendered
+
+
+def test_pr_body_qualified_reference_not_flagged_as_source_uses_generic_list():
+    """A same-named model the connector did not mark as source gets no 🛑 section."""
+    from puxti.models import UnverifiedEntity, UnverifiedReason
+
+    result = RESULT.model_copy(
+        update={
+            "unverified_entities": [
+                UnverifiedEntity(
+                    entity_id="model.other_pkg.orders",
+                    reason=UnverifiedReason.QUALIFIED_REFERENCE,
+                    detail="o.order_date",
+                    is_source=False,
+                )
+            ]
+        }
+    )
+    body = _pr_body(EVENT, result)
+    assert "🛑 Do not merge until this is resolved" not in body
+    assert "No changes were generated for the entities below" in body
+    assert "model.other_pkg.orders" in body
+
+
+def test_pr_body_qualified_reference_without_is_source_falls_back_to_name():
+    """A connector that does not set is_source keeps the 🛑 section for the source name."""
+    from puxti.models import UnverifiedEntity, UnverifiedReason
+
+    result = RESULT.model_copy(
+        update={
+            "unverified_entities": [
+                UnverifiedEntity(
+                    entity_id="model.jaffle_shop.orders",
+                    reason=UnverifiedReason.QUALIFIED_REFERENCE,
+                )
+            ]
+        }
+    )
+    body = _pr_body(EVENT, result)
+    assert "🛑 Do not merge until this is resolved" in body

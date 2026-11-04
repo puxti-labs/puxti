@@ -251,6 +251,7 @@ async def test_rename_with_only_qualified_references_flags_unverified(tmp_path):
             entity_id="view.public.q",
             reason=UnverifiedReason.QUALIFIED_REFERENCE,
             detail="u.email",
+            is_source=False,
         )
     ]
 
@@ -272,6 +273,7 @@ async def test_rename_with_mixed_bare_and_qualified_references_flags_unverified(
             entity_id="view.public.q",
             reason=UnverifiedReason.QUALIFIED_REFERENCE,
             detail="u.email",
+            is_source=False,
         )
     ]
 
@@ -302,5 +304,35 @@ async def test_rename_missing_column_reports_reason(connector):
         UnverifiedEntity(
             entity_id="view.public.user_stats",
             reason=UnverifiedReason.NO_CHANGE,
+            is_source=True,
         )
     ]
+
+
+async def test_rename_skips_same_named_view_in_other_schema(tmp_path):
+    """A view reading analytics.orders does not depend on public.orders."""
+    views = tmp_path / "views"
+    views.mkdir()
+    (views / "public_orders.sql").write_text(
+        "create view public.orders as select email from users"
+    )
+    (views / "analytics_orders.sql").write_text(
+        "create view analytics.orders as select email from users"
+    )
+    (views / "report.sql").write_text(
+        "create view analytics.report as select email from analytics.orders"
+    )
+    (views / "public_report.sql").write_text(
+        "create view public.public_report as select email from orders"
+    )
+    connector = SqlViewsConnector(config={"project_dir": str(tmp_path), "views_dir": "views"})
+
+    diffs, unverified = await connector.generate_changes(
+        _rename_event("view.public.orders.email", "email", "contact_email", affected=[])
+    )
+
+    assert sorted(d.file_path for d in diffs) == [
+        "views/public_orders.sql",
+        "views/public_report.sql",
+    ]
+    assert "view.analytics.report" in {u.entity_id for u in unverified}

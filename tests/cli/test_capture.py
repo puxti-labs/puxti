@@ -232,6 +232,7 @@ def _run_capture_with_results(
     github_token="ghp_test",
 
     semantic_context="order_date renamed to recorded_date.",
+    change=None,
 ):
     """Run `puxti capture` with a mocked engine returning `results`.
 
@@ -247,7 +248,8 @@ def _run_capture_with_results(
         semantic_context=semantic_context,
         affected_entity_ids=["model.jaffle_shop.orders"],
         reasoning="Column rename propagates to all referencing models.",
-        change={"before": {"name": "order_date"}, "after": {"name": "recorded_date"}},
+        change=change
+        or {"before": {"name": "order_date"}, "after": {"name": "recorded_date"}},
     )
 
     mock_graph = MagicMock()
@@ -344,6 +346,19 @@ def test_capture_all_unverified_opens_no_pr():
     mock_gh.open_pr.assert_not_called()
 
 
+def test_capture_unverified_warning_escapes_column_name():
+    """A column name with Rich markup syntax is printed literally."""
+    results = [_prop_result("dbt", with_diff=False, unverified=["model.jaffle_shop.orders"])]
+
+    cli_result, _, _, _ = _run_capture_with_results(
+        results,
+        change={"before": {"name": "[bold]order_date"}, "after": {"name": "recorded_date"}},
+    )
+
+    assert cli_result.exit_code == 0, cli_result.output
+    assert "`[bold]order_date` column" in plain(cli_result.output)
+
+
 def test_capture_mixed_results_opens_pr_only_for_connectors_with_diffs():
     results = [
         _prop_result("dbt", with_diff=True),
@@ -414,13 +429,14 @@ def test_capture_dry_run_with_unverified_results_opens_nothing():
     mock_gh.open_pr.assert_not_called()
 
 
-def test_capture_warns_when_entity_not_in_graph():
+@pytest.mark.parametrize("entity", ["bad.format.entity.type", "bad.[/bold]x.entity.type"])
+def test_capture_warns_when_entity_not_in_graph(entity):
     """When the entity ID isn't in the graph, capture should warn but continue."""
     from puxti.models import ChangeType, PropagationResult, SemanticChangeEvent
 
     semantic_event = SemanticChangeEvent(
         change_event_id="evt-warn",
-        entity_id="bad.format.entity.type",
+        entity_id=entity,
         change_type=ChangeType.STRUCTURAL,
         semantic_context="type renamed to result_type.",
         affected_entity_ids=[],
@@ -430,7 +446,7 @@ def test_capture_warns_when_entity_not_in_graph():
     prop_result = PropagationResult(
         change_event_id="evt-warn",
         connector="dbt",
-        target_entity_id="bad.format.entity.type",
+        target_entity_id=entity,
         diffs=[],
         pr_url="https://github.com/acme/data/pull/99",
         status="opened",
@@ -470,14 +486,15 @@ def test_capture_warns_when_entity_not_in_graph():
 
         result = runner.invoke(app, [
             "capture",
-            "--entity", "bad.format.entity.type",
+            "--entity", entity,
             "--before", "type",
             "--after", "result_type",
             "--description", "test",
             "--repo", "acme/data",
         ], input="y\n")
 
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
+    assert entity in plain(result.output)  # printed literally, not as Rich markup
     assert (
         "not found in the Knowledge Graph" in result.output
         or "resolving lineage by model name" in result.output

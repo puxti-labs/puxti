@@ -24,9 +24,14 @@ the skipped cases. A connector with no diffs opens no PR, but its skipped
 entities still appear in the CLI.
 
 Connector integrations should return `UnverifiedEntity` records (with `entity_id`, `reason`,
-and optional `detail` keyword arguments) from `generate_changes` and consume
+and optional `detail` and `is_source` keyword arguments) from `generate_changes` and consume
 `PropagationResult.unverified_entities`. `reason` is an `UnverifiedReason` enum;
-`detail` is optional. Legacy ID-only connector results and the
+`detail` is optional. `is_source` is `True` for the entity that owns the changed
+column (the source model or view), `False` for a dependent, and `None` (the
+default) when the connector does not say. The dbt and SQL views connectors set
+it; Airflow and Prisma leave it unset. The PR description shows the alias
+instructions for a source entity with a qualified reference, and falls back to
+matching on the model name when `is_source` is `None`. Legacy ID-only connector results and the
 `unverified_entity_ids` constructor argument are accepted with an `unspecified`
 reason. The read-only `unverified_entity_ids` property remains available; newly
 serialized results use `unverified_entities` to retain reasons and details.
