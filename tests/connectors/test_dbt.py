@@ -454,6 +454,7 @@ async def test_column_rename_skips_transitive_dependents(connector, tmp_path):
         UnverifiedEntity(
             entity_id="model.jaffle_shop.stg_orders",
             reason=UnverifiedReason.NOT_DIRECT_DEPENDENT,
+            is_source=False,
         )
     ]
 
@@ -1118,6 +1119,7 @@ async def test_column_rename_same_named_model_in_other_package_is_not_source(tmp
         UnverifiedEntity(
             entity_id="model.other_pkg.orders",
             reason=UnverifiedReason.NOT_DIRECT_DEPENDENT,
+            is_source=False,
         ),
     ]
 
@@ -1217,3 +1219,25 @@ def test_references_model_handles_package_qualified_refs(sql, package, expected)
     from puxti.connectors.dbt import _references_model
 
     assert _references_model(sql, "orders", package=package) is expected
+
+
+async def test_column_rename_versioned_source_matches_ref_by_model_name(tmp_path):
+    """For model.pkg.orders.v1 the fallback looks for ref('orders'), not ref('v1')."""
+    connector = _write_manifest_project(tmp_path, {
+        "model.jaffle_shop.orders.v1": ("orders", [], "select order_date from raw"),
+        "model.jaffle_shop.report": (
+            "report", [], "select order_date from {{ ref('orders', version=1) }}"
+        ),
+    })
+    event = _rename_event().model_copy(update={
+        "entity_id": "model.jaffle_shop.orders.v1.order_date",
+        "affected_entity_ids": [],
+    })
+
+    diffs, unverified = await connector.generate_changes(event)
+
+    assert unverified == []
+    assert sorted(d.file_path for d in diffs) == [
+        "models/jaffle_shop/orders.sql",
+        "models/jaffle_shop/report.sql",
+    ]

@@ -233,6 +233,7 @@ def _run_capture_with_results(
 
     semantic_context="order_date renamed to recorded_date.",
     change=None,
+    affected=None,
 ):
     """Run `puxti capture` with a mocked engine returning `results`.
 
@@ -246,7 +247,7 @@ def _run_capture_with_results(
         entity_id="model.jaffle_shop.orders.order_date",
         change_type=ChangeType.STRUCTURAL,
         semantic_context=semantic_context,
-        affected_entity_ids=["model.jaffle_shop.orders"],
+        affected_entity_ids=affected or ["model.jaffle_shop.orders"],
         reasoning="Column rename propagates to all referencing models.",
         change=change
         or {"before": {"name": "order_date"}, "after": {"name": "recorded_date"}},
@@ -359,6 +360,18 @@ def test_capture_unverified_warning_escapes_column_name():
     assert "`[bold]order_date` column" in plain(cli_result.output)
 
 
+def test_capture_foreign_project_hint_prints_project_literally():
+    """The no-diffs hint names a foreign dbt project as plain text, not Rich markup."""
+    cli_result, _, mock_gh, _ = _run_capture_with_results(
+        [], affected=["model.[/bold]other.orders"]
+    )
+
+    assert cli_result.exit_code == 0, cli_result.output
+    output = " ".join(plain(cli_result.output).split())
+    assert "different dbt project (`[/bold]other`)" in output
+    mock_gh.open_pr.assert_not_called()
+
+
 def test_capture_mixed_results_opens_pr_only_for_connectors_with_diffs():
     results = [
         _prop_result("dbt", with_diff=True),
@@ -429,8 +442,15 @@ def test_capture_dry_run_with_unverified_results_opens_nothing():
     mock_gh.open_pr.assert_not_called()
 
 
-@pytest.mark.parametrize("entity", ["bad.format.entity.type", "bad.[/bold]x.entity.type"])
-def test_capture_warns_when_entity_not_in_graph(entity):
+@pytest.mark.parametrize(
+    ("entity", "parent_found"),
+    [
+        ("bad.format.entity.type", False),
+        ("bad.[/bold]x.entity.type", False),
+        ("bad.[/bold]x.entity.type", True),
+    ],
+)
+def test_capture_warns_when_entity_not_in_graph(entity, parent_found):
     """When the entity ID isn't in the graph, capture should warn but continue."""
     from puxti.models import ChangeType, PropagationResult, SemanticChangeEvent
 
@@ -459,7 +479,11 @@ def test_capture_warns_when_entity_not_in_graph(entity):
     mock_graph.get_semantic_dependents = AsyncMock(return_value=[])
     mock_graph.get_structural_dependents = AsyncMock(return_value=[])
     mock_graph.get_structural_ancestors = AsyncMock(return_value=[])
-    mock_graph.get_entity_by_id = AsyncMock(return_value=None)  # entity not found
+    # The entity is never found; its parent model is found when parent_found.
+    parent_id = entity.rsplit(".", 1)[0]
+    mock_graph.get_entity_by_id = AsyncMock(
+        side_effect=lambda eid: MagicMock() if parent_found and eid == parent_id else None
+    )
     mock_graph.upsert_definition = AsyncMock()
     mock_graph.upsert_semantic_edge = AsyncMock()
     mock_graph.save_change_event = AsyncMock()
@@ -495,6 +519,8 @@ def test_capture_warns_when_entity_not_in_graph(entity):
 
     assert result.exit_code == 0, result.output
     assert entity in plain(result.output)  # printed literally, not as Rich markup
+    hint = f"use the model entity ID: {parent_id}"
+    assert (hint in " ".join(plain(result.output).split())) is parent_found
     assert (
         "not found in the Knowledge Graph" in result.output
         or "resolving lineage by model name" in result.output

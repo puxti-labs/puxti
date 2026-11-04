@@ -12,6 +12,8 @@ The rename is a text replacement and never edits Jinja (`{{ }}`, `{% %}`, `{# #}
 
 Qualified references such as `o.order_date` or `{{ ref('orders') }}.order_date` are never rewritten, because the text alone does not say which table the qualifier points to. Any model or view with a qualified reference to the renamed column is skipped entirely and listed as unverified, so the PR never carries a half-renamed model. Relation names such as `from raw.order_date` do not count as column references.
 
+The SQL views connector renames a column across the whole `.sql` file. A file that also defines a view the change does not affect is skipped and listed as unverified, because the rewrite would rename the column in that view too. Keep one view per file to get automatic renames.
+
 ## Reviewing skipped changes
 
 `puxti capture` lists each skipped entity with the connector's reason. The same

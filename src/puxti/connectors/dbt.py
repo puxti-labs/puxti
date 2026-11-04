@@ -342,9 +342,11 @@ class DbtConnector(BaseConnector):
                 if upstream:
                     is_direct_dependent = source_node_id in upstream
                 else:
+                    # Use the manifest name: for a versioned model the last
+                    # ID segment is the version ("v1"), not the model name.
                     is_direct_dependent = _references_model(
                         original_sql,
-                        source_model_name,
+                        manifest["nodes"][source_node_id].get("name", source_model_name),
                         package=source_node_id.split(".")[1],
                     )
             else:
@@ -355,6 +357,7 @@ class DbtConnector(BaseConnector):
                     UnverifiedEntity(
                         entity_id=node_id,
                         reason=UnverifiedReason.NOT_DIRECT_DEPENDENT,
+                        is_source=False,
                     )
                 )
                 continue
