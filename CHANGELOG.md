@@ -2,12 +2,17 @@
 
 ## [Unreleased]
 
+## [0.19.0] — 2026-11-04
+
 ### Changed
 
 - **`--dry-run` on `capture` and `redefine` shows the real diffs.** It used to stop at a cost estimate, so nothing showed what a run would change before it ran. It now prints the cost estimate, then makes the same LLM calls as a real run and prints the same diffs and manual-review list. It never writes to the Knowledge Graph and never calls GitHub, so it still needs neither `--repo` nor `GITHUB_TOKEN`. **This is a cost change:** a dry run now costs as much as a real run (one LLM call for `capture`; for `redefine`, one per hop-1/2 dependent plus one passthrough call for the entity and each upstream model). Scripts that used `--dry-run` as a free cost check will now be billed. ([#51](https://github.com/puxti-labs/puxti/issues/51))
+- **Skipped entities are reported as structured records.** `PropagationResult.unverified_entities` holds `UnverifiedEntity` records (`entity_id`, `reason`, optional `detail` and `is_source`) and replaces `unverified_entity_ids` in serialized results. The old field is still accepted as input, with an `unspecified` reason, and is still available as a read-only property, but it no longer appears in serialized JSON: code that reads `unverified_entity_ids` from stored or exported results must switch to `unverified_entities`. (#60)
+- **`UnverifiedEntity.is_source` marks the changed entity's own model or view.** The dbt and SQL views connectors set it, and the PR description uses it to decide where the "Do not merge" alias instructions go. When a connector leaves it unset, the PR description falls back to matching on the model name, as before.
 
 ### Fixed
 
+- **Skipped entities carry their actual reason into `capture` warnings and PR descriptions.** Jinja references, qualified references, missing columns or files, and unverified direct dependencies are reported separately. PR text no longer guesses the cause from the entity name or prescribes an alias for unrelated cases. ([#60](https://github.com/puxti-labs/puxti/issues/60))
 - **`redefine` dry-run estimate counts every LLM call.** It skipped the passthrough calls (one for the entity and one per upstream model) and counted untruncated SQL, so the figure did not match what the run sends. Both the estimate and the real calls now build their prompts in one place.
 - **Closed input cancels `capture` and `redefine` prompts.** End of input at a confirmation prompt used to crash with the "unexpected error" report; it now counts as no.
 - **`capture` prints the LLM's enrichment as plain text.** Brackets in the enriched description, reasoning or entity IDs were parsed as Rich markup, which could crash the command or restyle the text under review.
@@ -16,7 +21,6 @@
 - **SQL views in another schema are no longer treated as dependents of a same-named view.** Renaming a column on `view.public.orders` used to rewrite a view reading `analytics.orders`. When the source is a view, a reference must match its schema; unqualified references use `default_schema`.
 - **SQL view files that also define an unaffected view are skipped.** The rename rewrites the whole file, so a file defining both `public.orders` and `analytics.orders` had the column renamed in both. Such files are now listed for manual review with the reason `shared_file`.
 - **Versioned dbt sources match `ref()` by model name.** For `model.jaffle_shop.orders.v1`, the fallback used when the manifest has no `depends_on` looked for `ref('v1')`.
-- **`UnverifiedEntity.is_source` marks the changed entity's own model or view.** The dbt and SQL views connectors set it, and the PR description uses it to decide where the "Do not merge" alias instructions go. When a connector leaves it unset, the PR description falls back to matching on the model name, as before.
 - **`capture` prints entity IDs, project names and the renamed column literally.** Brackets in these values were parsed as Rich markup, which could crash the command or restyle the "not found in the Knowledge Graph" note and the manual-review warning.
 - **`redefine` previews diffs and confirms before opening a PR.** It used to open the PR as soon as the diffs were generated. It now prints the unified diffs, labelled as upstream passthrough or downstream semantic, and asks for an explicit `y`; blank, closed or any other input cancels, and nothing is saved. Scripts that run `redefine` must now pipe `y`, including through `correct`'s "Run it now?" handoff, which now asks twice. ([#51](https://github.com/puxti-labs/puxti/issues/51))
 
@@ -31,7 +35,6 @@
 - **`capture` previews diffs and confirms PR creation.** Generated SQL changes are shown before a separate approval prompt. Only an explicit `y` allows branches and PRs to be created; blank input cancels. This addresses the PR-confirmation part of #51; `--dry-run` remains a cost estimate. `capture` now asks twice (Knowledge Graph enrichment, then PR creation), so a script that pipes a single `y` cancels before any PR is opened; pipe `y` twice instead.
 - **Scan continues after an invalid semantic-edge type.** An unsupported relationship type in an LLM response is logged and skipped instead of aborting the scan. Valid proposals in the same batch are preserved and still require confirmation before being written. Addresses the invalid-type crash reported in #56; lineage and definition validation remain separate work.
 - **Scan continues after a malformed semantic edge proposal.** A proposed edge whose `description` is missing, empty or not a string, whose entity IDs are not strings, or that is not an object at all is logged and skipped instead of aborting the scan, the same way as an invalid relationship type. A null `edges` value counts as no edges. A batch response that is not an object with an `edges` list is logged and skipped, so edges from the other batches still reach confirmation; a truncated one counts toward the "re-run scan" warning. Accepted descriptions are stored without surrounding whitespace.
-- **Skipped entities now carry their actual reason into `capture` warnings and PR descriptions.** Jinja references, qualified references, missing columns or files, and unverified direct dependencies are reported separately. PR text no longer guesses the cause from the entity name or prescribes an alias for unrelated cases. Connector results carry structured `UnverifiedEntity` records; legacy ID-only results remain readable with an explicit unspecified reason. (#60)
 
 ## [0.17.0] — 2026-10-23
 
