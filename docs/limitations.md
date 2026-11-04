@@ -12,6 +12,8 @@ The rename is a text replacement and never edits Jinja (`{{ }}`, `{% %}`, `{# #}
 
 Qualified references such as `o.order_date` or `{{ ref('orders') }}.order_date` are never rewritten, because the text alone does not say which table the qualifier points to. Any model or view with a qualified reference to the renamed column is skipped entirely and listed as unverified, so the PR never carries a half-renamed model. Relation names such as `from raw.order_date` do not count as column references.
 
+The SQL views connector renames a column across the whole `.sql` file. A file that also defines a view the change does not affect is skipped and listed as unverified, because the rewrite would rename the column in that view too. Keep one view per file to get automatic renames.
+
 ## Reviewing skipped changes
 
 `puxti capture` lists each skipped entity with the connector's reason. The same
@@ -24,9 +26,14 @@ the skipped cases. A connector with no diffs opens no PR, but its skipped
 entities still appear in the CLI.
 
 Connector integrations should return `UnverifiedEntity` records (with `entity_id`, `reason`,
-and optional `detail` keyword arguments) from `generate_changes` and consume
+and optional `detail` and `is_source` keyword arguments) from `generate_changes` and consume
 `PropagationResult.unverified_entities`. `reason` is an `UnverifiedReason` enum;
-`detail` is optional. Legacy ID-only connector results and the
+`detail` is optional. `is_source` is `True` for the entity that owns the changed
+column (the source model or view), `False` for a dependent, and `None` (the
+default) when the connector does not say. The dbt and SQL views connectors set
+it; Airflow and Prisma leave it unset. The PR description shows the alias
+instructions for a source entity with a qualified reference, and falls back to
+matching on the model name when `is_source` is `None`. Legacy ID-only connector results and the
 `unverified_entity_ids` constructor argument are accepted with an `unspecified`
 reason. The read-only `unverified_entity_ids` property remains available; newly
 serialized results use `unverified_entities` to retain reasons and details.

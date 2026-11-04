@@ -310,6 +310,7 @@ class DbtConnector(BaseConnector):
         source_model_name = model_part.rsplit(".", 1)[-1]
 
         manifest = self._load_manifest()
+        source_node_id = _source_node_id(manifest, event.entity_id)
         affected_ids = set(event.affected_entity_ids or [])
         diffs: list[FileDiff] = []
         unverified: list[UnverifiedEntity] = []
@@ -332,13 +333,31 @@ class DbtConnector(BaseConnector):
             # reference it via ref(). Track everything else as unverified —
             # the column may come from a different upstream source (e.g. mixed
             # raw/prep layering, shared column names across unrelated models).
-            is_source = node["name"] == source_model_name
-            is_direct_dependent = _references_model(original_sql, source_model_name)
+            # Match the exact node when the event ID names one, so a model with
+            # the same name in another package, or a dependent of that model,
+            # is not treated as the source or one of its dependents.
+            if source_node_id:
+                is_source = node_id == source_node_id
+                upstream = node.get("depends_on", {}).get("nodes") or []
+                if upstream:
+                    is_direct_dependent = source_node_id in upstream
+                else:
+                    # Use the manifest name: for a versioned model the last
+                    # ID segment is the version ("v1"), not the model name.
+                    is_direct_dependent = _references_model(
+                        original_sql,
+                        manifest["nodes"][source_node_id].get("name", source_model_name),
+                        package=source_node_id.split(".")[1],
+                    )
+            else:
+                is_source = node["name"] == source_model_name
+                is_direct_dependent = _references_model(original_sql, source_model_name)
             if source_model_name and not (is_source or is_direct_dependent):
                 unverified.append(
                     UnverifiedEntity(
                         entity_id=node_id,
                         reason=UnverifiedReason.NOT_DIRECT_DEPENDENT,
+                        is_source=False,
                     )
                 )
                 continue
@@ -358,6 +377,7 @@ class DbtConnector(BaseConnector):
                         entity_id=node_id,
                         reason=UnverifiedReason.JINJA_REFERENCE,
                         detail=first_jinja_span_containing(original_sql, old_name),
+                        is_source=is_source,
                     )
                 )
                 continue
@@ -385,6 +405,7 @@ class DbtConnector(BaseConnector):
                         entity_id=node_id,
                         reason=UnverifiedReason.QUALIFIED_REFERENCE,
                         detail=first_qualified_column_ref(original_sql, old_name),
+                        is_source=is_source,
                     )
                 )
                 continue
@@ -397,6 +418,7 @@ class DbtConnector(BaseConnector):
                         UnverifiedEntity(
                             entity_id=node_id,
                             reason=UnverifiedReason.NO_CHANGE,
+                            is_source=True,
                         )
                     )
                 continue
@@ -539,10 +561,31 @@ def _metric_definition(metric: dict, measures: dict[str, tuple[str, dict]]) -> s
     return f"{description}\n\n{formula}" if description else formula
 
 
-def _references_model(sql: str, model_name: str) -> bool:
-    """Return True if sql contains a dbt ref() call for model_name."""
-    return bool(re.search(
-        r"ref\s*\(\s*['\"]" + re.escape(model_name) + r"['\"]",
-        sql,
+def _source_node_id(manifest: dict, entity_id: str) -> str | None:
+    """Return the manifest model node that entity_id belongs to, if it names one.
+
+    "model.jaffle_shop.orders.order_date" → "model.jaffle_shop.orders". IDs in
+    another format (e.g. "db.schema.orders.col") return None, and callers fall
+    back to matching on the model name.
+    """
+    node_id = entity_id.rsplit(".", 1)[0]
+    node = manifest.get("nodes", {}).get(node_id)
+    return node_id if node and node.get("resource_type") == "model" else None
+
+
+def _references_model(sql: str, model_name: str, package: str | None = None) -> bool:
+    """Return True if sql contains a dbt ref() call for model_name.
+
+    Matches ref('orders') and the package-qualified ref('pkg', 'orders'). When
+    package is given, a ref qualified with a different package does not match.
+    """
+    pattern = re.compile(
+        r"""ref\s*\(\s*(?:['"](?P<pkg>[\w-]+)['"]\s*,\s*)?['"]"""
+        + re.escape(model_name)
+        + r"""['"]""",
         re.IGNORECASE,
-    ))
+    )
+    return any(
+        package is None or m.group("pkg") is None or m.group("pkg").lower() == package.lower()
+        for m in pattern.finditer(sql)
+    )

@@ -454,6 +454,7 @@ async def test_column_rename_skips_transitive_dependents(connector, tmp_path):
         UnverifiedEntity(
             entity_id="model.jaffle_shop.stg_orders",
             reason=UnverifiedReason.NOT_DIRECT_DEPENDENT,
+            is_source=False,
         )
     ]
 
@@ -510,6 +511,7 @@ async def test_column_rename_source_with_only_qualified_refs_goes_to_unverified(
             entity_id="model.jaffle_shop.orders",
             reason=UnverifiedReason.QUALIFIED_REFERENCE,
             detail="s.order_date",
+            is_source=True,
         )
         in unverified
     )
@@ -563,6 +565,7 @@ async def test_column_rename_mixed_refs_goes_to_unverified(tmp_path, is_source):
             entity_id=mixed_id,
             reason=UnverifiedReason.QUALIFIED_REFERENCE,
             detail="s.order_date",
+            is_source=is_source,
         )
         in unverified
     )
@@ -919,6 +922,7 @@ async def test_column_rename_model_with_jinja_reference_goes_to_unverified(tmp_p
             entity_id="model.jaffle_shop.orders",
             reason=UnverifiedReason.JINJA_REFERENCE,
             detail="{{ dbt_utils.generate_surrogate_key(['order_date']) }}",
+            is_source=True,
         )
     ]
     assert "inside a Jinja expression" in caplog.text
@@ -937,6 +941,7 @@ async def test_column_rename_name_inside_source_args_goes_to_unverified(tmp_path
             entity_id="model.jaffle_shop.orders",
             reason=UnverifiedReason.JINJA_REFERENCE,
             detail="{{ source('raw', 'order_date') }}",
+            is_source=True,
         )
     ]  # 'order_date' inside source()
     assert diffs == []
@@ -1057,5 +1062,182 @@ async def test_column_rename_source_without_column_reports_reason(tmp_path):
         UnverifiedEntity(
             entity_id="model.jaffle_shop.orders",
             reason=UnverifiedReason.NO_CHANGE,
+            is_source=True,
         )
+    ]
+
+
+def _same_name_two_packages(tmp_path: Path, jaffle_sql: str, other_sql: str) -> DbtConnector:
+    """Two packages that each define a model named `orders`."""
+    import json
+
+    def node(pkg: str) -> dict:
+        return {
+            "resource_type": "model", "name": "orders",
+            "original_file_path": f"models/{pkg}/orders.sql",
+            "schema": "public", "database": "dev", "description": "", "tags": [],
+            "columns": {}, "depends_on": {"nodes": []},
+        }
+
+    manifest = {
+        "metadata": {"dbt_schema_version": "v9", "project_name": "jaffle_shop"},
+        "nodes": {
+            "model.jaffle_shop.orders": node("jaffle_shop"),
+            "model.other_pkg.orders": node("other_pkg"),
+        },
+        "sources": {},
+    }
+    (tmp_path / "target").mkdir()
+    (tmp_path / "target" / "manifest.json").write_text(json.dumps(manifest))
+    for pkg, sql in (("jaffle_shop", jaffle_sql), ("other_pkg", other_sql)):
+        (tmp_path / "models" / pkg).mkdir(parents=True)
+        (tmp_path / "models" / pkg / "orders.sql").write_text(sql)
+    return DbtConnector(config={"project_dir": str(tmp_path)})
+
+
+async def test_column_rename_same_named_model_in_other_package_is_not_source(tmp_path):
+    """Only the exact node in the event ID is the source; a namesake is not renamed."""
+    connector = _same_name_two_packages(
+        tmp_path,
+        jaffle_sql="select o.order_date from raw_orders o",
+        other_sql="select order_date from other_raw",
+    )
+    event = _rename_event().model_copy(
+        update={"affected_entity_ids": ["model.jaffle_shop.orders", "model.other_pkg.orders"]}
+    )
+
+    diffs, unverified = await connector.generate_changes(event)
+
+    assert diffs == []
+    assert unverified == [
+        UnverifiedEntity(
+            entity_id="model.jaffle_shop.orders",
+            reason=UnverifiedReason.QUALIFIED_REFERENCE,
+            detail="o.order_date",
+            is_source=True,
+        ),
+        UnverifiedEntity(
+            entity_id="model.other_pkg.orders",
+            reason=UnverifiedReason.NOT_DIRECT_DEPENDENT,
+            is_source=False,
+        ),
+    ]
+
+
+async def test_column_rename_non_node_entity_id_falls_back_to_model_name(tmp_path):
+    """An event ID such as db.schema.table.col still identifies the source by name."""
+    connector = _single_model_project(tmp_path, "select o.order_date from raw_orders o")
+    event = _rename_event().model_copy(update={"entity_id": "dev.public.orders.order_date"})
+
+    diffs, unverified = await connector.generate_changes(event)
+
+    assert diffs == []
+    assert unverified == [
+        UnverifiedEntity(
+            entity_id="model.jaffle_shop.orders",
+            reason=UnverifiedReason.QUALIFIED_REFERENCE,
+            detail="o.order_date",
+            is_source=True,
+        )
+    ]
+
+
+def _write_manifest_project(tmp_path: Path, nodes: dict[str, tuple[str, list[str], str]]):
+    """nodes: node_id → (name, depends_on node IDs, SQL)."""
+    import json
+
+    manifest_nodes = {}
+    for node_id, (name, upstream, sql) in nodes.items():
+        rel = f"models/{node_id.split('.')[1]}/{name}.sql"
+        manifest_nodes[node_id] = {
+            "resource_type": "model", "name": name, "original_file_path": rel,
+            "schema": "public", "database": "dev", "description": "", "tags": [],
+            "columns": {}, "depends_on": {"nodes": upstream},
+        }
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(sql)
+    (tmp_path / "target").mkdir()
+    (tmp_path / "target" / "manifest.json").write_text(json.dumps({
+        "metadata": {"dbt_schema_version": "v9", "project_name": "jaffle_shop"},
+        "nodes": manifest_nodes,
+        "sources": {},
+    }))
+    return DbtConnector(config={"project_dir": str(tmp_path)})
+
+
+async def test_column_rename_dependent_of_namesake_is_not_renamed(tmp_path):
+    """ref('orders') that the manifest resolves to another package's orders is skipped."""
+    connector = _write_manifest_project(tmp_path, {
+        "model.jaffle_shop.orders": ("orders", [], "select order_date from raw"),
+        "model.other_pkg.orders": ("orders", [], "select order_date from other_raw"),
+        "model.other_pkg.summary": (
+            "summary", ["model.other_pkg.orders"], "select order_date from {{ ref('orders') }}"
+        ),
+    })
+    event = _rename_event().model_copy(update={"affected_entity_ids": []})
+
+    diffs, unverified = await connector.generate_changes(event)
+
+    assert [d.file_path for d in diffs] == ["models/jaffle_shop/orders.sql"]
+    assert {u.entity_id for u in unverified} == {
+        "model.other_pkg.orders",
+        "model.other_pkg.summary",
+    }
+
+
+async def test_column_rename_package_qualified_ref_is_direct_dependent(tmp_path):
+    """ref('jaffle_shop', 'orders') counts as a direct dependent and is renamed."""
+    connector = _write_manifest_project(tmp_path, {
+        "model.jaffle_shop.orders": ("orders", [], "select order_date from raw"),
+        "model.other_pkg.report": (
+            "report", [], "select order_date from {{ ref('jaffle_shop', 'orders') }}"
+        ),
+    })
+    event = _rename_event().model_copy(update={"affected_entity_ids": []})
+
+    diffs, unverified = await connector.generate_changes(event)
+
+    assert unverified == []
+    assert sorted(d.file_path for d in diffs) == [
+        "models/jaffle_shop/orders.sql",
+        "models/other_pkg/report.sql",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("sql", "package", "expected"),
+    [
+        ("select * from {{ ref('orders') }}", None, True),
+        ("select * from {{ ref('jaffle_shop', 'orders') }}", None, True),
+        ("select * from {{ ref(\"jaffle_shop\" , \"orders\") }}", "jaffle_shop", True),
+        ("select * from {{ ref('other_pkg', 'orders') }}", "jaffle_shop", False),
+        ("select * from {{ ref('orders') }}", "jaffle_shop", True),
+        ("select * from {{ ref('orders_v2') }}", None, False),
+    ],
+)
+def test_references_model_handles_package_qualified_refs(sql, package, expected):
+    from puxti.connectors.dbt import _references_model
+
+    assert _references_model(sql, "orders", package=package) is expected
+
+
+async def test_column_rename_versioned_source_matches_ref_by_model_name(tmp_path):
+    """For model.pkg.orders.v1 the fallback looks for ref('orders'), not ref('v1')."""
+    connector = _write_manifest_project(tmp_path, {
+        "model.jaffle_shop.orders.v1": ("orders", [], "select order_date from raw"),
+        "model.jaffle_shop.report": (
+            "report", [], "select order_date from {{ ref('orders', version=1) }}"
+        ),
+    })
+    event = _rename_event().model_copy(update={
+        "entity_id": "model.jaffle_shop.orders.v1.order_date",
+        "affected_entity_ids": [],
+    })
+
+    diffs, unverified = await connector.generate_changes(event)
+
+    assert unverified == []
+    assert sorted(d.file_path for d in diffs) == [
+        "models/jaffle_shop/orders.sql",
+        "models/jaffle_shop/report.sql",
     ]

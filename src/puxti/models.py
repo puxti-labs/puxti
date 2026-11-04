@@ -137,6 +137,7 @@ class UnverifiedReason(str, Enum):
     TASK_ANNOTATION_UNAVAILABLE = "task_annotation_unavailable"
     MODEL_NOT_FOUND = "model_not_found"
     NO_CHANGE = "no_change"
+    SHARED_FILE = "shared_file"
     UNSPECIFIED = "unspecified"
 
     @property
@@ -151,6 +152,7 @@ class UnverifiedReason(str, Enum):
             self.TASK_ANNOTATION_UNAVAILABLE: "task docstring could not be annotated",
             self.MODEL_NOT_FOUND: "model was not found in the schema",
             self.NO_CHANGE: "no change could be generated",
+            self.SHARED_FILE: "file also defines views this change does not affect",
             self.UNSPECIFIED: "no reason was provided by the connector",
         }[self]
 
@@ -161,6 +163,10 @@ class UnverifiedEntity(BaseModel):
     entity_id: str
     reason: UnverifiedReason
     detail: str | None = None
+    is_source: bool | None = None
+    """True when the connector identified this entity as the changed entity's
+    own model or view, False for a downstream dependent. None means the
+    connector did not say; the PR body then falls back to matching on the name."""
 
 
 class PropagationResult(BaseModel):

@@ -228,6 +228,29 @@ class SqlViewsConnector(BaseConnector):
 
         affected_ids = set(event.affected_entity_ids or [])
         views = self._load_views()
+        source_view = next(
+            (v for v in views.values() if v.entity_id == source_parent_id), None
+        )
+
+        def _is_direct(view: _ParsedView) -> bool:
+            # When the source is one of these views, its schema is known: a
+            # same-named relation in another schema is not a dependency.
+            # Otherwise (e.g. a dbt model or Prisma table) match by name only.
+            return any(
+                ref_name == source_parent_name
+                and (
+                    source_view is None
+                    or (ref_schema or self.default_schema) == source_view.schema
+                )
+                for ref_schema, ref_name in view.table_refs
+            )
+
+        def _is_target(view: _ParsedView) -> bool:
+            return view.entity_id == source_parent_id or _is_direct(view)
+
+        views_by_file: dict[Path, list[_ParsedView]] = {}
+        for view in views.values():
+            views_by_file.setdefault(view.file, []).append(view)
 
         diffs: list[FileDiff] = []
         unverified: list[UnverifiedEntity] = []
@@ -239,14 +262,25 @@ class SqlViewsConnector(BaseConnector):
                 continue
 
             is_source = view.entity_id == source_parent_id
-            is_direct = any(
-                ref_name == source_parent_name for _, ref_name in view.table_refs
-            )
-            if not (is_source or is_direct):
+            if not _is_target(view):
                 unverified.append(
                     UnverifiedEntity(
                         entity_id=view.entity_id,
                         reason=UnverifiedReason.NOT_DIRECT_DEPENDENT,
+                        is_source=False,
+                    )
+                )
+                continue
+
+            # The rename rewrites the whole file. If the file also defines a
+            # view this change does not affect, that view would be rewritten
+            # too, so skip the file for manual review instead.
+            if any(not _is_target(other) for other in views_by_file[view.file]):
+                unverified.append(
+                    UnverifiedEntity(
+                        entity_id=view.entity_id,
+                        reason=UnverifiedReason.SHARED_FILE,
+                        is_source=is_source,
                     )
                 )
                 continue
@@ -264,6 +298,7 @@ class SqlViewsConnector(BaseConnector):
                         entity_id=view.entity_id,
                         reason=UnverifiedReason.QUALIFIED_REFERENCE,
                         detail=first_qualified_column_ref(original_sql, old_name),
+                        is_source=is_source,
                     )
                 )
                 continue
@@ -273,6 +308,7 @@ class SqlViewsConnector(BaseConnector):
                     UnverifiedEntity(
                         entity_id=view.entity_id,
                         reason=UnverifiedReason.NO_CHANGE,
+                        is_source=is_source,
                     )
                 )
                 continue

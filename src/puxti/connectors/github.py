@@ -3,7 +3,12 @@ import re
 
 import httpx
 
-from puxti.models import PropagationResult, SemanticChangeEvent, UnverifiedReason
+from puxti.models import (
+    PropagationResult,
+    SemanticChangeEvent,
+    UnverifiedEntity,
+    UnverifiedReason,
+)
 
 _BASE_URL = "https://api.github.com"
 
@@ -304,18 +309,23 @@ def _pr_body(
         sections.append(f"## Requires your attention\n{attention_list}")
 
     if result.unverified_entities:
+        # Prefer the connector's own source decision: matching on the name
+        # would also catch same-named models in other packages. Fall back to
+        # the name when the connector did not set is_source, so the
+        # "Do not merge" warning is never dropped silently.
         entity_parts = event.entity_id.rsplit(".", 1)
         model_part = entity_parts[0] if len(entity_parts) == 2 else event.entity_id
         source_model_name = model_part.rsplit(".", 1)[-1]
 
-        def _is_source_model(entity_id: str) -> bool:
-            return entity_id.rsplit(".", 1)[-1] == source_model_name
+        def _is_source(item: UnverifiedEntity) -> bool:
+            if item.is_source is not None:
+                return item.is_source
+            return item.entity_id.rsplit(".", 1)[-1] == source_model_name
 
         source_qualified = [
             item
             for item in result.unverified_entities
-            if item.reason == UnverifiedReason.QUALIFIED_REFERENCE
-            and _is_source_model(item.entity_id)
+            if item.reason == UnverifiedReason.QUALIFIED_REFERENCE and _is_source(item)
         ]
         source_qualified_ids = {item.entity_id for item in source_qualified}
         other_unverified = [
