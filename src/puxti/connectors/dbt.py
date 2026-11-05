@@ -517,7 +517,15 @@ class DbtConnector(BaseConnector):
             if collision:
                 if is_source:
                     raise collision
-                _logger.warning("Skipping dependent model, flagged as unverified: %s", collision)
+                where = "its YAML documents" if collision.yaml_only else "its SQL already outputs"
+                _logger.warning(
+                    "Skipping rename of `%s` in model `%s`: %s a column named `%s`; "
+                    "flagged as unverified",
+                    old_name,
+                    node["name"],
+                    where,
+                    new_name,
+                )
                 unverified.append(
                     UnverifiedEntity(
                         entity_id=node_id,

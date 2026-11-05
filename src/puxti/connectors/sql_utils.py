@@ -3,6 +3,7 @@
 import re
 
 import sqlglot
+from sqlglot import expressions as exp
 from sqlglot.dialects.dialect import Dialect
 
 # A quoted Jinja string, so a closing delimiter inside it ("}}", "%}") does not
@@ -166,10 +167,16 @@ def parses(sql: str, dialect: str | None = None) -> bool:
 
 
 def output_columns(sql: str, dialect: str | None = None) -> set[str] | None:
-    """Casefolded names the model's final SELECT outputs, or None if it does not parse."""
+    """Casefolded names the model's final SELECT outputs, or None if unknown.
+
+    Unknown when the SQL does not parse or is not a single query, e.g. a model
+    that is one macro call ({{ dbt_utils.union_relations(...) }}).
+    """
     try:
         statement = sqlglot.parse_one(mask_jinja(sql), read=dialect)
     except sqlglot.errors.SqlglotError:
+        return None
+    if not isinstance(statement, exp.Query):
         return None
     return {name.casefold() for name in statement.named_selects}
 

@@ -9,7 +9,7 @@ from puxti.connectors.dbt import (
     DbtConnector,
     _rename_column_in_sql,
 )
-from puxti.connectors.sql_utils import mentions_in_jinja, rename_column_fully
+from puxti.connectors.sql_utils import mentions_in_jinja, output_columns, rename_column_fully
 from puxti.models import (
     ChangeType,
     EdgeType,
@@ -1258,7 +1258,11 @@ async def test_column_rename_collision_in_a_dependent_flags_only_that_model(tmp_
             is_source=False,
         )
     ]
-    assert "model `customer_orders`" in caplog.text
+    assert (
+        "Skipping rename of `order_date` in model `customer_orders`: its SQL already "
+        "outputs a column named `recorded_date`" in caplog.text
+    )
+    assert "Refusing" not in caplog.text
     by_path = {d.file_path: d for d in diffs}
     assert "models/orders.sql" in by_path
     assert "models/customer_orders.sql" not in by_path
@@ -1362,6 +1366,29 @@ async def test_column_rename_leaves_relationships_on_another_packages_model_alon
     diffs, _ = await connector.generate_changes(_yaml_rename_event())
 
     assert "models/other.yml" not in {d.file_path for d in diffs}
+
+
+@pytest.mark.parametrize("sql", [
+    "{{ dbt_utils.union_relations(relations=[ref('a'), ref('b')]) }}",
+    "select 1 as a; select 2 as b",
+    "",
+])
+def test_output_columns_is_unknown_for_sql_that_is_not_one_query(sql):
+    """A model that is a single macro call masks to a bare placeholder: no
+    SELECT list to read, so the answer is unknown, never a crash."""
+    assert output_columns(sql) is None
+
+
+def test_check_column_rename_on_a_macro_only_model_falls_back_to_the_yaml(tmp_path):
+    """With no SELECT list to read, the YAML decides, as for unparseable SQL."""
+    connector = _yaml_project(tmp_path)
+    (tmp_path / "models" / "orders.sql").write_text(
+        "{{ dbt_utils.union_relations(relations=[ref('a'), ref('b')]) }}"
+    )
+
+    connector.check_column_rename(
+        "model.jaffle_shop.orders.order_date", "order_date", "recorded_date"
+    )
 
 
 def test_check_column_rename_passes_without_a_collision(tmp_path):
