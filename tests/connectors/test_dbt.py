@@ -1045,7 +1045,11 @@ models:
 """
 
 
-def _relationships_test(name: str, model: str, to: str, path: str) -> dict:
+def _relationships_test(
+    name: str, model: str, to: str, path: str, to_node: str = "model.jaffle_shop.orders"
+) -> dict:
+    """A relationships test node as dbt writes it: depends_on names both the
+    model it points at and the model it is attached to."""
     return {
         "resource_type": "test",
         "name": name,
@@ -1055,7 +1059,7 @@ def _relationships_test(name: str, model: str, to: str, path: str) -> dict:
             "name": "relationships",
             "kwargs": {"to": to, "field": "order_date", "column_name": "x"},
         },
-        "depends_on": {"nodes": []},
+        "depends_on": {"nodes": [to_node, f"model.jaffle_shop.{model}"]},
     }
 
 
@@ -1127,7 +1131,7 @@ def _yaml_project(
             ),
             "test.jaffle_shop.rel_shipments_customers": _relationships_test(
                 "rel_shipments_customers", "shipments", "ref('customers')",
-                "models/marts/marts.yml",
+                "models/marts/marts.yml", to_node="model.jaffle_shop.customers",
             ),
         },
         "sources": {},
@@ -1317,6 +1321,47 @@ def test_check_column_rename_refuses_a_collision_on_the_source_model(tmp_path):
         connector.check_column_rename(
             "model.jaffle_shop.orders.order_date", "order_date", "recorded_date"
         )
+
+
+def test_check_column_rename_ignores_a_same_named_model_in_another_package(tmp_path):
+    """Only the exact node the entity ID names is checked, as generation does."""
+    connector = _yaml_project(tmp_path)
+    manifest_path = tmp_path / "target" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["nodes"]["model.other_pkg.orders"] = {
+        **manifest["nodes"]["model.jaffle_shop.orders"],
+        "columns": {"recorded_date": {"name": "recorded_date"}},
+    }
+    manifest_path.write_text(json.dumps(manifest))
+
+    connector.check_column_rename(
+        "model.jaffle_shop.orders.order_date", "order_date", "recorded_date"
+    )
+
+
+async def test_column_rename_leaves_relationships_on_another_packages_model_alone(tmp_path):
+    """A relationships test whose ref('orders') resolves to another package's
+    orders (per dbt's depends_on), or that names that package, is not edited."""
+    connector = _yaml_project(tmp_path)
+    other_yml = (
+        "version: 2\n\nmodels:\n  - name: refunds\n    columns:\n"
+        "      - name: order_ref\n        data_tests:\n          - relationships:\n"
+        "              to: ref('orders')\n              field: order_date\n"
+        "          - relationships:\n"
+        "              to: ref('other_pkg', 'orders')\n              field: order_date\n"
+    )
+    (tmp_path / "models" / "other.yml").write_text(other_yml)
+    manifest_path = tmp_path / "target" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["nodes"]["test.other_pkg.rel_refunds_orders"] = _relationships_test(
+        "rel_refunds_orders", "refunds", "ref('orders')", "models/other.yml",
+        to_node="model.other_pkg.orders",
+    )
+    manifest_path.write_text(json.dumps(manifest))
+
+    diffs, _ = await connector.generate_changes(_yaml_rename_event())
+
+    assert "models/other.yml" not in {d.file_path for d in diffs}
 
 
 def test_check_column_rename_passes_without_a_collision(tmp_path):

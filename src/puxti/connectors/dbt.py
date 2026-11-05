@@ -133,13 +133,19 @@ class DbtConnector(BaseConnector):
 
         Raises ColumnRenameCollisionError.
         """
-        source_model_name = _source_model_name(entity_id)
         try:
-            nodes = self._load_manifest().get("nodes", {})
+            manifest = self._load_manifest()
         except FileNotFoundError:
             return
-        for node in nodes.values():
-            if node.get("resource_type") != "model" or node.get("name") != source_model_name:
+        # The exact node when the entity ID names one, so a same-named model in
+        # another package cannot refuse this rename.
+        source_node_id = _source_node_id(manifest, entity_id)
+        source_model_name = _source_model_name(entity_id)
+        for node_id, node in manifest.get("nodes", {}).items():
+            if source_node_id:
+                if node_id != source_node_id:
+                    continue
+            elif node.get("resource_type") != "model" or node.get("name") != source_model_name:
                 continue
             model_path = self._model_file_path(node)
             sql = model_path.read_text() if model_path.exists() else ""
@@ -397,7 +403,7 @@ class DbtConnector(BaseConnector):
         affected_ids = set(event.affected_entity_ids or [])
         diffs: list[FileDiff] = []
         unverified: list[UnverifiedEntity] = []
-        renamed_outputs: list[dict] = []
+        renamed_outputs: dict[str, dict] = {}
 
         for node_id, node in manifest.get("nodes", {}).items():
             if node.get("resource_type") != "model":
@@ -546,7 +552,7 @@ class DbtConnector(BaseConnector):
             if self._documents_column(node, old_name) or self._outputs_column(
                 original_sql, old_name
             ):
-                renamed_outputs.append(node)
+                renamed_outputs[node_id] = node
 
             diffs.append(
                 FileDiff(
@@ -565,15 +571,16 @@ class DbtConnector(BaseConnector):
         return diffs, unverified
 
     def _schema_yml_diffs(
-        self, models: list[dict], old_name: str, new_name: str
+        self, models: dict[str, dict], old_name: str, new_name: str
     ) -> list[FileDiff]:
         """Rename old_name in the YAML that documents the rewritten models.
 
         In the file each model's patch_path names: its `columns:` entry, so the
         column's tests, description, meta and contract data_type move with it,
         and its model-level constraint column lists. In every file the manifest
-        defines a relationships test in: each test whose `to:` refs one of these
-        models and whose `field:` is old_name.
+        defines a relationships test on one of these models (by exact node, from
+        the test's depends_on): each test whose `to:` refs one of them and whose
+        `field:` is old_name.
 
         Only the renamed scalars' characters change (located with yaml.compose),
         so comments, ordering and formatting stay exactly as the user wrote them.
@@ -582,19 +589,25 @@ class DbtConnector(BaseConnector):
             return []
 
         documented: dict[str, set[str]] = {}  # yaml path → models it documents
-        for node in models:
+        for node in models.values():
             if node.get("patch_path"):
                 path = node["patch_path"].split("://", 1)[-1]
                 documented.setdefault(path, set()).add(node["name"])
 
-        renamed = {node["name"] for node in models}
-        test_files = {
-            test["original_file_path"]
-            for test in self._load_manifest().get("nodes", {}).values()
-            if test.get("resource_type") == "test"
-            and test.get("test_metadata", {}).get("name") == "relationships"
-            and test.get("original_file_path")
-        }
+        renamed = {(node_id.split(".")[1], node["name"]) for node_id, node in models.items()}
+        test_files = set()
+        for test in self._load_manifest().get("nodes", {}).values():
+            metadata = test.get("test_metadata") or {}
+            field = (metadata.get("kwargs") or {}).get("field")
+            if (
+                test.get("resource_type") == "test"
+                and metadata.get("name") == "relationships"
+                and isinstance(field, str)
+                and field.casefold() == old_name.casefold()
+                and set(test.get("depends_on", {}).get("nodes") or []) & set(models)
+                and test.get("original_file_path")
+            ):
+                test_files.add(test["original_file_path"])
 
         diffs: list[FileDiff] = []
         for rel_path in sorted(set(documented) | test_files):
@@ -701,11 +714,13 @@ def _documented_column_scalars(
 
 
 def _relationships_field_scalars(
-    node: yaml.Node, model_names: set[str], old_name: str
+    node: yaml.Node, models: set[tuple[str, str]], old_name: str
 ) -> list[yaml.ScalarNode]:
     """`field:` scalars of relationships tests that point old_name at these models.
 
-    Covers both argument styles: `relationships: {to:, field:}` and dbt 1.10's
+    models holds (package, name) pairs. A package-qualified ref('pkg', 'm')
+    must match both; a bare ref('m') matches on the name. Covers both argument
+    styles: `relationships: {to:, field:}` and dbt 1.10's
     `relationships: {arguments: {to:, field:}}`.
     """
     found: list[yaml.ScalarNode] = []
@@ -715,14 +730,19 @@ def _relationships_field_scalars(
                 args = _get(value_node, "arguments") or value_node
                 to, field = _get(args, "to"), _get(args, "field")
                 ref = _REF.match(to.value) if isinstance(to, yaml.ScalarNode) else None
-                if ref and (ref.group(2) or ref.group(1)) in model_names:
-                    if _is_name(field, old_name):
-                        found.append(field)
-            found += _relationships_field_scalars(value_node, model_names, old_name)
+                if ref and _refs_one_of(ref, models) and _is_name(field, old_name):
+                    found.append(field)
+            found += _relationships_field_scalars(value_node, models, old_name)
     elif isinstance(node, yaml.SequenceNode):
         for item in node.value:
-            found += _relationships_field_scalars(item, model_names, old_name)
+            found += _relationships_field_scalars(item, models, old_name)
     return found
+
+
+def _refs_one_of(ref: re.Match, models: set[tuple[str, str]]) -> bool:
+    if ref.group(2):  # ref('package', 'model')
+        return (ref.group(1), ref.group(2)) in models
+    return ref.group(1) in {name for _, name in models}
 
 
 def _replace_scalars(
