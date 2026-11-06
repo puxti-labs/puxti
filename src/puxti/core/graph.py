@@ -260,7 +260,7 @@ class GraphStore(Protocol):
     actually guards parity.
     """
 
-    async def connect(self) -> None: ...
+    async def connect(self, read_only: bool = False) -> None: ...
     async def close(self) -> None: ...
 
     # Entities
@@ -318,6 +318,7 @@ class GraphStore(Protocol):
     # Project management
     # Scan runs
     async def record_scan_run(self, run: ScanRun) -> None: ...
+    async def invalidate_scan_runs(self, connector: str, source: str) -> None: ...
     async def get_last_scan_fingerprint(self, connector: str, source: str) -> str | None: ...
 
     async def get_projects(self) -> list[str]: ...
@@ -331,8 +332,27 @@ class SqliteKnowledgeGraph:
     def __init__(self, db_path: Path | None = None) -> None:
         self._db_path = db_path or DEFAULT_DB_PATH
         self._db: aiosqlite.Connection | None = None
+        # Tables a read-only connection found missing; see connect(read_only=True).
+        self._missing_tables: set[str] = set()
 
-    async def connect(self) -> None:
+    async def connect(self, read_only: bool = False) -> None:
+        """Open the graph. `read_only=True` never creates the file, the schema
+        or a migration: a missing file opens as an empty in-memory database,
+        and has_entities / get_last_scan_fingerprint treat a missing table as
+        empty. For checks that must write nothing (`scan --if-changed --dry-run`)."""
+        if read_only:
+            if str(self._db_path) != ":memory:" and self._db_path.exists():
+                uri = f"{self._db_path.resolve().as_uri()}?mode=ro"
+                self._db = await aiosqlite.connect(uri, uri=True)
+            else:
+                self._db = await aiosqlite.connect(":memory:")
+            self._db.row_factory = aiosqlite.Row
+            async with self._db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ) as cur:
+                present = {row["name"] for row in await cur.fetchall()}
+            self._missing_tables = {"entities", "scan_runs"} - present
+            return
         if str(self._db_path) != ":memory:":
             self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._db = await aiosqlite.connect(str(self._db_path))
@@ -442,6 +462,8 @@ class SqliteKnowledgeGraph:
             return [row["id"] for row in await cur.fetchall()]
 
     async def has_entities(self) -> bool:
+        if "entities" in self._missing_tables:
+            return False
         async with self._db.execute("SELECT 1 FROM entities LIMIT 1") as cur:
             return await cur.fetchone() is not None
 
@@ -879,6 +901,12 @@ class SqliteKnowledgeGraph:
     # ── Scan runs ─────────────────────────────────────────────────────────────
 
     async def record_scan_run(self, run: ScanRun) -> None:
+        # Another checkout of the same project writes the same entity IDs, so a
+        # scan from here makes every other source's run stale.
+        await self._db.execute(
+            "DELETE FROM scan_runs WHERE connector=? AND project=? AND source != ?",
+            (run.connector, run.project, run.source),
+        )
         await self._db.execute(
             "INSERT INTO scan_runs (id, connector, source, project, fingerprint, scanned_at) "
             "VALUES (?, ?, ?, ?, ?, ?)",
@@ -887,7 +915,15 @@ class SqliteKnowledgeGraph:
         )
         await self._db.commit()
 
+    async def invalidate_scan_runs(self, connector: str, source: str) -> None:
+        await self._db.execute(
+            "DELETE FROM scan_runs WHERE connector=? AND source=?", (connector, source)
+        )
+        await self._db.commit()
+
     async def get_last_scan_fingerprint(self, connector: str, source: str) -> str | None:
+        if "scan_runs" in self._missing_tables:
+            return None
         async with self._db.execute(
             "SELECT fingerprint FROM scan_runs WHERE connector=? AND source=? "
             "ORDER BY scanned_at DESC LIMIT 1",

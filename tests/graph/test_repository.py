@@ -347,9 +347,28 @@ async def test_last_scan_fingerprint_is_none_before_any_run(kg: KnowledgeGraph) 
 async def test_last_scan_fingerprint_returns_latest_run_for_source(kg: KnowledgeGraph) -> None:
     await kg.record_scan_run(_run("old", at=1))
     await kg.record_scan_run(_run("new", at=2))
-    await kg.record_scan_run(_run("other", source="/q/manifest.json", at=3))
+    await kg.record_scan_run(_run("other", project="beta", source="/q/manifest.json", at=3))
     assert await kg.get_last_scan_fingerprint("dbt", "/p/manifest.json") == "new"
     assert await kg.get_last_scan_fingerprint("prisma", "/p/manifest.json") is None
+
+
+@pytest.mark.asyncio
+async def test_scan_from_another_checkout_invalidates_the_first(kg: KnowledgeGraph) -> None:
+    # Two checkouts of one project write the same entity IDs, so the first
+    # checkout's run no longer describes the graph.
+    await kg.record_scan_run(_run("a", source="/checkout-a/manifest.json", at=1))
+    await kg.record_scan_run(_run("b", source="/checkout-b/manifest.json", at=2))
+    assert await kg.get_last_scan_fingerprint("dbt", "/checkout-a/manifest.json") is None
+    assert await kg.get_last_scan_fingerprint("dbt", "/checkout-b/manifest.json") == "b"
+
+
+@pytest.mark.asyncio
+async def test_invalidate_scan_runs_drops_only_that_source(kg: KnowledgeGraph) -> None:
+    await kg.record_scan_run(_run("p"))
+    await kg.record_scan_run(_run("q", project="beta", source="/q/manifest.json"))
+    await kg.invalidate_scan_runs("dbt", "/p/manifest.json")
+    assert await kg.get_last_scan_fingerprint("dbt", "/p/manifest.json") is None
+    assert await kg.get_last_scan_fingerprint("dbt", "/q/manifest.json") == "q"
 
 
 @pytest.mark.asyncio
@@ -809,3 +828,36 @@ async def test_postgres_connect_cleans_up_on_setup_failure():
 
     fake_conn.terminate.assert_called_once()
     assert graph._conn is None
+
+
+@pytest.mark.asyncio
+async def test_read_only_connect_on_missing_file_creates_nothing(tmp_path: Path) -> None:
+    db_path = tmp_path / "nested" / "graph.db"
+    graph = SqliteKnowledgeGraph(db_path)
+    await graph.connect(read_only=True)
+    try:
+        assert await graph.has_entities() is False
+        assert await graph.get_last_scan_fingerprint("dbt", "/p/manifest.json") is None
+    finally:
+        await graph.close()
+    assert not db_path.parent.exists()
+
+
+@pytest.mark.asyncio
+async def test_read_only_connect_leaves_an_old_schema_untouched(tmp_path: Path) -> None:
+    db_path = tmp_path / "graph.db"
+    async with aiosqlite.connect(str(db_path)) as raw:
+        await raw.executescript(_OLD_ENTITIES_SCHEMA)
+        await raw.commit()
+
+    graph = SqliteKnowledgeGraph(db_path)
+    await graph.connect(read_only=True)
+    try:
+        assert await graph.get_last_scan_fingerprint("dbt", "/p/manifest.json") is None
+    finally:
+        await graph.close()
+
+    async with aiosqlite.connect(str(db_path)) as raw:
+        async with raw.execute("SELECT name FROM sqlite_master WHERE type='table'") as cur:
+            tables = {row[0] for row in await cur.fetchall()}
+    assert "scan_runs" not in tables

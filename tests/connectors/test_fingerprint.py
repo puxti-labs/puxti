@@ -189,3 +189,15 @@ def test_airflow_fingerprint_tracks_dag_files(tmp_path):
 
 def test_fingerprint_files_none_when_a_file_is_missing(tmp_path):
     assert fingerprint_files(tmp_path, [tmp_path / "gone.sql"]) is None
+
+
+def test_airflow_fingerprint_changes_when_a_dag_symlink_is_renamed(tmp_path):
+    target = tmp_path / "src.py"
+    target.write_text("# dag")
+    dags = tmp_path / "dags"
+    dags.mkdir()
+    (dags / "etl.py").symlink_to(target)
+    connector = AirflowConnector({"dags_dir": str(dags)})
+    before = connector.source_fingerprint().digest
+    (dags / "etl.py").rename(dags / "load.py")
+    assert connector.source_fingerprint().digest != before

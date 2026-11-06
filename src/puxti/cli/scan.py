@@ -83,7 +83,9 @@ def scan(
     )
 
 
-def _fingerprint(connector: BaseConnector) -> SourceFingerprint | None:
+def _fingerprint(
+    connector: BaseConnector, connectors: list[BaseConnector]
+) -> SourceFingerprint | None:
     """A connector's input fingerprint combined with its config and the puxti
     version, since a settings change (a SQL dialect, a default schema) or an
     upgrade can change what extraction produces from the same files. None
@@ -96,8 +98,18 @@ def _fingerprint(connector: BaseConnector) -> SourceFingerprint | None:
         return None
     if fp is None:
         return None
+    # The full connector set is part of every key: cross-connector references
+    # resolve only when connectors are scanned together, so scanning Prisma and
+    # SQL views separately and then together must not look unchanged.
     settings_key = json.dumps(
-        {"config": connector.config, "puxti": __version__}, sort_keys=True, default=str
+        {
+            "config": connector.config,
+            "puxti": __version__,
+            "connectors": sorted(
+                json.dumps([c.name, c.config], sort_keys=True, default=str) for c in connectors
+            ),
+        },
+        sort_keys=True, default=str,
     )
     digest = hashlib.sha256(f"{fp.digest}\0{settings_key}".encode()).hexdigest()
     return SourceFingerprint(source=fp.source, digest=digest)
@@ -125,11 +137,13 @@ async def _rescan_reasons(
 
 async def _report_staleness(
     fingerprints: list[tuple[BaseConnector, SourceFingerprint | None]],
+    read_only: bool,
 ) -> bool:
-    """Print whether a rescan is needed and return True when it is."""
+    """Print whether a rescan is needed and return True when it is. With
+    `read_only`, the graph is inspected without creating it or its schema."""
     graph = KnowledgeGraph()
     try:
-        await graph.connect()
+        await graph.connect(read_only=read_only)
         reasons = await _rescan_reasons(graph, fingerprints)
     finally:
         await graph.close()
@@ -154,10 +168,16 @@ def _project_name(connector: BaseConnector) -> str:
 
 
 async def _record_scan_runs(
-    graph: GraphStore, fingerprints: list[tuple[BaseConnector, SourceFingerprint | None]]
+    graph: GraphStore,
+    fingerprints: list[tuple[BaseConnector, SourceFingerprint | None]],
+    incomplete: set[str],
 ) -> None:
     for connector, fp in fingerprints:
-        if fp is not None:
+        if fp is None:
+            continue
+        if connector.name in incomplete:
+            await graph.invalidate_scan_runs(connector.name, fp.source)
+        else:
             await graph.record_scan_run(ScanRun(
                 connector=connector.name, source=fp.source,
                 project=_project_name(connector), fingerprint=fp.digest,
@@ -184,12 +204,13 @@ async def _run_scan(
     # on the next --if-changed run instead of being recorded as scanned.
     # A plain dry run neither checks nor records, so it skips the hashing.
     fingerprints = (
-        [(c, _fingerprint(c)) for c in connectors] if if_changed or not dry_run else []
+        [(c, _fingerprint(c, connectors)) for c in connectors]
+        if if_changed or not dry_run else []
     )
 
     rescan_needed = False
     if if_changed:
-        if not await _report_staleness(fingerprints):
+        if not await _report_staleness(fingerprints, read_only=dry_run):
             return
         rescan_needed = True
 
@@ -249,7 +270,7 @@ async def _run_scan(
     graph = KnowledgeGraph()
     try:
         await graph.connect()
-        truncated = await _scan_connectors(
+        incomplete = await _scan_connectors(
             scanner, connectors, graph, interactive, reference_index
         )
 
@@ -260,11 +281,10 @@ async def _run_scan(
         # Every connector scanned without error: record what was scanned, so
         # the next --if-changed run can skip. Recorded even when definitions
         # were declined, since entities and lineage were written regardless.
-        # A connector whose edge proposals were truncated is not recorded: the
-        # scanner just asked for a re-run, which --if-changed must not skip.
-        await _record_scan_runs(
-            graph, [(c, fp) for c, fp in fingerprints if c.name not in truncated]
-        )
+        # A connector whose edge proposals were truncated or skipped is not
+        # recorded, and its earlier run is dropped: the scanner just asked for a
+        # re-run, which --if-changed must not skip.
+        await _record_scan_runs(graph, fingerprints, incomplete)
     finally:
         await graph.close()
 
@@ -277,9 +297,10 @@ async def _scan_connectors(
     reference_index: object,
 ) -> set[str]:
     """Scan each connector in turn; return the names of those whose edge
-    proposals were truncated by the token limit."""
+    proposals were incomplete (truncated by the token limit, or a batch skipped
+    for an unusable response)."""
     mode = "interactive" if interactive else "auto"
-    truncated: set[str] = set()
+    incomplete: set[str] = set()
     for connector in connectors:
         console.print(f"\n[bold]Scanning {connector.name}[/bold] ({mode} mode)")
         result = await scanner.scan(
@@ -292,9 +313,9 @@ async def _scan_connectors(
             f"{result.definitions_written} definitions, "
             f"{result.semantic_edges_written} semantic edges written."
         )
-        if result.edge_batches_truncated:
-            truncated.add(connector.name)
-    return truncated
+        if result.edge_batches_truncated or result.edge_batches_failed:
+            incomplete.add(connector.name)
+    return incomplete
 
 
 def _build_name_index(entities: list) -> dict[str, str]:

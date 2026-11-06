@@ -336,6 +336,23 @@ async def test_propose_semantic_edges_skips_batch_with_unusable_shape(
 
 
 @pytest.mark.parametrize("payload", _UNUSABLE_SHAPES)
+async def test_propose_semantic_edges_reports_skipped_batch(payload: object) -> None:
+    backend = _make_backend({})
+    backend.complete = AsyncMock(
+        return_value=LLMResponse(text=json.dumps(payload), truncated=False)
+    )
+    failed: list[None] = []
+
+    await SemanticScanner(backend=backend).propose_semantic_edges(
+        [ORDERS_ENTITY, CUSTOMERS_ENTITY],
+        {ORDERS_ENTITY.id: "Orders.", CUSTOMERS_ENTITY.id: "Customers."},
+        on_batch_failed=lambda: failed.append(None),
+    )
+
+    assert len(failed) == 1
+
+
+@pytest.mark.parametrize("payload", _UNUSABLE_SHAPES)
 async def test_propose_semantic_edges_counts_truncated_unusable_shape(payload: object) -> None:
     backend = _make_backend({})
     backend.complete = AsyncMock(

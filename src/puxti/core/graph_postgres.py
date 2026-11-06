@@ -74,9 +74,15 @@ class PostgresKnowledgeGraph:
         self._conn = None  # asyncpg.Connection, set in connect()
         # Serializes operations on the single shared connection (see _serialized).
         self._lock = asyncio.Lock()
+        # Tables a read-only connection found missing; see connect(read_only=True).
+        self._missing_tables: set[str] = set()
 
     @_serialized
-    async def connect(self) -> None:
+    async def connect(self, read_only: bool = False) -> None:
+        """Open the graph. `read_only=True` skips the schema and migrations
+        and makes the session read-only, so a role without write access can
+        run it; has_entities / get_last_scan_fingerprint treat a missing table
+        as empty."""
         try:
             import asyncpg
         except ModuleNotFoundError as exc:  # pragma: no cover - import guard
@@ -86,6 +92,20 @@ class PostgresKnowledgeGraph:
             ) from exc
 
         self._conn = await asyncpg.connect(self._dsn)
+        if read_only:
+            try:
+                await self._conn.execute(
+                    "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY"
+                )
+                self._missing_tables = {
+                    t for t in ("entities", "scan_runs")
+                    if await self._conn.fetchval("SELECT to_regclass($1)", t) is None
+                }
+            except BaseException:
+                self._conn.terminate()
+                self._conn = None
+                raise
+            return
         try:
             # _SCHEMA is CREATE TABLE/INDEX IF NOT EXISTS and parameter-free, so
             # it runs as a single multi-statement execute.
@@ -199,6 +219,8 @@ class PostgresKnowledgeGraph:
 
     @_serialized
     async def has_entities(self) -> bool:
+        if "entities" in self._missing_tables:
+            return False
         return await self._conn.fetchval("SELECT 1 FROM entities LIMIT 1") is not None
 
     @_serialized
@@ -654,15 +676,29 @@ class PostgresKnowledgeGraph:
 
     @_serialized
     async def record_scan_run(self, run: ScanRun) -> None:
+        async with self._conn.transaction():
+            # See SqliteKnowledgeGraph.record_scan_run.
+            await self._conn.execute(
+                "DELETE FROM scan_runs WHERE connector = $1 AND project = $2 AND source != $3",
+                run.connector, run.project, run.source,
+            )
+            await self._conn.execute(
+                "INSERT INTO scan_runs (id, connector, source, project, fingerprint, scanned_at) "
+                "VALUES ($1, $2, $3, $4, $5, $6)",
+                run.id, run.connector, run.source, run.project, run.fingerprint,
+                run.scanned_at.isoformat(),
+            )
+
+    @_serialized
+    async def invalidate_scan_runs(self, connector: str, source: str) -> None:
         await self._conn.execute(
-            "INSERT INTO scan_runs (id, connector, source, project, fingerprint, scanned_at) "
-            "VALUES ($1, $2, $3, $4, $5, $6)",
-            run.id, run.connector, run.source, run.project, run.fingerprint,
-            run.scanned_at.isoformat(),
+            "DELETE FROM scan_runs WHERE connector = $1 AND source = $2", connector, source
         )
 
     @_serialized
     async def get_last_scan_fingerprint(self, connector: str, source: str) -> str | None:
+        if "scan_runs" in self._missing_tables:
+            return None
         row = await self._conn.fetchrow(
             "SELECT fingerprint FROM scan_runs WHERE connector = $1 AND source = $2 "
             "ORDER BY scanned_at DESC LIMIT 1",

@@ -21,22 +21,24 @@ def fingerprint_files(root: Path, files: Iterable[Path]) -> SourceFingerprint | 
     `root` and its bytes, in sorted path order, so adding, removing, renaming or
     editing any file changes the digest. None when `root` does not exist or a
     file cannot be read (the caller then rescans rather than guessing)."""
-    root = root.resolve()
     if not root.exists():
         return None
     digest = hashlib.sha256()
     try:
-        for file in sorted(Path(f).resolve() for f in files):
+        # Paths are hashed as given, not resolved: renaming a symlink changes
+        # what a scan derives from the filename (an Airflow DAG's id), so it
+        # must change the digest even though the target's bytes did not.
+        for file in sorted(Path(f) for f in files):
             try:
                 rel = file.relative_to(root).as_posix()
             except ValueError:
-                rel = file.as_posix()
+                rel = file.absolute().as_posix()
             digest.update(rel.encode() + b"\0")
             digest.update(hashlib.sha256(file.read_bytes()).digest())
     except OSError as exc:
         logger.warning("Cannot read %s for its scan fingerprint, will rescan: %s", root, exc)
         return None
-    return SourceFingerprint(source=str(root), digest=digest.hexdigest())
+    return SourceFingerprint(source=str(root.resolve()), digest=digest.hexdigest())
 
 
 class BaseConnector(ABC):

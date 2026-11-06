@@ -45,6 +45,7 @@ class Harness:
         self.scans = 0
         self.scan_error: Exception | None = None
         self.truncated = 0
+        self.failed = 0
         self.connectors = lambda: [DbtConnector({"project_dir": str(self.project)})]
 
     def write_manifest(self, manifest: dict) -> None:
@@ -62,6 +63,7 @@ class Harness:
             entities_upserted=1, lineage_edges_upserted=0,
             definitions_written=0, semantic_edges_written=0,
             edge_batches_truncated=self.truncated,
+            edge_batches_failed=self.failed,
         )
 
     def invoke(self, *args: str):
@@ -256,3 +258,46 @@ def test_plain_dry_run_does_not_fingerprint(tmp_path):
     h.connectors = lambda: [connector]
     assert h.invoke("--dry-run").exit_code == 0
     connector.source_fingerprint.assert_not_called()
+
+
+def test_truncation_over_a_matching_baseline_drops_it(tmp_path):
+    h = Harness(tmp_path)
+    h.invoke()
+    h.truncated = 1
+    h.invoke()  # unchanged inputs, but this scan came back partial
+    h.truncated = 0
+    h.invoke("--if-changed")
+    assert h.scans == 3
+
+
+def test_skipped_edge_batches_are_not_recorded(tmp_path):
+    h = Harness(tmp_path)
+    h.invoke()
+    h.failed = 1
+    h.invoke()
+    h.failed = 0
+    h.invoke("--if-changed")
+    assert h.scans == 3
+
+
+def test_scanning_connectors_together_after_separately_rescans(tmp_path):
+    h = Harness(tmp_path)
+    views = tmp_path / "views"
+    views.mkdir()
+    (views / "v.sql").write_text("create view v as select 1 as a")
+    dbt = lambda: DbtConnector({"project_dir": str(h.project)})  # noqa: E731
+    sql = lambda: SqlViewsConnector({"project_dir": str(tmp_path), "views_dir": "views"})  # noqa: E731
+    h.connectors = lambda: [dbt()]
+    h.invoke()
+    h.connectors = lambda: [sql()]
+    h.invoke()
+    h.connectors = lambda: [dbt(), sql()]
+    h.invoke("--if-changed")
+    assert h.scans == 4  # both connectors, scanned together this time
+
+
+def test_dry_run_check_does_not_create_the_graph(tmp_path):
+    h = Harness(tmp_path)
+    result = h.invoke("--if-changed", "--dry-run")
+    assert result.exit_code == EXIT_RESCAN_NEEDED, result.output
+    assert not h.db_path.exists()
