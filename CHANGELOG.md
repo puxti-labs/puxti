@@ -4,7 +4,7 @@
 
 ### Changed
 
-- **Column rename refuses a name the model already has.** Renaming onto a column the renamed model's SQL already outputs, or that its YAML documents, used to produce duplicate columns. The rename is now refused before the LLM call, and `puxti capture` exits with an error that says where the name was found. A downstream model with the same problem is listed as unverified and left unchanged, and everything else still propagates.
+- **Column rename refuses a name the model already has.** Renaming onto a column the renamed model's SQL already outputs, or that its YAML documents, used to produce duplicate columns. The rename is now refused before the LLM call, and `puxti capture` exits with an error that says where the name was found. A downstream model with the same problem is listed as unverified and left unchanged, and everything else still propagates. A model that no longer has `order_date`, because an earlier rename PR already changed it, is not refused, so re-running capture still reaches its dependents.
 - **Column rename skips a rewrite that no longer parses.** A model whose SQL parsed before the rename and does not parse after it is listed as unverified and not written.
 
 ### Fixed

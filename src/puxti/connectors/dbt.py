@@ -149,6 +149,13 @@ class DbtConnector(BaseConnector):
                 continue
             model_path = self._model_file_path(node)
             sql = model_path.read_text() if model_path.exists() else ""
+            # A model without old_name was already renamed, e.g. by the first
+            # hop's PR: re-running capture on it propagates to its dependents.
+            # Generation still refuses if the rewrite turns out to change it.
+            if not (
+                self._outputs_column(sql, old_name) or self._documents_column(node, old_name)
+            ):
+                continue
             collision = self._collision_error(node, sql, old_name, new_name)
             if collision:
                 raise collision

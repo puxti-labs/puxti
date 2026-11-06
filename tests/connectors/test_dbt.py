@@ -1327,6 +1327,32 @@ def test_check_column_rename_refuses_a_collision_on_the_source_model(tmp_path):
         )
 
 
+async def test_column_rename_second_hop_rerun_is_not_refused(tmp_path):
+    """After the first hop's PR, the source model outputs only new_name. Re-running
+    capture on it must not refuse: it reports the source as unchanged and renames
+    its dependents, as the documented multi-hop workflow expects."""
+    connector = _yaml_project(tmp_path)
+    manifest_path = tmp_path / "target" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["nodes"]["model.jaffle_shop.orders"]["columns"] = {
+        c: {"name": c, "description": ""} for c in ("order_id", "recorded_date", "customer_id")
+    }
+    manifest_path.write_text(json.dumps(manifest))
+    (tmp_path / "models" / "orders.sql").write_text(
+        "select order_id, recorded_date, customer_id from raw_orders"
+    )
+
+    connector.check_column_rename(
+        "model.jaffle_shop.orders.order_date", "order_date", "recorded_date"
+    )
+    diffs, unverified = await connector.generate_changes(_yaml_rename_event())
+
+    assert "models/customer_orders.sql" in {d.file_path for d in diffs}
+    assert [(u.entity_id, u.reason) for u in unverified] == [
+        ("model.jaffle_shop.orders", UnverifiedReason.NO_CHANGE)
+    ]
+
+
 def test_check_column_rename_ignores_a_same_named_model_in_another_package(tmp_path):
     """Only the exact node the entity ID names is checked, as generation does."""
     connector = _yaml_project(tmp_path)
