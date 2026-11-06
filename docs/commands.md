@@ -110,7 +110,7 @@ enrichment and never calls GitHub, so it needs neither `--repo` nor
 
 ### Rename safety checks
 
-- **New name already exists.** If the renamed model's SQL already outputs `recorded_date`, or its YAML documents it, the rename is refused before the LLM call and the command exits with an error that says where the name was found. A stale `columns:` entry counts, because dbt keeps only the last of two entries with the same name. A downstream model with the same problem is listed as unverified and left unchanged, and everything else still propagates.
+- **New name already exists.** If the renamed model's SQL already outputs `recorded_date`, or its YAML documents it, the rename is refused before the LLM call and the command exits with an error that says where the name was found. A stale `columns:` entry counts, because dbt keeps only the last of two entries with the same name. A downstream model with the same problem is listed as unverified and left unchanged, and everything else still propagates. A model that no longer has `order_date`, because an earlier rename PR already changed it, is not refused, so re-running capture still reaches its dependents.
 - **Rewrite no longer parses.** A model whose SQL parsed before the rename and does not parse after it is listed as unverified and left unchanged.
 
 ### `capture` options

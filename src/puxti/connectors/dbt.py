@@ -149,6 +149,18 @@ class DbtConnector(BaseConnector):
                 continue
             model_path = self._model_file_path(node)
             sql = model_path.read_text() if model_path.exists() else ""
+            # Refuse only where generation would: a model it skips (Jinja or
+            # qualified reference) or leaves unchanged is never refused there.
+            # Unchanged covers a model the first hop's PR already renamed, so
+            # re-running capture on it still reaches its dependents.
+            if mentions_in_jinja(sql, old_name):
+                continue
+            try:
+                renamed = rename_column_fully(sql, old_name, new_name)
+            except ValueError:
+                continue  # invalid new_name: generation reports it
+            if renamed is None or renamed == sql:
+                continue
             collision = self._collision_error(node, sql, old_name, new_name)
             if collision:
                 raise collision
