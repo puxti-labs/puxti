@@ -1,19 +1,30 @@
 """`puxti scan` — bootstrap the Knowledge Graph from the configured producers."""
 
+import hashlib
+import json
+import logging
 from typing import Optional
 
 import typer
 from rich.panel import Panel
 
+from puxti import __version__
 from puxti.cli._app import app
 from puxti.cli._shared import _load_workspace, _run, console, err_console
+from puxti.connectors.base import BaseConnector
 from puxti.connectors.registry import build_configured_connectors
 from puxti.core.graph import GraphStore, KnowledgeGraph
 from puxti.core.resolution import build_reference_index
 from puxti.core.scanner import SemanticScanner
 from puxti.llm import COST_UNKNOWN_HINT
-from puxti.models import EntityType
+from puxti.models import EntityType, ScanRun, SourceFingerprint
 from puxti.settings import settings
+
+#: Exit code for `scan --if-changed --dry-run` when a rescan is needed, so CI
+#: can tell "stale" from "up to date" (0) and from an error (1).
+EXIT_RESCAN_NEEDED = 3
+
+logger = logging.getLogger(__name__)
 
 
 @app.command()
@@ -28,6 +39,11 @@ def scan(
     ),
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Estimate token count and cost without running the scan."
+    ),
+    if_changed: bool = typer.Option(
+        False, "--if-changed",
+        help="Skip the scan (exit 0) when no connector's inputs changed since the last "
+        "completed scan. With --dry-run, exit 3 when a rescan is needed.",
     ),
 ) -> None:
     """Populate the Knowledge Graph so puxti can propagate changes safely.
@@ -48,18 +64,110 @@ def scan(
     - Interactive (--interactive): walks through each model one by one,
       you confirm or edit each definition before moving to the next.
 
+    --if-changed compares a content hash of every connector's inputs (dbt
+    manifest and model SQL, schema.prisma, SQL view files, DAG files) with the
+    last completed scan, and skips when all of them match. Use it from a git
+    hook or CI.
+
     Nothing is written to the Knowledge Graph without your explicit confirmation.
     Run this before using `puxti redefine`.
     """
     ws = _load_workspace()
     resolved_project_dir = dbt_project_dir or (ws.dbt.project_dir if ws.dbt else None)
     _run(
-        _run_scan(dbt_project_dir=resolved_project_dir, interactive=interactive, dry_run=dry_run),
+        _run_scan(
+            dbt_project_dir=resolved_project_dir, interactive=interactive, dry_run=dry_run,
+            if_changed=if_changed,
+        ),
         command="scan",
     )
 
 
-async def _run_scan(dbt_project_dir: str | None, interactive: bool, dry_run: bool = False) -> None:
+def _fingerprint(connector: BaseConnector) -> SourceFingerprint | None:
+    """A connector's input fingerprint combined with its config and the puxti
+    version, since a settings change (a SQL dialect, a default schema) or an
+    upgrade can change what extraction produces from the same files. None
+    when the connector cannot produce one; errors mean "cannot tell", which
+    always rescans."""
+    try:
+        fp = connector.source_fingerprint()
+    except Exception as exc:
+        logger.warning("Cannot fingerprint %s inputs, will rescan: %s", connector.name, exc)
+        return None
+    if fp is None:
+        return None
+    settings_key = json.dumps(
+        {"config": connector.config, "puxti": __version__}, sort_keys=True, default=str
+    )
+    digest = hashlib.sha256(f"{fp.digest}\0{settings_key}".encode()).hexdigest()
+    return SourceFingerprint(source=fp.source, digest=digest)
+
+
+async def _rescan_reasons(
+    graph: GraphStore, fingerprints: list[tuple[BaseConnector, SourceFingerprint | None]]
+) -> list[str]:
+    """Why a rescan is needed; empty means every connector is unchanged since
+    its last completed scan. An empty graph always needs a scan."""
+    if not await graph.has_entities():
+        return ["the Knowledge Graph is empty"]
+    reasons: list[str] = []
+    for connector, fp in fingerprints:
+        if fp is None:
+            reasons.append(f"{connector.name}: inputs cannot be fingerprinted")
+            continue
+        last = await graph.get_last_scan_fingerprint(connector.name, fp.source)
+        if last is None:
+            reasons.append(f"{connector.name}: never scanned from {fp.source}")
+        elif last != fp.digest:
+            reasons.append(f"{connector.name}: changed since the last scan")
+    return reasons
+
+
+async def _report_staleness(
+    fingerprints: list[tuple[BaseConnector, SourceFingerprint | None]],
+) -> bool:
+    """Print whether a rescan is needed and return True when it is."""
+    graph = KnowledgeGraph()
+    try:
+        await graph.connect()
+        reasons = await _rescan_reasons(graph, fingerprints)
+    finally:
+        await graph.close()
+    if not reasons:
+        console.print(
+            "[green]✓[/green] No changes since the last scan "
+            f"({', '.join(c.name for c, _ in fingerprints)}). Skipping."
+        )
+        return False
+    console.print("[bold]Rescan needed:[/bold]")
+    for reason in reasons:
+        console.print(f"  • {reason}", markup=False)
+    return True
+
+
+def _project_name(connector: BaseConnector) -> str:
+    try:
+        return connector.get_project_name()
+    except Exception as exc:
+        logger.warning("Cannot read %s project name for its scan run: %s", connector.name, exc)
+        return ""
+
+
+async def _record_scan_runs(
+    graph: GraphStore, fingerprints: list[tuple[BaseConnector, SourceFingerprint | None]]
+) -> None:
+    for connector, fp in fingerprints:
+        if fp is not None:
+            await graph.record_scan_run(ScanRun(
+                connector=connector.name, source=fp.source,
+                project=_project_name(connector), fingerprint=fp.digest,
+            ))
+
+
+async def _run_scan(
+    dbt_project_dir: str | None, interactive: bool, dry_run: bool = False,
+    if_changed: bool = False,
+) -> None:
     project_dir = dbt_project_dir or settings.dbt_project_dir
     ws = _load_workspace()
     connectors = build_configured_connectors(ws, dbt_project_dir=project_dir)
@@ -71,6 +179,19 @@ async def _run_scan(dbt_project_dir: str | None, interactive: bool, dry_run: boo
             "connectors in .puxti.yml."
         )
         raise typer.Exit(1)
+
+    # Fingerprinted before scanning, so an edit made mid-scan reads as a change
+    # on the next --if-changed run instead of being recorded as scanned.
+    # A plain dry run neither checks nor records, so it skips the hashing.
+    fingerprints = (
+        [(c, _fingerprint(c)) for c in connectors] if if_changed or not dry_run else []
+    )
+
+    rescan_needed = False
+    if if_changed:
+        if not await _report_staleness(fingerprints):
+            return
+        rescan_needed = True
 
     scanner = SemanticScanner()
 
@@ -112,6 +233,8 @@ async def _run_scan(dbt_project_dir: str | None, interactive: bool, dry_run: boo
             )
         if len(connectors) > 1 and total_cost is not None:
             console.print(f"[bold]Total est. cost:[/bold] ${total_cost:.4f} USD")
+        if rescan_needed:
+            raise typer.Exit(EXIT_RESCAN_NEEDED)
         return
 
     # Cross-connector reference resolution — built from every producer's
@@ -126,25 +249,52 @@ async def _run_scan(dbt_project_dir: str | None, interactive: bool, dry_run: boo
     graph = KnowledgeGraph()
     try:
         await graph.connect()
-        mode = "interactive" if interactive else "auto"
-        for connector in connectors:
-            console.print(f"\n[bold]Scanning {connector.name}[/bold] ({mode} mode)")
-            result = await scanner.scan(
-                connector, graph, interactive=interactive, console=console,
-                reference_index=reference_index,
-            )
-            console.print(
-                f"\n[green]✓[/green] {connector.name} scan complete: "
-                f"{result.entities_upserted} entities, "
-                f"{result.definitions_written} definitions, "
-                f"{result.semantic_edges_written} semantic edges written."
-            )
+        truncated = await _scan_connectors(
+            scanner, connectors, graph, interactive, reference_index
+        )
 
         # Reconcile proposed metrics once, after every connector — a proposed
         # metric can bind to an entity produced by any of them.
         await _reconcile_proposed(graph, interactive)
+
+        # Every connector scanned without error: record what was scanned, so
+        # the next --if-changed run can skip. Recorded even when definitions
+        # were declined, since entities and lineage were written regardless.
+        # A connector whose edge proposals were truncated is not recorded: the
+        # scanner just asked for a re-run, which --if-changed must not skip.
+        await _record_scan_runs(
+            graph, [(c, fp) for c, fp in fingerprints if c.name not in truncated]
+        )
     finally:
         await graph.close()
+
+
+async def _scan_connectors(
+    scanner: SemanticScanner,
+    connectors: list[BaseConnector],
+    graph: GraphStore,
+    interactive: bool,
+    reference_index: object,
+) -> set[str]:
+    """Scan each connector in turn; return the names of those whose edge
+    proposals were truncated by the token limit."""
+    mode = "interactive" if interactive else "auto"
+    truncated: set[str] = set()
+    for connector in connectors:
+        console.print(f"\n[bold]Scanning {connector.name}[/bold] ({mode} mode)")
+        result = await scanner.scan(
+            connector, graph, interactive=interactive, console=console,
+            reference_index=reference_index,
+        )
+        console.print(
+            f"\n[green]✓[/green] {connector.name} scan complete: "
+            f"{result.entities_upserted} entities, "
+            f"{result.definitions_written} definitions, "
+            f"{result.semantic_edges_written} semantic edges written."
+        )
+        if result.edge_batches_truncated:
+            truncated.add(connector.name)
+    return truncated
 
 
 def _build_name_index(entities: list) -> dict[str, str]:

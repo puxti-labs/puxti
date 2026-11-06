@@ -18,6 +18,7 @@ import json
 import logging
 
 from puxti.core.graph import (
+    _PURGE_SCAN_RUNS_SQL,
     _SCHEMA,
     _search_sql,
     _to_definition,
@@ -33,6 +34,7 @@ from puxti.models import (
     Entity,
     EntityStatus,
     EntityType,
+    ScanRun,
     SemanticEdge,
 )
 
@@ -648,9 +650,31 @@ class PostgresKnowledgeGraph:
         )
         return [row["project"] for row in rows]
 
+    # ── Scan runs ─────────────────────────────────────────────────────────────
+
+    @_serialized
+    async def record_scan_run(self, run: ScanRun) -> None:
+        await self._conn.execute(
+            "INSERT INTO scan_runs (id, connector, source, project, fingerprint, scanned_at) "
+            "VALUES ($1, $2, $3, $4, $5, $6)",
+            run.id, run.connector, run.source, run.project, run.fingerprint,
+            run.scanned_at.isoformat(),
+        )
+
+    @_serialized
+    async def get_last_scan_fingerprint(self, connector: str, source: str) -> str | None:
+        row = await self._conn.fetchrow(
+            "SELECT fingerprint FROM scan_runs WHERE connector = $1 AND source = $2 "
+            "ORDER BY scanned_at DESC LIMIT 1",
+            connector, source,
+        )
+        return row["fingerprint"] if row else None
+
     @_serialized
     async def purge_project(self, project: str) -> int:
         async with self._conn.transaction():
+            # A purged project must rescan; see SqliteKnowledgeGraph.purge_project.
+            await self._conn.execute(_PURGE_SCAN_RUNS_SQL, project)
             rows = await self._conn.fetch(
                 "SELECT id FROM entities WHERE project = $1", project
             )
@@ -690,6 +714,6 @@ class PostgresKnowledgeGraph:
             count = row["n"] if row else 0
 
             for table in ("correction_events", "change_events", "definitions",
-                          "semantic_edges", "lineage_edges", "entities"):
+                          "semantic_edges", "lineage_edges", "entities", "scan_runs"):
                 await self._conn.execute(f"DELETE FROM {table}")
         return count

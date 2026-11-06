@@ -645,6 +645,9 @@ The Knowledge Graph keeps a record of what changed and why:
   before/after change and the semantic context.
 - **Correction events** record each `correct`: the old and new definition and
   which edges were kept, updated or removed.
+- **Scan runs** record each completed `scan`: per connector, where its inputs
+  live and a hash of their contents. `scan --if-changed` compares against the
+  latest one.
 
 Each generated PR carries the change ID, so a PR traces back to its change
 event. There is no separate log of PRs opened or merged; GitHub holds that.

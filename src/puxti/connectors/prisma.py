@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from puxti.connectors.base import BaseConnector
+from puxti.connectors.base import BaseConnector, fingerprint_files
 from puxti.models import (
     ChangeType,
     Edge,
@@ -24,6 +24,7 @@ from puxti.models import (
     EntityType,
     FileDiff,
     SemanticChangeEvent,
+    SourceFingerprint,
     UnverifiedEntity,
     UnverifiedReason,
 )
@@ -107,6 +108,15 @@ class PrismaConnector(BaseConnector):
 
     async def health_check(self) -> bool:
         return self.schema_path.exists()
+
+    def source_fingerprint(self) -> SourceFingerprint | None:
+        """Hash of schema.prisma, the only file extraction reads."""
+        if not self.schema_path.is_file():
+            return None
+        files = fingerprint_files(self.schema_path.parent, [self.schema_path])
+        if files is None:
+            return None
+        return SourceFingerprint(source=str(self.schema_path.resolve()), digest=files.digest)
 
     async def extract_entities(self) -> list[Entity]:
         """Prisma models as TABLE entities, scalar fields as COLUMN entities."""

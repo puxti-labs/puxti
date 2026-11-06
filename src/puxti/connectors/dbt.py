@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import re
@@ -5,7 +6,7 @@ from pathlib import Path
 
 import yaml
 
-from puxti.connectors.base import BaseConnector
+from puxti.connectors.base import BaseConnector, fingerprint_files
 from puxti.connectors.sql_utils import (
     _match_case,
     first_jinja_span_containing,
@@ -25,11 +26,51 @@ from puxti.models import (
     EntityType,
     FileDiff,
     SemanticChangeEvent,
+    SourceFingerprint,
     UnverifiedEntity,
     UnverifiedReason,
 )
 
 _logger = logging.getLogger(__name__)
+
+# Manifest fields dbt rewrites on every parse even when the project is
+# unchanged. Left in, every `dbt parse` would look like a change.
+_VOLATILE_METADATA_KEYS = (
+    "generated_at", "invocation_id", "invocation_started_at", "run_started_at",
+)
+
+# Resource fields `dbt compile` adds and `dbt parse` does not. They derive from
+# raw_code and config, which stay in the hash, and the scanner never reads them.
+_COMPILE_ONLY_KEYS = frozenset({
+    "created_at", "compiled", "compiled_code", "compiled_path", "extra_ctes", "extra_ctes_injected",
+})
+
+
+def _stable_manifest(manifest: dict) -> dict:
+    """The manifest minus per-invocation noise: metadata run fields, and each
+    resource's top-level `created_at` and compile output. Only resource-level
+    keys are dropped; a column or config key of that name is project content
+    and stays."""
+    stable = dict(manifest)
+    stable["metadata"] = {
+        k: v for k, v in manifest.get("metadata", {}).items() if k not in _VOLATILE_METADATA_KEYS
+    }
+    for key, collection in manifest.items():
+        if key == "metadata" or not isinstance(collection, dict):
+            continue
+        cleaned: dict = {}
+        for rid, resource in collection.items():
+            if isinstance(resource, dict):
+                resource = {k: v for k, v in resource.items() if k not in _COMPILE_ONLY_KEYS}
+            elif isinstance(resource, list):  # `disabled`: id → list of resources
+                resource = [
+                    {k: v for k, v in r.items() if k not in _COMPILE_ONLY_KEYS}
+                    if isinstance(r, dict) else r
+                    for r in resource
+                ]
+            cleaned[rid] = resource
+        stable[key] = cleaned
+    return stable
 
 
 class ColumnRenameCollisionError(Exception):
@@ -319,6 +360,29 @@ class DbtConnector(BaseConnector):
             metric_id: _metric_definition(metric, measures)
             for metric_id, metric in manifest.get("metrics", {}).items()
         }
+
+    def source_fingerprint(self) -> SourceFingerprint | None:
+        """Hash of the manifest (minus per-parse timestamps) plus every model SQL
+        file the scanner reads from disk, so a SQL edit not yet re-parsed into
+        the manifest still counts as a change."""
+        try:
+            manifest = self._load_manifest()
+        except FileNotFoundError:
+            return None
+        except json.JSONDecodeError as exc:
+            _logger.warning("Cannot parse %s, will rescan: %s", self.manifest_path, exc)
+            return None
+        sql_files = [
+            self._model_file_path(node)
+            for node in manifest.get("nodes", {}).values()
+            if node.get("resource_type") == "model"
+        ]
+        files = fingerprint_files(self.project_dir, [p for p in sql_files if p.exists()])
+        if files is None:
+            return None
+        canonical = json.dumps(_stable_manifest(manifest), sort_keys=True, default=str)
+        digest = hashlib.sha256(canonical.encode() + b"\0" + files.digest.encode()).hexdigest()
+        return SourceFingerprint(source=str(self.manifest_path.resolve()), digest=digest)
 
     def get_project_name(self) -> str:
         """Return the dbt project name from the manifest metadata."""

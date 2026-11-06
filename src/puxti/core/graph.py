@@ -27,6 +27,7 @@ from puxti.models import (
     Entity,
     EntityStatus,
     EntityType,
+    ScanRun,
     SemanticEdge,
 )
 from puxti.settings import settings
@@ -100,7 +101,27 @@ CREATE TABLE IF NOT EXISTS correction_events (
     change_event_id TEXT,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS scan_runs (
+    id TEXT PRIMARY KEY,
+    connector TEXT NOT NULL,
+    source TEXT NOT NULL,
+    project TEXT NOT NULL DEFAULT '',
+    fingerprint TEXT NOT NULL,
+    scanned_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_scan_runs_source ON scan_runs(connector, source, scanned_at);
 """
+
+
+# Shared by both backends' purge_project ($1 is the project; SQLite swaps in ?).
+# Runs recorded under the project go. So do project-less runs (Prisma, SQL
+# views, Airflow name no project) of connectors that owned entities here, since
+# their entity projects ("prisma", a view's schema) never match a run's.
+_PURGE_SCAN_RUNS_SQL = (
+    "DELETE FROM scan_runs WHERE project = $1 OR (project = '' AND connector IN "
+    "(SELECT DISTINCT source_connector FROM entities WHERE project = $1))"
+)
 
 
 def _to_entity(row: aiosqlite.Row) -> Entity:
@@ -295,6 +316,10 @@ class GraphStore(Protocol):
     ) -> None: ...
 
     # Project management
+    # Scan runs
+    async def record_scan_run(self, run: ScanRun) -> None: ...
+    async def get_last_scan_fingerprint(self, connector: str, source: str) -> str | None: ...
+
     async def get_projects(self) -> list[str]: ...
     async def purge_project(self, project: str) -> int: ...
     async def purge_all(self) -> int: ...
@@ -851,6 +876,26 @@ class SqliteKnowledgeGraph:
         )
         await self._db.commit()
 
+    # ── Scan runs ─────────────────────────────────────────────────────────────
+
+    async def record_scan_run(self, run: ScanRun) -> None:
+        await self._db.execute(
+            "INSERT INTO scan_runs (id, connector, source, project, fingerprint, scanned_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (run.id, run.connector, run.source, run.project, run.fingerprint,
+             run.scanned_at.isoformat()),
+        )
+        await self._db.commit()
+
+    async def get_last_scan_fingerprint(self, connector: str, source: str) -> str | None:
+        async with self._db.execute(
+            "SELECT fingerprint FROM scan_runs WHERE connector=? AND source=? "
+            "ORDER BY scanned_at DESC LIMIT 1",
+            (connector, source),
+        ) as cur:
+            row = await cur.fetchone()
+        return row["fingerprint"] if row else None
+
     # ── Project management ────────────────────────────────────────────────────
 
     async def get_projects(self) -> list[str]:
@@ -861,6 +906,8 @@ class SqliteKnowledgeGraph:
             return [row["project"] for row in await cur.fetchall()]
 
     async def purge_project(self, project: str) -> int:
+        # A purged project must rescan (see _PURGE_SCAN_RUNS_SQL).
+        await self._db.execute(_PURGE_SCAN_RUNS_SQL.replace("$1", "?"), (project, project))
         async with self._db.execute(
             "SELECT id FROM entities WHERE project=?", (project,)
         ) as cur:
@@ -887,7 +934,7 @@ class SqliteKnowledgeGraph:
                 f"DELETE FROM correction_events WHERE entity_id IN ({ph})", ids
             )
             await self._db.execute("DELETE FROM entities WHERE project=?", (project,))
-            await self._db.commit()
+        await self._db.commit()
         return count
 
     async def purge_all(self) -> int:
@@ -896,7 +943,7 @@ class SqliteKnowledgeGraph:
         count = row["n"] if row else 0
 
         for table in ("correction_events", "change_events", "definitions",
-                      "semantic_edges", "lineage_edges", "entities"):
+                      "semantic_edges", "lineage_edges", "entities", "scan_runs"):
             await self._db.execute(f"DELETE FROM {table}")
         await self._db.commit()
         return count

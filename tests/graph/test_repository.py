@@ -29,6 +29,7 @@ from puxti.models import (
     Entity,
     EntityStatus,
     EntityType,
+    ScanRun,
     SemanticEdge,
 )
 
@@ -326,6 +327,78 @@ async def test_purge_all(kg: KnowledgeGraph) -> None:
     deleted = await kg.purge_all()
     assert deleted == 2
     assert await kg.get_all_entity_ids() == []
+
+
+# ── Scan runs ────────────────────────────────────────────────────────────────
+
+def _run(fp: str, project: str = "alpha", source: str = "/p/manifest.json", at: int = 1) -> ScanRun:
+    return ScanRun(
+        connector="dbt", source=source, project=project, fingerprint=fp,
+        scanned_at=datetime(2026, 1, 1, 0, 0, at, tzinfo=UTC),
+    )
+
+
+@pytest.mark.asyncio
+async def test_last_scan_fingerprint_is_none_before_any_run(kg: KnowledgeGraph) -> None:
+    assert await kg.get_last_scan_fingerprint("dbt", "/p/manifest.json") is None
+
+
+@pytest.mark.asyncio
+async def test_last_scan_fingerprint_returns_latest_run_for_source(kg: KnowledgeGraph) -> None:
+    await kg.record_scan_run(_run("old", at=1))
+    await kg.record_scan_run(_run("new", at=2))
+    await kg.record_scan_run(_run("other", source="/q/manifest.json", at=3))
+    assert await kg.get_last_scan_fingerprint("dbt", "/p/manifest.json") == "new"
+    assert await kg.get_last_scan_fingerprint("prisma", "/p/manifest.json") is None
+
+
+@pytest.mark.asyncio
+async def test_purge_project_clears_its_scan_runs(kg: KnowledgeGraph) -> None:
+    # No entities in "alpha": its scan runs still go, or --if-changed would skip
+    # a rescan of a purged project.
+    await kg.record_scan_run(_run("a", project="alpha"))
+    await kg.record_scan_run(_run("b", project="beta", source="/q/manifest.json"))
+    await kg.purge_project("alpha")
+    assert await kg.get_last_scan_fingerprint("dbt", "/p/manifest.json") is None
+    assert await kg.get_last_scan_fingerprint("dbt", "/q/manifest.json") == "b"
+
+
+@pytest.mark.asyncio
+async def test_purge_project_clears_runs_of_connectors_owning_its_entities(
+    kg: KnowledgeGraph,
+) -> None:
+    # Prisma entities live in project "prisma" while its scan run has no project.
+    await kg.upsert_entity(Entity(
+        id="prisma.User", name="User", type=EntityType.TABLE,
+        source_connector="prisma", project="prisma",
+    ))
+    await kg.record_scan_run(ScanRun(
+        connector="prisma", source="/p/schema.prisma", project="", fingerprint="x",
+    ))
+    await kg.record_scan_run(_run("keep", project="alpha"))
+    await kg.purge_project("prisma")
+    assert await kg.get_last_scan_fingerprint("prisma", "/p/schema.prisma") is None
+    assert await kg.get_last_scan_fingerprint("dbt", "/p/manifest.json") == "keep"
+
+
+@pytest.mark.asyncio
+async def test_purge_project_keeps_other_projects_of_the_same_connector(
+    kg: KnowledgeGraph,
+) -> None:
+    await kg.upsert_entity(_entity("orders", project="shop"))
+    await kg.upsert_entity(_entity("ledger", project="finance"))
+    await kg.record_scan_run(_run("s", project="shop", source="/shop/manifest.json"))
+    await kg.record_scan_run(_run("f", project="finance", source="/finance/manifest.json"))
+    await kg.purge_project("shop")
+    assert await kg.get_last_scan_fingerprint("dbt", "/shop/manifest.json") is None
+    assert await kg.get_last_scan_fingerprint("dbt", "/finance/manifest.json") == "f"
+
+
+@pytest.mark.asyncio
+async def test_purge_all_clears_scan_runs(kg: KnowledgeGraph) -> None:
+    await kg.record_scan_run(_run("a"))
+    await kg.purge_all()
+    assert await kg.get_last_scan_fingerprint("dbt", "/p/manifest.json") is None
 
 
 @pytest.mark.asyncio
