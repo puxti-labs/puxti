@@ -30,6 +30,7 @@ def test_scan_happy_path_prints_summary():
     mock_graph.connect = AsyncMock()
     mock_graph.close = AsyncMock()
     mock_graph.get_proposed_entities = AsyncMock(return_value=[])
+    mock_graph.invalidate_scan_runs = AsyncMock()
 
     mock_scanner = MagicMock()
     mock_scanner.scan = AsyncMock(return_value=ScanResult(
