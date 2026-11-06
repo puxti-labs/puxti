@@ -1347,10 +1347,34 @@ async def test_column_rename_second_hop_rerun_is_not_refused(tmp_path):
     )
     diffs, unverified = await connector.generate_changes(_yaml_rename_event())
 
-    assert "models/customer_orders.sql" in {d.file_path for d in diffs}
+    customer_diff = next(d for d in diffs if d.file_path == "models/customer_orders.sql")
+    assert customer_diff.before == YAML_CUSTOMER_ORDERS_SQL
+    assert customer_diff.after == YAML_CUSTOMER_ORDERS_SQL.replace("order_date", "recorded_date")
+    assert "models/orders.sql" not in {d.file_path for d in diffs}
     assert [(u.entity_id, u.reason) for u in unverified] == [
         ("model.jaffle_shop.orders", UnverifiedReason.NO_CHANGE)
     ]
+
+
+def test_check_column_rename_refuses_an_alias_onto_the_new_name(tmp_path):
+    """`order_date as recorded_date` outputs only new_name, yet the rewrite still
+    changes the SQL, so generation would refuse: the pre-flight refuses first,
+    before any LLM call."""
+    connector = _yaml_project(tmp_path)
+    manifest_path = tmp_path / "target" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["nodes"]["model.jaffle_shop.orders"]["columns"] = {
+        c: {"name": c, "description": ""} for c in ("order_id", "recorded_date")
+    }
+    manifest_path.write_text(json.dumps(manifest))
+    (tmp_path / "models" / "orders.sql").write_text(
+        "select order_id, order_date as recorded_date from raw_orders"
+    )
+
+    with pytest.raises(ColumnRenameCollisionError):
+        connector.check_column_rename(
+            "model.jaffle_shop.orders.order_date", "order_date", "recorded_date"
+        )
 
 
 def test_check_column_rename_ignores_a_same_named_model_in_another_package(tmp_path):
