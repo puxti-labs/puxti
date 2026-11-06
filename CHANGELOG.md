@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`puxti scan --if-changed` skips an unchanged project.** It hashes what each configured connector reads (the dbt manifest and model SQL, `schema.prisma`, SQL view files, DAG files) together with the connector's settings and the puxti version, and exits 0 without scanning when every hash matches the last completed scan. dbt's per-parse timestamps and compile output are left out, so `dbt parse` or `dbt compile` alone is not a change. With `--dry-run` it exits 3 when a rescan is needed, for use as a CI staleness check. Completed scans are recorded in a new `scan_runs` table, created automatically in existing graphs; `puxti purge` clears the rows for what it removes. See [Rescan only when the project changed](docs/commands.md#rescan-only-when-the-project-changed). ([#44](https://github.com/puxti-labs/puxti/issues/44))
+
 ### Changed
 
 - **Column rename refuses a name the model already has.** Renaming onto a column the renamed model's SQL already outputs, or that its YAML documents, used to produce duplicate columns. The rename is now refused before the LLM call, and `puxti capture` exits with an error that says where the name was found. A downstream model with the same problem is listed as unverified and left unchanged, and everything else still propagates. A model that no longer has `order_date`, because an earlier rename PR already changed it, is not refused, so re-running capture still reaches its dependents.

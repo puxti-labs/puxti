@@ -1,6 +1,44 @@
+import hashlib
+import logging
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
+from pathlib import Path
 
-from puxti.models import Edge, Entity, FileDiff, SemanticChangeEvent, UnverifiedEntity
+from puxti.models import (
+    Edge,
+    Entity,
+    FileDiff,
+    SemanticChangeEvent,
+    SourceFingerprint,
+    UnverifiedEntity,
+)
+
+logger = logging.getLogger(__name__)
+
+
+def fingerprint_files(root: Path, files: Iterable[Path]) -> SourceFingerprint | None:
+    """Fingerprint a set of input files: sha256 over each file's path relative to
+    `root` and its bytes, in sorted path order, so adding, removing, renaming or
+    editing any file changes the digest. None when `root` does not exist or a
+    file cannot be read (the caller then rescans rather than guessing)."""
+    if not root.exists():
+        return None
+    digest = hashlib.sha256()
+    try:
+        # Paths are hashed as given, not resolved: renaming a symlink changes
+        # what a scan derives from the filename (an Airflow DAG's id), so it
+        # must change the digest even though the target's bytes did not.
+        for file in sorted(Path(f) for f in files):
+            try:
+                rel = file.relative_to(root).as_posix()
+            except ValueError:
+                rel = file.absolute().as_posix()
+            digest.update(rel.encode() + b"\0")
+            digest.update(hashlib.sha256(file.read_bytes()).digest())
+    except OSError as exc:
+        logger.warning("Cannot read %s for its scan fingerprint, will rescan: %s", root, exc)
+        return None
+    return SourceFingerprint(source=str(root.resolve()), digest=digest.hexdigest())
 
 
 class BaseConnector(ABC):
@@ -77,6 +115,14 @@ class BaseConnector(ABC):
         what they compute). Connectors with nothing to state return {}.
         """
         return {}
+
+    def source_fingerprint(self) -> SourceFingerprint | None:
+        """Content hash of every input this connector reads during a scan, for
+        `puxti scan --if-changed`. None means "cannot tell", and the scan always
+        runs. Override only when the hash covers everything extract_entities and
+        extract_lineage read: a missed input means a skipped rescan.
+        """
+        return None
 
     def find_model_path(self, entity_id: str) -> str | None:
         """Repo-relative file path of an entity's source file, or None when

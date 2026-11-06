@@ -3,7 +3,7 @@ import re
 from datetime import date
 from pathlib import Path
 
-from puxti.connectors.base import BaseConnector
+from puxti.connectors.base import BaseConnector, fingerprint_files
 from puxti.models import (
     Edge,
     EdgeType,
@@ -11,6 +11,7 @@ from puxti.models import (
     EntityType,
     FileDiff,
     SemanticChangeEvent,
+    SourceFingerprint,
     UnverifiedEntity,
     UnverifiedReason,
 )
@@ -34,6 +35,12 @@ class AirflowConnector(BaseConnector):
 
     async def health_check(self) -> bool:
         return self.dags_dir.exists() and self.dags_dir.is_dir()
+
+    def source_fingerprint(self) -> SourceFingerprint | None:
+        """Hash of the DAG files extraction reads (top-level *.py in dags_dir)."""
+        if not self.dags_dir.is_dir():
+            return None
+        return fingerprint_files(self.dags_dir, self.dags_dir.glob("*.py"))
 
     async def extract_entities(self) -> list[Entity]:
         """Parse DAG files and return Task entities."""

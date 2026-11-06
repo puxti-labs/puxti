@@ -41,6 +41,7 @@ def test_scan_happy_path_prints_summary():
 
     mock_dbt = MagicMock()
     mock_dbt.name = "dbt"
+    mock_dbt.source_fingerprint.return_value = None
 
     with (
         patch("puxti.cli.scan.settings") as mock_settings,
@@ -65,6 +66,7 @@ def test_scan_llm_config_error_is_actionable_not_a_bug_report():
 
     mock_dbt = MagicMock()
     mock_dbt.name = "dbt"
+    mock_dbt.source_fingerprint.return_value = None
 
     with (
         patch("puxti.cli.scan.settings") as mock_settings,

@@ -277,6 +277,7 @@ class SemanticScanner:
         entities: list[Entity],
         definitions: dict[str, str],
         on_batch_done: Callable[[int, int], None] | None = None,
+        on_batch_failed: Callable[[], None] | None = None,
     ) -> tuple[list[SemanticEdge], int]:
         """Propose semantic edges using bounded per-source-entity batching.
 
@@ -290,6 +291,9 @@ class SemanticScanner:
         Returns:
             (edges, truncated_batches) — truncated_batches > 0 means at least one
             batch hit max_tokens. Re-running scan will retry missing edges.
+            `on_batch_failed()` fires for each batch whose response had an
+            unusable shape and was skipped, so callers can tell a partial
+            result from a complete one.
         """
         known_ids = {e.id for e in entities}
         seen: set[tuple[str, str]] = set()
@@ -320,7 +324,8 @@ class SemanticScanner:
             async def _run() -> None:
                 nonlocal completed
                 results[index] = await self._edges_for_sources(
-                    source_batch, definitions, context_block, known_ids
+                    source_batch, definitions, context_block, known_ids,
+                    on_failed=on_batch_failed,
                 )
                 completed += 1
                 if on_batch_done:
@@ -349,6 +354,7 @@ class SemanticScanner:
         definitions: dict[str, str],
         context_block: str,
         known_ids: set[str],
+        on_failed: Callable[[], None] | None = None,
     ) -> tuple[list[SemanticEdge], bool]:
         """Single LLM call proposing edges FROM a small source batch.
 
@@ -401,6 +407,8 @@ class SemanticScanner:
                 "Skipping semantic edge batch: response is not an object with an "
                 "\"edges\" list"
             )
+            if on_failed:
+                on_failed()
             return [], False
 
         source_ids_set = {e.id for e in source_entities}
@@ -541,6 +549,12 @@ class SemanticScanner:
         edges_confirmed = 0
 
         truncated_batches = 0
+        failed_batches = 0
+
+        def _count_failed() -> None:
+            nonlocal failed_batches
+            failed_batches += 1
+
         if defined_entities:
             status = console.status("[bold]Proposing semantic edges...[/bold]")
             with status:
@@ -550,12 +564,18 @@ class SemanticScanner:
                     on_batch_done=lambda done, total: status.update(
                         f"[bold]Proposing semantic edges... batch {done}/{total}[/bold]"
                     ),
+                    on_batch_failed=_count_failed,
                 )
 
             if truncated_batches:
                 console.print(
                     f"[yellow]⚠[/yellow]  {truncated_batches} edge batch(es) hit the token limit "
                     f"and returned partial results. Re-run `puxti scan` to fill in missing edges."
+                )
+            if failed_batches:
+                console.print(
+                    f"[yellow]⚠[/yellow]  {failed_batches} edge batch(es) returned an unusable "
+                    f"response and were skipped. Re-run `puxti scan` to fill in missing edges."
                 )
 
             if proposed_edges:
@@ -570,6 +590,7 @@ class SemanticScanner:
             definitions_written=written,
             semantic_edges_written=edges_confirmed,
             edge_batches_truncated=truncated_batches,
+            edge_batches_failed=failed_batches,
         )
 
     # ── Private helpers ────────────────────────────────────────────────────────
@@ -788,9 +809,11 @@ class ScanResult:
         definitions_written: int,
         semantic_edges_written: int,
         edge_batches_truncated: int = 0,
+        edge_batches_failed: int = 0,
     ) -> None:
         self.entities_upserted = entities_upserted
         self.lineage_edges_upserted = lineage_edges_upserted
         self.definitions_written = definitions_written
         self.semantic_edges_written = semantic_edges_written
         self.edge_batches_truncated = edge_batches_truncated
+        self.edge_batches_failed = edge_batches_failed

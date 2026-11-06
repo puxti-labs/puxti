@@ -36,6 +36,50 @@ When the dbt project defines MetricFlow metrics, scan imports them too. See [Met
 | `--dbt-project-dir` | No | Path to dbt project root (overrides `.puxti.yml` and `DBT_PROJECT_DIR`) |
 | `--interactive` / `-i` | No | Confirm each definition one by one (slower, higher accuracy) |
 | `--dry-run` | No | Estimate token count and cost without running the scan |
+| `--if-changed` | No | Skip the scan (exit 0) when no connector's inputs changed since the last completed scan. With `--dry-run`, exit 3 when a rescan is needed |
+
+### Rescan only when the project changed
+
+`--if-changed` hashes what each configured connector reads: the dbt `manifest.json` and every model's SQL file, `schema.prisma`, the `*.sql` files under `views_dir`, and the DAG files. Each hash also covers the connector's settings from `.puxti.yml` (a SQL `dialect` or `default_schema`, for example) and the puxti version, so a settings change or an upgrade triggers one rescan. It also covers which connectors are configured together, since references between them (a SQL view reading a Prisma table) resolve only when they are scanned in the same run. It compares each hash with the one stored by the last completed scan of that connector and skips when all of them match. LLM provider and model settings are not part of the hash.
+
+```bash
+puxti scan --if-changed
+```
+
+- dbt rewrites `generated_at`, `invocation_id` and each node's `created_at` on every parse, and `dbt compile` adds the compiled SQL. Those fields are left out of the hash, so `dbt parse` or `dbt compile` alone does not count as a change.
+- A scan always runs when the Knowledge Graph is empty, when a connector has never been scanned from its current location, or when a connector's inputs cannot be read.
+- A scan is recorded once it completes without an error, including when you decline the proposed definitions, since entities and lineage are written either way. `--dry-run` and a failed scan record nothing, and neither does a connector whose edge proposals hit the token limit or came back unusable. That connector's earlier record is dropped too, so the re-run the scanner asks for is not skipped.
+- Scanning another checkout of the same project (another clone or worktree) writes the same entities, so it invalidates the first checkout's record.
+- `puxti purge` drops the stored hashes for what it removes, so the next `--if-changed` run rescans.
+
+A changed project still stops at the usual confirmation prompts. Run the scan from a terminal, or a git hook that has one:
+
+```bash
+# .git/hooks/post-merge (chmod +x): rescan after a pull that changed the project
+dbt parse --project-dir path/to/dbt --quiet && puxti scan --if-changed
+```
+
+In CI, where nobody can answer the prompts, use `--dry-run` as a staleness check. It exits 0 when the Knowledge Graph is up to date, 3 when a rescan is needed (after printing the cost estimate), and 1 on an error. It needs the same `DATABASE_URL` as the graph it checks, and only reads it: the check creates no file, table or migration, so a read-only database role works.
+
+```yaml
+# .github/workflows/puxti-staleness.yml
+name: puxti staleness
+on: [pull_request]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv tool install 'puxti[postgres]' && uv tool install dbt-duckdb
+      # dbt parse needs a profile: point DBT_PROFILES_DIR at one for CI
+      - run: dbt parse --project-dir path/to/dbt
+      # The API key is used only for the cost estimate when a rescan is needed
+      - run: puxti scan --if-changed --dry-run --dbt-project-dir path/to/dbt
+        env:
+          DATABASE_URL: ${{ secrets.PUXTI_DATABASE_URL }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+```
 
 ---
 

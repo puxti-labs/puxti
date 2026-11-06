@@ -22,7 +22,7 @@ from pathlib import Path
 import sqlglot
 from sqlglot import expressions as exp
 
-from puxti.connectors.base import BaseConnector
+from puxti.connectors.base import BaseConnector, fingerprint_files
 from puxti.connectors.sql_utils import first_qualified_column_ref, rename_column_fully
 from puxti.models import (
     ChangeType,
@@ -32,6 +32,7 @@ from puxti.models import (
     EntityType,
     FileDiff,
     SemanticChangeEvent,
+    SourceFingerprint,
     UnverifiedEntity,
     UnverifiedReason,
 )
@@ -129,6 +130,12 @@ class SqlViewsConnector(BaseConnector):
 
     async def health_check(self) -> bool:
         return self.views_dir.exists() and self.views_dir.is_dir()
+
+    def source_fingerprint(self) -> SourceFingerprint | None:
+        """Hash of every *.sql file under views_dir, the files _load_views parses."""
+        if not self.views_dir.is_dir():
+            return None
+        return fingerprint_files(self.views_dir, self.views_dir.rglob("*.sql"))
 
     async def extract_entities(self) -> list[Entity]:
         entities: list[Entity] = []

@@ -93,6 +93,27 @@ class SemanticEdge(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+# ── Scan runs ────────────────────────────────────────────────────────────────
+
+class SourceFingerprint(BaseModel):
+    """Content hash of everything a producer connector reads during a scan.
+    `source` identifies where the inputs live (resolved path), so two projects
+    behind the same connector name never share a fingerprint."""
+    source: str
+    digest: str                             # sha256 hex
+
+
+class ScanRun(BaseModel):
+    """One completed `puxti scan` of one connector. `scan --if-changed` compares
+    the latest row per (connector, source) with the current fingerprint."""
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    connector: str
+    source: str
+    project: str = ""
+    fingerprint: str
+    scanned_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 # ── Change events ─────────────────────────────────────────────────────────────
 
 class ChangeEvent(BaseModel):
