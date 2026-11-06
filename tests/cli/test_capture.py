@@ -234,10 +234,15 @@ def _run_capture_with_results(
     semantic_context="order_date renamed to recorded_date.",
     change=None,
     affected=None,
+    propagate_error=None,
+    dbt=None,
+    capture=None,
 ):
     """Run `puxti capture` with a mocked engine returning `results`.
 
     Pass `commit_to_graph` to assert on the Knowledge Graph write.
+    propagate_error makes the engine raise instead; dbt and capture replace the
+    DbtConnector and SemanticCapture mocks.
     Returns (cli_result, github_connector_class_mock, github_mock, engine_class_mock).
     """
     from puxti.models import ChangeType, SemanticChangeEvent
@@ -266,14 +271,16 @@ def _run_capture_with_results(
     mock_graph.upsert_semantic_edge = AsyncMock()
     mock_graph.save_change_event = AsyncMock()
 
-    mock_capture = MagicMock()
+    mock_capture = capture or MagicMock()
     mock_capture.capture = AsyncMock(
         return_value=(semantic_event, commit_to_graph or AsyncMock())
     )
     mock_capture.estimate_cost = AsyncMock(return_value=estimate or _DEFAULT_ESTIMATE)
 
     engine_cls = MagicMock()
-    engine_cls.return_value.propagate = AsyncMock(return_value=results)
+    engine_cls.return_value.propagate = AsyncMock(
+        return_value=results, side_effect=propagate_error
+    )
 
     mock_gh = MagicMock()
     mock_gh.health_check = AsyncMock(return_value=True)
@@ -285,7 +292,7 @@ def _run_capture_with_results(
     mock_gh.add_companion_note = AsyncMock()
     gh_cls = MagicMock(return_value=mock_gh)
 
-    mock_dbt = MagicMock()
+    mock_dbt = dbt or MagicMock()
     mock_dbt.get_project_name = MagicMock(return_value="jaffle_shop")
 
     with (
@@ -331,6 +338,62 @@ def _prop_result(connector, *, with_diff, unverified=()):
         diffs=diffs,
         unverified_entity_ids=list(unverified),
     )
+
+
+def test_capture_refuses_a_rename_that_collides_before_the_llm_call():
+    """#49: a rename onto an existing column of the source model is refused up
+    front — no LLM call, no enrichment to save, no diffs, no PR."""
+    from puxti.connectors.dbt import ColumnRenameCollisionError
+
+    dbt = MagicMock()
+    dbt.check_column_rename.side_effect = ColumnRenameCollisionError(
+        "orders", "order_date", "recorded_date"
+    )
+    capture = MagicMock()
+
+    cli_result, _, mock_gh, engine_cls = _run_capture_with_results(
+        [], dbt=dbt, capture=capture
+    )
+
+    output = " ".join(cli_result.output.split())  # Rich wraps long lines
+    assert cli_result.exit_code == 1
+    assert "already outputs a column named `recorded_date`" in output
+    assert "no pr was opened" in output.lower()
+    capture.capture.assert_not_awaited()
+    engine_cls.assert_not_called()
+    mock_gh.open_pr.assert_not_called()
+
+
+def test_capture_refuses_a_collision_that_surfaces_during_generation():
+    """A source-model collision the pre-flight missed is still a clean refusal."""
+    from puxti.connectors.dbt import ColumnRenameCollisionError
+
+    cli_result, _, mock_gh, _ = _run_capture_with_results(
+        [],
+        propagate_error=ColumnRenameCollisionError(
+            "orders", "order_date", "recorded_date"
+        ),
+    )
+
+    output = " ".join(cli_result.output.split())  # Rich wraps long lines
+    assert cli_result.exit_code == 1
+    assert "on model `orders`" in output
+    assert "Unexpected error" not in output
+    mock_gh.open_pr.assert_not_called()
+
+
+def test_capture_collision_message_is_not_rendered_as_markup():
+    """Model names come from the manifest: print them, never interpret them."""
+    from puxti.connectors.dbt import ColumnRenameCollisionError
+
+    dbt = MagicMock()
+    dbt.check_column_rename.side_effect = ColumnRenameCollisionError(
+        "orders[bold]", "order_date", "recorded_date"
+    )
+
+    cli_result, _, _, _ = _run_capture_with_results([], dbt=dbt)
+
+    assert "orders[bold]" in cli_result.output
 
 
 def test_capture_all_unverified_opens_no_pr():

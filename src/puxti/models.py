@@ -138,6 +138,8 @@ class UnverifiedReason(str, Enum):
     MODEL_NOT_FOUND = "model_not_found"
     NO_CHANGE = "no_change"
     SHARED_FILE = "shared_file"
+    REWRITE_DOES_NOT_PARSE = "rewrite_does_not_parse"
+    NEW_NAME_EXISTS = "new_name_exists"
     UNSPECIFIED = "unspecified"
 
     @property
@@ -153,6 +155,8 @@ class UnverifiedReason(str, Enum):
             self.MODEL_NOT_FOUND: "model was not found in the schema",
             self.NO_CHANGE: "no change could be generated",
             self.SHARED_FILE: "file also defines views this change does not affect",
+            self.REWRITE_DOES_NOT_PARSE: "rewritten SQL no longer parses",
+            self.NEW_NAME_EXISTS: "model already has a column with the new name",
             self.UNSPECIFIED: "no reason was provided by the connector",
         }[self]
 
