@@ -173,11 +173,7 @@ async def _record_scan_runs(
     incomplete: set[str],
 ) -> None:
     for connector, fp in fingerprints:
-        if fp is None:
-            continue
-        if connector.name in incomplete:
-            await graph.invalidate_scan_runs(connector.name, fp.source)
-        else:
+        if fp is not None and connector.name not in incomplete:
             await graph.record_scan_run(ScanRun(
                 connector=connector.name, source=fp.source,
                 project=_project_name(connector), fingerprint=fp.digest,
@@ -270,6 +266,11 @@ async def _run_scan(
     graph = KnowledgeGraph()
     try:
         await graph.connect()
+        # Before anything is written: drop the runs of every connector about to
+        # scan, from this checkout and any other of the same project. A scan
+        # that fails or comes back incomplete then leaves nothing to skip on.
+        for connector in connectors:
+            await graph.invalidate_scan_runs(connector.name, _project_name(connector))
         incomplete = await _scan_connectors(
             scanner, connectors, graph, interactive, reference_index
         )
@@ -282,8 +283,8 @@ async def _run_scan(
         # the next --if-changed run can skip. Recorded even when definitions
         # were declined, since entities and lineage were written regardless.
         # A connector whose edge proposals were truncated or skipped is not
-        # recorded, and its earlier run is dropped: the scanner just asked for a
-        # re-run, which --if-changed must not skip.
+        # recorded: the scanner just asked for a re-run, which --if-changed must
+        # not skip.
         await _record_scan_runs(graph, fingerprints, incomplete)
     finally:
         await graph.close()

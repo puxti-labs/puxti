@@ -49,7 +49,7 @@ puxti scan --if-changed
 - dbt rewrites `generated_at`, `invocation_id` and each node's `created_at` on every parse, and `dbt compile` adds the compiled SQL. Those fields are left out of the hash, so `dbt parse` or `dbt compile` alone does not count as a change.
 - A scan always runs when the Knowledge Graph is empty, when a connector has never been scanned from its current location, or when a connector's inputs cannot be read.
 - A scan is recorded once it completes without an error, including when you decline the proposed definitions, since entities and lineage are written either way. `--dry-run` and a failed scan record nothing, and neither does a connector whose edge proposals hit the token limit or came back unusable. That connector's earlier record is dropped too, so the re-run the scanner asks for is not skipped.
-- Scanning another checkout of the same project (another clone or worktree) writes the same entities, so it invalidates the first checkout's record.
+- A scan drops the stored records for its connectors before it writes anything, including the records of other checkouts of the same project (another clone or worktree), which share its entities. A scan that fails or comes back incomplete therefore leaves no record to skip on.
 - `puxti purge` drops the stored hashes for what it removes, so the next `--if-changed` run rescans.
 
 A changed project still stops at the usual confirmation prompts. Run the scan from a terminal, or a git hook that has one:

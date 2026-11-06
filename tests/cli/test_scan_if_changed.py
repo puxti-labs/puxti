@@ -301,3 +301,39 @@ def test_dry_run_check_does_not_create_the_graph(tmp_path):
     result = h.invoke("--if-changed", "--dry-run")
     assert result.exit_code == EXIT_RESCAN_NEEDED, result.output
     assert not h.db_path.exists()
+
+
+def _second_checkout(h: Harness, tmp_path) -> DbtConnector:
+    """Checkout B: a copy of the same dbt project (same entity IDs) elsewhere."""
+    import shutil
+    other = tmp_path / "shop-b"
+    shutil.copytree(h.project, other)
+    return DbtConnector({"project_dir": str(other)})
+
+
+def test_incomplete_scan_of_another_checkout_invalidates_the_first(tmp_path):
+    h = Harness(tmp_path)
+    checkout_a = h.connectors
+    h.invoke()  # A recorded
+    checkout_b = _second_checkout(h, tmp_path)
+    h.connectors = lambda: [checkout_b]
+    h.truncated = 1
+    h.invoke()  # B wrote entities but came back incomplete
+    h.truncated = 0
+    h.connectors = checkout_a
+    h.invoke("--if-changed")
+    assert h.scans == 3
+
+
+def test_failed_scan_of_another_checkout_invalidates_the_first(tmp_path):
+    h = Harness(tmp_path)
+    checkout_a = h.connectors
+    h.invoke()
+    checkout_b = _second_checkout(h, tmp_path)
+    h.connectors = lambda: [checkout_b]
+    h.scan_error = RuntimeError("boom after writes")
+    assert h.invoke().exit_code == 1
+    h.scan_error = None
+    h.connectors = checkout_a
+    h.invoke("--if-changed")
+    assert h.scans == 2

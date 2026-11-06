@@ -690,9 +690,10 @@ class PostgresKnowledgeGraph:
             )
 
     @_serialized
-    async def invalidate_scan_runs(self, connector: str, source: str) -> None:
+    async def invalidate_scan_runs(self, connector: str, project: str) -> None:
+        # See SqliteKnowledgeGraph.invalidate_scan_runs.
         await self._conn.execute(
-            "DELETE FROM scan_runs WHERE connector = $1 AND source = $2", connector, source
+            "DELETE FROM scan_runs WHERE connector = $1 AND project = $2", connector, project
         )
 
     @_serialized

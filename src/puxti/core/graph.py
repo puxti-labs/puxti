@@ -318,7 +318,7 @@ class GraphStore(Protocol):
     # Project management
     # Scan runs
     async def record_scan_run(self, run: ScanRun) -> None: ...
-    async def invalidate_scan_runs(self, connector: str, source: str) -> None: ...
+    async def invalidate_scan_runs(self, connector: str, project: str) -> None: ...
     async def get_last_scan_fingerprint(self, connector: str, source: str) -> str | None: ...
 
     async def get_projects(self) -> list[str]: ...
@@ -915,9 +915,12 @@ class SqliteKnowledgeGraph:
         )
         await self._db.commit()
 
-    async def invalidate_scan_runs(self, connector: str, source: str) -> None:
+    async def invalidate_scan_runs(self, connector: str, project: str) -> None:
+        """Drop every run of `connector` for `project`, from any source. Called
+        before a scan writes, so a scan that fails or comes back incomplete
+        leaves no run (here or in another checkout) that --if-changed trusts."""
         await self._db.execute(
-            "DELETE FROM scan_runs WHERE connector=? AND source=?", (connector, source)
+            "DELETE FROM scan_runs WHERE connector=? AND project=?", (connector, project)
         )
         await self._db.commit()
 

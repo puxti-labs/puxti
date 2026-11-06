@@ -363,10 +363,10 @@ async def test_scan_from_another_checkout_invalidates_the_first(kg: KnowledgeGra
 
 
 @pytest.mark.asyncio
-async def test_invalidate_scan_runs_drops_only_that_source(kg: KnowledgeGraph) -> None:
+async def test_invalidate_scan_runs_drops_only_that_project(kg: KnowledgeGraph) -> None:
     await kg.record_scan_run(_run("p"))
     await kg.record_scan_run(_run("q", project="beta", source="/q/manifest.json"))
-    await kg.invalidate_scan_runs("dbt", "/p/manifest.json")
+    await kg.invalidate_scan_runs("dbt", "alpha")
     assert await kg.get_last_scan_fingerprint("dbt", "/p/manifest.json") is None
     assert await kg.get_last_scan_fingerprint("dbt", "/q/manifest.json") == "q"
 
