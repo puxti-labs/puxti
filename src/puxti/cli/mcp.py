@@ -25,7 +25,10 @@ def mcp_serve() -> None:
       describe_entity   — type, connector, definition, and semantic edges
 
     \b
-    Claude Code — add to your project's .claude/settings.json:
+    Claude Code:
+      claude mcp add puxti -- puxti mcp serve
+
+    Cursor and other clients — add to the client's mcp.json:
       {
         "mcpServers": {
           "puxti": { "command": "puxti", "args": ["mcp", "serve"] }

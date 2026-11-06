@@ -54,13 +54,14 @@ needs.
 
 ## 2. System overview
 
-Puxti is a Python CLI. It reads from a dbt project (and optionally an Airflow
-project), populates a knowledge graph, and generates GitHub PRs in response to
-declared changes. There is no backend, no hosted service, no account.
+Puxti is a Python CLI with an MCP server. It reads from a dbt project and,
+optionally, Airflow DAGs, a Prisma schema and plain SQL view files, populates a
+knowledge graph, and generates GitHub PRs in response to declared changes.
+There is no backend, no hosted service, no account.
 
 ```
 ┌────────────────────────────────────────────────────────────┐
-│                          CLI                               │
+│                     CLI  ·  MCP server                     │
 │   scan · capture · redefine · link · correct · describe   │
 └──────────────────────────┬─────────────────────────────────┘
                            │
@@ -83,8 +84,8 @@ declared changes. There is no backend, no hosted service, no account.
 ┌────────────────────────────────────────────────────────────┐
 │                   Connector layer                          │
 │                                                            │
-│           dbt          Airflow         GitHub              │
-│       (manifest)      (DAG parse)    (PR creation)         │
+│   dbt        Airflow     Prisma     SQL views    GitHub    │
+│ (manifest) (DAG parse) (schema)  (CREATE VIEW) (PRs)       │
 └────────────────────────────────────────────────────────────┘
 ```
 
@@ -97,7 +98,8 @@ knowledge graph.
 
 The knowledge graph is the persistent state of Puxti. It stores:
 
-- **Entities** — dbt models, columns, sources, Airflow tasks
+- **Entities** — dbt models, sources, columns and metrics, Airflow DAGs and
+  tasks, Prisma tables, SQL views
 - **Definitions** — semantic descriptions of each entity, versioned over time
 - **Structural lineage** — directed graph of code-level dependencies
 - **Semantic edges** — conceptual relationships between entities (derived_from,
@@ -142,13 +144,15 @@ deployments). The schema and stored data are identical across both; the
 
 ## 4. Data model
 
-High-level entity model. Implementation lives in `src/puxti/graph/models.py`.
+High-level entity model. Implementation lives in `src/puxti/models.py`.
 
 ```
 Entity
-  id, name, type (model | column | source | task | dashboard | metric)
+  id, name, type (table | column | model | view | dag | task | dashboard | metric)
   source_connector
-  project              ← dbt project name or Airflow instance name
+  project              ← dbt project name, Airflow DAG, etc.
+  status (proposed | bound)   ← proposed = defined with `define`, not yet bound
+  metadata
   created_at, updated_at
 
 Definition
@@ -160,24 +164,36 @@ Definition
 
 Edge (lineage)
   from_entity_id, to_entity_id
-  type (depends_on | derived_from | feeds | references)
+  type (depends_on | transforms | references | feeds)
   connector
 
+SemanticEdge
+  from_entity_id, to_entity_id
+  type (derived_from, …)
+  description (why the relationship exists)
+  created_by, created_at
+
 ChangeEvent
-  id, type (structural | semantic)
+  id, type (structural | semantic | surface)
   source_entity_id
   change (before/after JSON)
   semantic_context (text)
+  declared_by
   status (detected | captured | propagated | closed)
-  created_at
+  detected_at
 
 CorrectionEvent
   id, entity_id
   old_definition_id, new_definition_id
   edges_kept, edges_updated, edges_removed
   classified_as (correction | real_change)
-  created_at, created_by
+  change_event_id (set for a real change)
+  created_at
 ```
+
+Propagation returns `PropagationResult` records (one per connector with
+changes): the `FileDiff`s to open as a PR, plus the `UnverifiedEntity` records
+for anything skipped, each with an `UnverifiedReason`.
 
 ---
 
@@ -186,7 +202,7 @@ CorrectionEvent
 ### 5.1 `scan` — populate the knowledge graph
 
 ```
-puxti scan --dbt-project-dir <path> [--interactive | --auto]
+puxti scan --dbt-project-dir <path> [--interactive] [--dry-run]
       │
       ▼
 For each configured producer (dbt, prisma, sql_views):
@@ -202,8 +218,8 @@ LLM infers starter definitions from
 source text + upstream context + any descriptions
       │
       ▼
-User confirms (interactive: one at a time)
-        or reviews and confirms in batch (auto)
+User confirms (--interactive: one at a time)
+        or reviews and confirms in batch (default)
       │
       ▼
 Write entities + definitions to knowledge graph
@@ -230,32 +246,38 @@ puxti capture --entity <id> --before <old> --after <new>
               --description <semantic context>
       │
       ▼
+Refuse if the renamed model already has <new>
+(before any LLM call)
+      │
+      ▼
 LLM enriches the description against existing
 knowledge graph context for the entity
       │
       ▼
-Refuse if the renamed model already has <new>
+User confirms → write the enriched definition,
+semantic edges and change event to the KG
       │
       ▼
-Scan dbt models for references to <old>
-      │
-      ▼
-Generate diffs replacing <old> with <new>, plus the
-schema.yml entries and relationships tests that name it
-(a rewrite that no longer parses, or a downstream model
+dbt: rewrite the source model and its direct
+dependents, plus the schema.yml entries and
+relationships tests that name <old>
+(a rewrite that no longer parses, or a dependent
 that already has <new>, is flagged unverified)
       │
       ▼
-If Airflow connector configured:
-  Identify upstream tasks via FEEDS edges
-  Generate annotation diffs for affected DAGs
+Every other configured connector generates its own
+diffs: Airflow docstring annotations, schema.prisma
+renames, SQL view renames
       │
       ▼
-Open PRs (one per affected repo, linked by change_id)
+Show diffs and unverified entities; user confirms
       │
       ▼
-Write change event + propagation results to KG
+Open PRs (one per affected repo, linked by change ID)
 ```
+
+`--dry-run` stops after the diffs are shown and skips both writes: the
+enrichment is never saved and GitHub is never called.
 
 ### 5.3 `redefine` — propagate a semantic change
 
@@ -366,30 +388,37 @@ core never calls connector internals directly — only through the interface.
 from abc import ABC, abstractmethod
 
 class BaseConnector(ABC):
+    name: str = ""   # as used in .puxti.yml and Entity.source_connector
 
     @abstractmethod
-    def health_check(self) -> bool:
+    async def health_check(self) -> bool:
         """Verify connection and required permissions."""
 
     @abstractmethod
-    def extract_schema(self) -> list[Entity]:
-        """Read current state of all entities in this connector."""
+    async def extract_entities(self) -> list[Entity]:
+        """Read all entities owned by this connector."""
 
     @abstractmethod
-    def extract_lineage(self) -> list[Edge]:
-        """Read dependency graph for entities in this connector."""
+    async def extract_lineage(self) -> list[Edge]:
+        """Read the dependency graph for entities in this connector."""
 
     @abstractmethod
-    def generate_changes(self, event: SemanticChangeEvent) -> list[FileDiff]:
-        """Given a semantic change event, generate the required file changes.
+    async def generate_changes(
+        self, event: SemanticChangeEvent
+    ) -> tuple[list[FileDiff], list[UnverifiedEntity]]:
+        """Return the file diffs for a change, plus the entities that were
+        possibly affected but skipped, each with a reason.
         Must NOT write anything — returns diffs only."""
 ```
+
+The full interface, with optional hooks such as `get_model_sql_map`, is in
+`src/puxti/connectors/base.py`.
 
 ### 6.2 Connectors
 
 | Connector | Read (schema + lineage) | Write (generate diff) |
 |---|---|---|
-| `dbt` | yes — parses manifest.json | yes — produces SQL diffs |
+| `dbt` | yes — parses manifest.json | yes — produces SQL and schema.yml diffs |
 | `airflow` | yes — parses DAG files | yes — produces docstring annotations |
 | `prisma` | yes — parses schema.prisma (no Node toolchain) | yes — schema.prisma rename diffs (migration still required, PRs say so) |
 | `sql_views` | yes — parses CREATE VIEW .sql files via sqlglot | yes — produces SQL rename diffs |
@@ -411,6 +440,7 @@ connectors:
     project_dir: ./dbt
     repo: your-org/your-dbt-repo
     base_branch: main
+    repo_subdir: analytics              # optional: project's path inside the repo
 
   airflow:
     project_dir: ./airflow
@@ -454,9 +484,11 @@ wrong one.
 
 ## 7. LLM usage
 
-Puxti uses Anthropic's Claude API for semantic reasoning. LLM calls are never
-in the read path — only in semantic capture, propagation reasoning, and
-scan-time inference.
+Puxti uses an LLM for semantic reasoning: Anthropic's Claude API by default,
+or any provider the user brings (see [Configuration](configuration.md#llm-providers-byok)).
+LLM calls are never in the read path — only in semantic capture, propagation
+reasoning, scan-time inference and `correct`. `impact`, `describe` and the MCP
+tools make none.
 
 ### 7.1 Where LLMs are used
 
@@ -467,14 +499,14 @@ scan-time inference.
 | Scan — semantic edge proposal | Proposes derived_from edges between models |
 | Propagation reasoning | Reasons about non-deterministic semantic changes |
 | `correct` — edge re-assessment | Reviews affected edges when a definition changes |
-| Release note generation | Drafts human-readable change summaries |
 
 ### 7.2 Where LLMs are not used
 
-- Schema diffing (deterministic)
 - dbt model parsing (uses dbt's own manifest)
-- Lineage extraction (deterministic graph traversal)
-- PR generation for purely structural changes (templated)
+- Lineage extraction and impact analysis (deterministic graph traversal)
+- Column rename diffs (deterministic text and YAML edits, checked with sqlglot)
+- PR descriptions (templated)
+- MetricFlow metric definitions (read straight from the YAML)
 
 ### 7.3 Prompt design principles
 
@@ -522,7 +554,15 @@ thousands of lines — deeply chained CTEs, complex window functions,
 multi-stage aggregations. Sending a full large SQL file to an LLM risks
 hitting token limits and producing a truncated, invalid response.
 
-Three strategies, in order of preference:
+**What Puxti does today.** `scan` and `redefine` cap each model's SQL at
+15,000 characters before it goes into a prompt, and mark the cut with
+`-- [truncated at 15000 chars]` so the LLM knows the text is incomplete. In
+`redefine`, a response that comes back as invalid JSON (for example, cut off at
+the output limit) is logged and that model is skipped, never half-applied. Column renames
+make no LLM call, so file size does not affect them.
+
+The strategies below are the intended direction, in order of preference. None
+is implemented yet.
 
 **Selective extraction via SQL AST (preferred).** Since Puxti always knows
 *what changed* (a specific column, table, or concept), a SQL parser
@@ -559,10 +599,10 @@ infrastructure. Every design decision is evaluated against this model.
 | Level | What Puxti can do | When it applies |
 |---|---|---|
 | Read-only | Extract schema, lineage, definitions. No writes anywhere. | Onboarding, initial scan |
-| Propose | Read + open draft PRs in VCS. Cannot merge. | Default operating mode |
-| Auto-apply | Propose + merge PRs that pass all checks. | Not available in v0.6.0 |
+| Propose | Read + open PRs in VCS. Cannot merge. | Default operating mode |
+| Auto-apply | Propose + merge PRs that pass all checks. | Not available |
 
-Auto-apply is intentionally not in v0.6.0 and may never be a default. It might
+Auto-apply is intentionally not available and may never be a default. It might
 be introduced later for specific low-risk change types (e.g. documentation-only
 updates).
 
@@ -573,29 +613,42 @@ updates).
 - Merges its own PRs
 - Stores raw warehouse data — only metadata, schemas, and definitions
 - Sends raw data to LLM providers — only schemas, model SQL, and definitions
-  go to the user's own Anthropic API endpoint
+  go to the LLM provider the user configured, with the user's own key
 
 ### 8.3 What leaves your environment
 
-In OSS mode (v0.6.0), the only outbound traffic from Puxti is to:
+The only outbound traffic from Puxti is to:
 
-- Your own Anthropic API endpoint, with your key. Sends dbt model SQL and
+- The LLM provider you configured, with your key. Sends model SQL and
   metadata (model names, column names, descriptions). No raw warehouse data.
+  With `ollama` or a self-hosted `custom` endpoint, this stays on your
+  infrastructure.
 - Your own GitHub API endpoint, with your token. Reads repo state and opens
   PRs.
-- Your local Neo4j instance.
+- Your Knowledge Graph store: a local SQLite file by default, or the Postgres
+  database `DATABASE_URL` points at.
+- Anonymous usage telemetry, only if you opt in with `puxti telemetry on`:
+  command name, duration, exit status and a random install ID. Off by default.
+  See [TELEMETRY.md](../TELEMETRY.md).
 
-Nothing goes to a Puxti-controlled backend, because there isn't one.
+Nothing else goes to a Puxti-controlled backend, because there isn't one.
 
-### 8.4 Audit log
+### 8.4 Change history
 
-Every action Puxti takes writes to an immutable log:
+The Knowledge Graph keeps a record of what changed and why:
 
-```
-timestamp | actor (user|system) | action | entity | before | after | pr_url
-```
+- **Definitions are versioned, never overwritten.** Each version records who
+  wrote it (`user`, `llm`, `scan`, `correct`) and the change event that
+  produced it. `puxti graph` and the MCP `definition_history` tool show the
+  history; `describe` shows the current version and its author.
+- **Change events** record each `capture` and `redefine`: the entity, the
+  before/after change and the semantic context.
+- **Correction events** record each `correct`: the old and new definition and
+  which edges were kept, updated or removed.
 
-Users can inspect everything Puxti has ever done in their stack.
+Each generated PR carries the change ID, so a PR traces back to its change
+event. There is no separate log of PRs opened or merged; GitHub holds that.
+`puxti purge` deletes these records along with the entities they refer to.
 
 ---
 
@@ -608,9 +661,10 @@ Users can inspect everything Puxti has ever done in their stack.
 | CLI framework | Typer |
 | Settings/validation | Pydantic |
 | Graph store | SQLite (default) or Postgres (opt-in via `DATABASE_URL`) |
-| LLM provider | Anthropic Claude |
-| SQL parsing | `sqlglot` (when needed) |
-| dbt parsing | dbt's own manifest |
+| LLM provider | Anthropic Claude by default; OpenAI-compatible providers via BYOK |
+| SQL parsing | `sqlglot` (SQL views, rename safety checks) |
+| dbt parsing | dbt's own manifest; PyYAML for schema.yml edits |
+| Agent interface | MCP server (`mcp` SDK, stdio transport) |
 | Testing | pytest |
 | Lint/format | Ruff |
 
@@ -637,9 +691,9 @@ interface, so the query logic is written once.
 
 **Why CLI-first rather than a web UI?** The CLI lives in the workflow
 engineers already use. A web UI requires a separate interaction model and
-typically a hosted backend, both of which are additional adoption taxes.
-Eventually both surfaces will exist; CLI first because it's where contributors
-and design partners actually work.
+typically a hosted backend, both of which are additional adoption taxes. The
+OSS package stays CLI-only: `puxti graph` writes a static, read-only HTML view
+of the graph, and coding agents reach it through the MCP server.
 
 **Why generate proposals for non-deterministic changes rather than just
 flagging them?** A proposal with transparent reasoning is useful — the human
@@ -656,15 +710,18 @@ cross-repo transactions?** Cross-repo atomic transactions are fragile and
 hard to roll back. Independent PRs sharing a `change_id` give reviewers in
 each repo full context — "this PR is part of change X which also touches
 dbt and Airflow" — without coupling the PRs to each other's success. The
-change ID is the traceability primitive. Audit logs use it to track the
-full propagation lifecycle.
+change ID is the traceability primitive: it names the PR branch, appears in
+every PR description, and matches the change event in the Knowledge Graph.
 
 **Why force agreement on definition conflicts rather than picking one?**
 When two teams define the same entity differently, silently picking one
 definition would undermine the entire semantic layer. Surfacing the conflict
 explicitly — both definitions side by side, like a merge conflict in
-GitHub — and blocking propagation until both owners agree is intentional.
-Forcing alignment is the product.
+GitHub — and blocking propagation until both owners agree is the intended
+design. It is not implemented yet: today each entity has one current
+definition, every change to it is versioned, and the agent skill from
+`puxti mcp init` tells agents to surface conflicting definitions instead of
+picking one.
 
 **Why not auto-apply?** Auto-applying changes to production data
 infrastructure breaks the trust model. The first auto-applied wrong change

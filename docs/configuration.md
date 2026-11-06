@@ -86,6 +86,7 @@ connectors:
     project_dir: ./dbt
     repo: your-org/your-dbt-repo
     base_branch: main
+    # repo_subdir: analytics   # set when the project is not at the repo root
 
   airflow:
     project_dir: ./airflow
@@ -109,6 +110,8 @@ connectors:
     dialect: postgres
     default_schema: public
 ```
+
+Every connector accepts `project_dir`, `repo`, `base_branch` (default `main`) and `repo_subdir`. Set `repo_subdir` when the project lives in a subdirectory of its repo, so the file paths in generated PRs are relative to the repo root. For `capture`, the `--repo-subdir` flag overrides it on the dbt connector.
 
 With this in place:
 - `--repo` is no longer required for `capture`, `redefine`, or `health`
