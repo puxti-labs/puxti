@@ -18,8 +18,9 @@ The SQL views connector renames a column across the whole `.sql` file. A file th
 
 `puxti capture` lists each skipped entity with the connector's reason. The same
 reason appears in the generated PR: for example, a Jinja reference, a qualified
-column reference, a missing column, or a dependency that cannot be verified as
-a direct reference to the source. Airflow and Prisma also report missing source
+column reference, a missing column, a dependency that cannot be verified as
+a direct reference to the source, a dependent that already has the new name, or
+a rewrite that no longer parses. Airflow and Prisma also report missing source
 files, unavailable task docstrings, or missing schema models as applicable.
 Review these entities manually before merging; generated diffs do not resolve
 the skipped cases. A connector with no diffs opens no PR, but its skipped
@@ -40,9 +41,15 @@ serialized results use `unverified_entities` to retain reasons and details.
 
 ## Column renames and schema.yml
 
-The rename updates the YAML that dbt validates: the column's entry in the model's `schema.yml` (found through the manifest's `patch_path`), the model's constraint column lists, and `relationships` tests (`field:`) that point at a renamed model. Edits change only the renamed names, so comments and formatting stay as you wrote them. Other mentions of the column in YAML are not rewritten, such as arguments of package tests (`dbt_utils.unique_combination_of_columns`), free-text descriptions and `docs` blocks. Review those in the PR.
+The rename updates the YAML that dbt validates: the column's entry in the model's `schema.yml` (found through the manifest's `patch_path`), the model's constraint column lists, and `relationships` tests (`field:`) that point at a renamed model. Edits change only the renamed names, so comments and formatting stay as you wrote them. Other mentions of the column in YAML are not rewritten, such as model-level tests that name it through `column_name:`, arguments of package tests (`dbt_utils.unique_combination_of_columns`), semantic model `dimensions` and `measures`, column entries under a versioned model's `versions:`, free-text descriptions and `docs` blocks. Review those in the PR.
 
 The parse check renders Jinja approximately (both branches of an `{% if %}` are kept), so it flags a model only when its SQL parsed before the rename and does not after.
+
+The new-name check ignores case, as unquoted SQL identifiers do, so a rename that only changes case (`order_date` → `ORDER_DATE`) is refused.
+
+## Column renames reach direct dependents only
+
+`capture` rewrites the source model and the models that `ref()` it directly. Deeper models are listed as unverified, since without column lineage puxti cannot tell where their copy of the column comes from. Merge the first PR, then run `capture` again on the intermediate model's column to reach the next level. See [Commands](commands.md#renames-reach-direct-dependents-only).
 
 ## Finding entity IDs
 

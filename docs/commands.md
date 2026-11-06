@@ -27,6 +27,16 @@ An LLM edge proposal with an invalid relationship type or a missing description,
 
 When the dbt project defines MetricFlow metrics, scan imports them too. See [Metrics](metrics.md#metricflow-metrics-from-dbt).
 
+`--dry-run` reads every configured producer and prints, per connector, how many models it would define and the estimated tokens and cost. It sends no prompts to the LLM (on Anthropic it calls the token counting endpoint for exact counts) and writes nothing to the Knowledge Graph.
+
+### `scan` options
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--dbt-project-dir` | No | Path to dbt project root (overrides `.puxti.yml` and `DBT_PROJECT_DIR`) |
+| `--interactive` / `-i` | No | Confirm each definition one by one (slower, higher accuracy) |
+| `--dry-run` | No | Estimate token count and cost without running the scan |
+
 ---
 
 ## Step 1b — Link upstream producers (optional, but recommended)
@@ -113,6 +123,10 @@ enrichment and never calls GitHub, so it needs neither `--repo` nor
 - **New name already exists.** If the renamed model's SQL already outputs `recorded_date`, or its YAML documents it, the rename is refused before the LLM call and the command exits with an error that says where the name was found. A stale `columns:` entry counts, because dbt keeps only the last of two entries with the same name. A downstream model with the same problem is listed as unverified and left unchanged, and everything else still propagates. A model that no longer has `order_date`, because an earlier rename PR already changed it, is not refused, so re-running capture still reaches its dependents.
 - **Rewrite no longer parses.** A model whose SQL parsed before the rename and does not parse after it is listed as unverified and left unchanged.
 
+### Renames reach direct dependents only
+
+A rename rewrites the source model and the models that `ref()` it directly. Models further downstream are listed as unverified, because without column lineage puxti cannot tell whether their `order_date` comes from the renamed column. To reach the next level, merge the first PR and run the same `capture` command on the intermediate model's column. That model already outputs `recorded_date`, so it is reported as unchanged and its own dependents are rewritten.
+
 ### `capture` options
 
 | Flag | Required | Description |
@@ -124,6 +138,7 @@ enrichment and never calls GitHub, so it needs neither `--repo` nor
 | `--repo` | No | GitHub repo for the PR (`owner/repo`) — required unless `--dry-run` or set in `.puxti.yml` |
 | `--base-branch` | No | Base branch for the PR (default: `main`, or from `.puxti.yml`) |
 | `--dbt-project-dir` | No | Path to dbt project root (overrides `.puxti.yml` and `DBT_PROJECT_DIR`) |
+| `--repo-subdir` | No | Subdirectory of the repo where the dbt project lives (e.g. `analytics`), so PR file paths are relative to the repo root. Overrides `repo_subdir` in `.puxti.yml` |
 | `--dry-run` | No | Show the cost estimate and the generated diffs without saving to the Knowledge Graph or calling GitHub. Calls the LLM |
 
 ---

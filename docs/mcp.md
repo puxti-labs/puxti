@@ -2,7 +2,15 @@
 
 Puxti ships an MCP server so coding agents can query your knowledge graph without leaving their context window.
 
-**Add to Claude Code** (`~/.claude/claude_code_config.json`):
+**Add to Claude Code:**
+
+```bash
+claude mcp add puxti -- puxti mcp serve
+```
+
+Add `--scope project` to write it to the project's `.mcp.json` instead, so everyone working in the repo gets it.
+
+**Add to Cursor** (`.cursor/mcp.json` in the project, or `~/.cursor/mcp.json` for all projects):
 
 ```json
 {
@@ -14,6 +22,8 @@ Puxti ships an MCP server so coding agents can query your knowledge graph withou
   }
 }
 ```
+
+The same `command` and `args` work for any other MCP client that launches stdio servers.
 
 Once connected, five read-only tools are available:
 
@@ -43,6 +53,7 @@ failure that makes agentic analytics untrustworthy.
 ```bash
 puxti mcp init            # writes .claude/skills/puxti-analytics/SKILL.md
 puxti mcp init --print    # same markdown to stdout — paste into Cursor rules, CLAUDE.md, any agent
+puxti mcp init --force    # overwrite an existing skill file, e.g. after upgrading puxti
 ```
 
 The skill instructs the agent to check each entity's current definition and

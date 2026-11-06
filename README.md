@@ -20,7 +20,7 @@ Python 3.12 or 3.13 required. No signup, no license key.
 
 Puxti sits in the critical path of making data changes. Every change goes through two layers:
 
-- **Structural layer** — entities, lineage edges, and column-level relationships extracted from your dbt manifest
+- **Structural layer** — entities and lineage extracted from your dbt manifest and, optionally, Airflow DAGs, a Prisma schema and SQL view files
 - **Semantic layer** — business definitions and conceptual dependencies between entities, captured when changes are made
 
 Together, these layers let Puxti reason about what a change *means* across the stack, not just what it touches mechanically.
@@ -29,9 +29,9 @@ Together, these layers let Puxti reason about what a change *means* across the s
 
 | Case | Example | How Puxti handles it |
 |------|---------|----------------------|
-| Column rename | `order_date` → `recorded_date` | Deterministic find-and-replace across all dbt models, opened as a PR |
-| Definition redefinition | `gross_revenue` now excludes refunds | Traverses the semantic graph to find downstream entities whose *meaning* is now affected — annotates files for human review |
-| Cross-system change | An Airflow DAG change affects a dbt source | `puxti link` declares the cross-system edge; `puxti capture` generates coordinated PRs in both repos |
+| Column rename | `order_date` → `recorded_date` | Deterministic rename in the model, its direct dependents and the matching `schema.yml` entries, opened as a PR. Anything it cannot rename safely is listed for manual review |
+| Definition redefinition | `gross_revenue` now excludes refunds | Traverses the semantic graph to find downstream entities whose *meaning* is now affected, proposes SQL diffs labelled by confidence, and annotates deeper models for human review |
+| Cross-system change | An Airflow DAG change affects a dbt source | `puxti link` declares the cross-system edge; `puxti capture` opens one PR per affected repo, linked by a change ID |
 
 ---
 
@@ -42,7 +42,7 @@ Together, these layers let Puxti reason about what a change *means* across the s
 - **GitHub personal access token** with `repo` scope (Contents + Pull requests write)
 - **A dbt project** with a compiled `manifest.json` (`dbt compile` or `dbt run`)
 
-Puxti runs fully locally. No data or metadata leaves your machine except the calls to your LLM provider and GitHub.
+Puxti runs fully locally. No data or metadata leaves your machine except the calls to your LLM provider and GitHub, and anonymous usage telemetry if you opt in (off by default).
 
 ---
 
@@ -50,13 +50,13 @@ Puxti runs fully locally. No data or metadata leaves your machine except the cal
 
 ```bash
 pip install puxti
-cp .env.example .env      # set ANTHROPIC_API_KEY, GITHUB_TOKEN, DBT_PROJECT_DIR
+export ANTHROPIC_API_KEY=sk-ant-... GITHUB_TOKEN=ghp_... DBT_PROJECT_DIR=./dbt   # or put them in a .env file
 puxti health              # verify the key, the manifest and GitHub access
 puxti scan                # build the Knowledge Graph; nothing is written without your confirmation
 puxti impact model.jaffle_shop.orders   # what depends on orders, no LLM call
 ```
 
-Then connect a coding agent so it can query the graph: add `puxti mcp serve` as an MCP server and run `puxti mcp init` to install the agent skill. See [MCP](https://github.com/puxti-labs/puxti/blob/main/docs/mcp.md).
+Then connect a coding agent so it can query the graph: in Claude Code run `claude mcp add puxti -- puxti mcp serve`, then `puxti mcp init` to install the agent skill. See [MCP](https://github.com/puxti-labs/puxti/blob/main/docs/mcp.md).
 
 ---
 
@@ -75,6 +75,7 @@ Then connect a coding agent so it can query the graph: add `puxti mcp serve` as 
 | `puxti mcp serve` / `puxti mcp init` | Serve the graph to coding agents and teach them to use it |
 | `puxti config` / `puxti health` | Show resolved config and check connectivity |
 | `puxti purge` | Remove a project or the whole graph |
+| `puxti telemetry` | Turn anonymous usage telemetry on or off, or show its state |
 
 ---
 

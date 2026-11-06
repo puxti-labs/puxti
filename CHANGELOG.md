@@ -9,6 +9,7 @@
 
 ### Fixed
 
+- **MCP setup instructions point at the right place.** `puxti mcp serve --help` and the MCP guide told Claude Code users to edit a config file Claude Code does not read for MCP servers. They now use `claude mcp add puxti -- puxti mcp serve`, and the guide adds Cursor setup.
 - **Column rename keeps `schema.yml` consistent.** A rename PR used to change only `.sql` files, so `dbt test` and model contracts broke on the old name. The column's `columns:` entry in the model's `schema.yml` is now renamed too, so its tests, description, meta and contract `data_type` move with it. The model's constraint column lists and `relationships` tests on other models that point at the renamed column are updated as well. Only the renamed names change, so comments and formatting are kept. ([#49](https://github.com/puxti-labs/puxti/issues/49))
 
 ## [0.19.0] — 2026-11-04
