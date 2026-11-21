@@ -1,6 +1,6 @@
 [project]
 name = "puxti-bi-core"
-version = "0.20.0"
+version = "0.21.0"
 description = "BI assets as code: the spec schema for datasets, charts and dashboards used by Puxti."
 readme = "README.md"
 requires-python = ">=3.12"
