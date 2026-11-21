@@ -1,0 +1,9 @@
+apiVersion: puxti/v1alpha1
+kind: chart
+name: total_revenue
+dataset: orders
+type: big_number
+metric: revenue
+superset:
+  params:
+    subheader: All time

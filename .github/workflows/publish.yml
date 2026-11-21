@@ -16,7 +16,7 @@ jobs:
           version: "latest"
 
       - name: Install dependencies
-        run: uv sync --extra dev
+        run: uv sync --all-packages --extra dev
 
       - name: Run tests
         run: uv run pytest
@@ -26,9 +26,10 @@ jobs:
   publish-pypi:
     needs: test
     runs-on: ubuntu-latest
+    environment: pypi
     permissions:
       contents: read
-      packages: write
+      id-token: write
     steps:
       - uses: actions/checkout@v5
 
@@ -37,23 +38,13 @@ jobs:
           version: "latest"
 
       - name: Install dependencies
-        run: uv sync --extra dev
+        run: uv sync --all-packages --extra dev
 
-      - name: Build
-        run: uv build
+      - name: Build every package
+        run: uv build --all-packages --no-sources -o dist
 
       - name: Check sdist contents
-        run: |
-          SDIST=$(ls dist/*.tar.gz)
-          # grep exits 1 when nothing is unexpected (the good case); without
-          # `|| true` that status reaches the assignment and `bash -e` aborts.
-          UNEXPECTED=$(tar -tzf "$SDIST" | sed 's|^[^/]*/||' | grep -Ev '^src/puxti/|^$|^(pyproject\.toml|LICENSE|NOTICE\.md|README\.md|SECURITY\.md|TELEMETRY\.md|\.env\.example|\.gitignore|PKG-INFO)$' || true)
-          if [ -n "$UNEXPECTED" ]; then
-            echo "ERROR: unexpected files in sdist:"
-            echo "$UNEXPECTED" | sed 's/^/  /'
-            exit 1
-          fi
-          echo "sdist clean: $(basename $SDIST)"
+        run: scripts/check_sdist.sh dist
 
       - name: Publish to PyPI
-        run: uv publish --token ${{ secrets.PYPI_API_TOKEN }}
+        run: uv publish

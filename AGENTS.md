@@ -33,12 +33,17 @@ reviewable GitHub PRs. Commands are registered in `src/puxti/cli/__init__.py`
 - `src/puxti/settings.py` — pydantic settings, reads from `.env`.
 - `src/puxti/workspace.py` — discovers and loads `.puxti.yml`.
 - `tests/` — mirrors `src/puxti/`.
+- `packages/` — uv workspace members, released with puxti under one version.
+  `packages/puxti-bi-core/` holds the BI spec schema (datasets, charts, dashboards
+  as YAML) and its JSON Schema; it must never import `puxti`. See
+  `docs/bi-specs.md` and issue #28. After changing the spec models, run
+  `make bi-schema` and commit the regenerated JSON Schema.
 
 ## Conventions
 
-- Type hints on all function signatures. Run `uv run ruff check src/` to
-  verify.
-- Format with `uv run ruff format src/`.
+- Type hints on all function signatures. Run `uv run ruff check src/ packages/`
+  to verify.
+- Format with `uv run ruff format src/ packages/`.
 - Pydantic for data models. No raw dicts crossing module boundaries.
 - Use the structured logger, not `print`. CLI output formatting is the
   exception — Typer/Rich output is fine in `puxti/cli/`.
@@ -49,11 +54,11 @@ reviewable GitHub PRs. Commands are registered in `src/puxti/cli/__init__.py`
 ## Running things
 
 ```bash
-uv sync --extra dev          # install with dev dependencies
+uv sync --all-packages --extra dev   # install with dev dependencies and workspace packages
 uv run pytest                # all tests
 uv run pytest tests/core/    # one module's tests
-uv run ruff check src/       # lint
-uv run ruff format src/      # format
+uv run ruff check src/ packages/   # lint
+uv run ruff format src/ packages/  # format
 ```
 
 The test suite is self-contained — the Knowledge Graph is a local SQLite

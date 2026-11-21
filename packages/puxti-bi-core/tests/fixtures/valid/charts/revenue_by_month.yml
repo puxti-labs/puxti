@@ -1,0 +1,9 @@
+apiVersion: puxti/v1alpha1
+kind: chart
+name: revenue_by_month
+title: Revenue by month
+dataset: orders
+type: line
+x: { column: ordered_at, grain: month }
+metrics: [revenue]
+group_by: [region]

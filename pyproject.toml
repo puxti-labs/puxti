@@ -43,6 +43,7 @@ dev = [
     "ruff>=0.5.0",
     "twine>=5.0.0",
     "asyncpg>=0.29.0",
+    "jsonschema>=4.0.0",
 ]
 
 [project.scripts]
@@ -55,13 +56,16 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "I"]
 
+[tool.ruff.lint.isort]
+known-first-party = ["puxti", "puxti_bi_core"]
+
 [tool.ruff.lint.per-file-ignores]
 # Embedded HTML/CSS/JS asset; long lines are inherent to the markup.
 "src/puxti/graph_template.py" = ["E501"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["tests"]
+testpaths = ["tests", "packages/puxti-bi-core/tests"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/puxti"]
@@ -77,7 +81,16 @@ exclude = [
   "CHANGELOG.md",
   "CONTRIBUTING.md",
   "docs",
+  "packages",
+  "scripts",
 ]
+
+# Workspace members are released together with puxti under one version.
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+puxti-bi-core = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

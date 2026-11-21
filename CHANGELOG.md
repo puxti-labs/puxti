@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`puxti-bi-core`, the spec schema for BI assets as code.** A new package, released with puxti under the same version, that defines datasets, charts and dashboards as YAML files (`apiVersion: puxti/v1alpha1`), loads a folder of them with errors that name the file and line, and publishes their JSON Schema. The schema is a draft and may still change. No puxti command reads specs yet; validation and impact analysis on them come next. See [BI specs](docs/bi-specs.md). ([#28](https://github.com/puxti-labs/puxti/issues/28))
+
 ## [0.20.0] — 2026-11-06
 
 ### Added
