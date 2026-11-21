@@ -22,7 +22,7 @@ from puxti.connectors.registry import build_configured_connectors
 from puxti.core.capture import SemanticCapture, _build_user_message
 from puxti.core.graph import KnowledgeGraph
 from puxti.llm import COST_UNKNOWN_HINT
-from puxti.models import ChangeEvent, ChangeType
+from puxti.models import ChangeEvent, ChangeType, UnverifiedReason
 from puxti.propagation.engine import PropagationEngine
 from puxti.settings import settings
 
@@ -269,19 +269,19 @@ async def _run_capture(
                 # Only the source model refuses: dependents come back unverified.
                 _refuse_rename(exc)
 
-        if not results:
+        # The cross-project hint applies whenever nothing produced a diff, even
+        # when another connector (e.g. bi) still listed entities for review.
+        if not any(r.diffs for r in results):
             affected = semantic_event.affected_entity_ids or []
             # Detect cross-project case: affected dbt entities belong to a
             # different dbt project than the one currently configured. Only
             # dbt-shaped IDs carry a project segment in position 1.
-            current_project = dbt.get_project_name()
-            foreign_projects = {
+            dbt_projects = {
                 eid.split(".")[1]
                 for eid in affected
-                if eid.split(".")[0] in ("model", "source")
-                and len(eid.split(".")) >= 2
-                and eid.split(".")[1] != current_project
+                if eid.split(".")[0] in ("model", "source") and len(eid.split(".")) >= 2
             }
+            foreign_projects = dbt_projects - {dbt.get_project_name()} if dbt_projects else set()
             if foreign_projects:
                 projects_hint = ", ".join(f"`{escape(p)}`" for p in sorted(foreign_projects))
                 console.print(
@@ -289,12 +289,13 @@ async def _run_capture(
                     f"a different dbt project ({projects_hint}). Re-run with "
                     f"[bold]--dbt-project-dir[/bold] pointing to that project's root."
                 )
-            else:
+            elif not results:
                 console.print(
                     "[yellow]No diffs generated.[/yellow] "
                     "No files reference this entity in the configured dbt project."
                 )
-            return
+            if not results:
+                return
 
         # Rebase diff paths onto each connector's repo layout. Diff paths come
         # back relative to the connector's own project root; the PR needs them
@@ -338,13 +339,20 @@ async def _run_capture(
                 f"[yellow]⚠ {len(all_unverified)} entity record(s) were flagged as potentially "
                 "affected but could not be safely propagated.[/yellow]"
             )
-            console.print(
-                "  Puxti could not confirm the "
-                f"`{escape(column_name)}` column in these entities traces back to the "
-                "renamed source — this can happen with non-standard dbt layering, "
-                "shared column names, or table names that differ from their entity "
-                "name (e.g. Prisma @@map)."
-            )
+            reasons = {item.reason for item in all_unverified}
+            if reasons - {UnverifiedReason.BI_SPEC_MANUAL}:
+                console.print(
+                    "  Puxti could not confirm the "
+                    f"`{escape(column_name)}` column in these entities traces back to the "
+                    "renamed source — this can happen with non-standard dbt layering, "
+                    "shared column names, or table names that differ from their entity "
+                    "name (e.g. Prisma @@map)."
+                )
+            if UnverifiedReason.BI_SPEC_MANUAL in reasons:
+                console.print(
+                    "  BI specs read the changed entity; Puxti does not edit specs yet, "
+                    "so update them by hand."
+                )
             console.print("  Review manually:")
             for item in all_unverified:
                 detail = f" ({item.detail})" if item.detail else ""

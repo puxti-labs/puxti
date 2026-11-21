@@ -109,6 +109,12 @@ connectors:
     views_dir: db/views
     dialect: postgres
     default_schema: public
+
+  # BI specs (datasets, charts, dashboards as YAML) — see docs/bi-specs.md.
+  # specs_dir is relative to project_dir and defaults to bi/.
+  bi:
+    project_dir: ./dbt
+    specs_dir: bi
 ```
 
 Every connector accepts `project_dir`, `repo`, `base_branch` (default `main`) and `repo_subdir`. Set `repo_subdir` when the project lives in a subdirectory of its repo, so the file paths in generated PRs are relative to the repo root. For `capture`, the `--repo-subdir` flag overrides it on the dbt connector.
@@ -117,9 +123,9 @@ With this in place:
 - `--repo` is no longer required for `capture`, `redefine`, or `health`
 - `--dbt-project-dir` resolves from `connectors.dbt.project_dir` automatically
 - `puxti health` checks GitHub write access for each connector repo
-- `puxti scan` scans every configured producer (dbt, prisma, sql_views) and
-  links references across them — a view reading a Prisma-managed table gets a
-  real lineage edge
+- `puxti scan` scans every configured producer (dbt, prisma, sql_views, bi) and
+  links references across them — a view reading a Prisma-managed table, or a BI
+  chart reading a dbt column, gets a real lineage edge
 - `puxti capture` propagates column renames through every configured connector
   and opens one PR per repo
 

@@ -820,3 +820,46 @@ def test_capture_reports_reason_and_literal_detail_without_opening_pr():
     assert "non-standard dbt layering" in cli_result.output
     assert "could not confirm" in cli_result.output.lower()
     mock_gh.open_pr.assert_not_called()
+
+
+def _bi_result():
+    from puxti.models import PropagationResult, UnverifiedEntity, UnverifiedReason
+
+    return PropagationResult(
+        change_event_id="evt-059",
+        connector="bi",
+        target_entity_id="model.jaffle_shop.orders.order_date",
+        diffs=[],
+        unverified_entities=[
+            UnverifiedEntity(
+                entity_id="chart.bi.revenue",
+                reason=UnverifiedReason.BI_SPEC_MANUAL,
+                detail="bi/charts/revenue.yml",
+                is_source=False,
+            )
+        ],
+    )
+
+
+def test_capture_bi_only_review_explains_specs_not_dbt_layering():
+    cli_result, _, mock_gh, _ = _run_capture_with_results([_bi_result()])
+
+    assert cli_result.exit_code == 0, cli_result.output
+    output = " ".join(plain(cli_result.output).split())
+    assert "chart.bi.revenue" in output
+    assert "does not edit specs yet" in output
+    assert "non-standard dbt layering" not in output
+    mock_gh.open_pr.assert_not_called()
+
+
+def test_capture_foreign_project_hint_survives_a_bi_result():
+    """dbt produced nothing because the models are in another project; a BI asset
+    listed for review must not hide the --dbt-project-dir hint."""
+    cli_result, _, _, _ = _run_capture_with_results(
+        [_bi_result()], affected=["model.other.orders"]
+    )
+
+    assert cli_result.exit_code == 0, cli_result.output
+    output = " ".join(plain(cli_result.output).split())
+    assert "different dbt project (`other`)" in output
+    assert "chart.bi.revenue" in output

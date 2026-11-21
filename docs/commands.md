@@ -27,6 +27,8 @@ An LLM edge proposal with an invalid relationship type or a missing description,
 
 When the dbt project defines MetricFlow metrics, scan imports them too. See [Metrics](metrics.md#metricflow-metrics-from-dbt).
 
+With a `bi` connector configured, scan also reads the BI spec folder: datasets, charts and dashboards become entities linked to the dbt models, columns and metrics they read. This needs no LLM calls. See [BI specs](bi-specs.md#in-the-knowledge-graph).
+
 `--dry-run` reads every configured producer and prints, per connector, how many models it would define and the estimated tokens and cost. It sends no prompts to the LLM (on Anthropic it calls the token counting endpoint for exact counts) and writes nothing to the Knowledge Graph.
 
 ### `scan` options
@@ -40,7 +42,7 @@ When the dbt project defines MetricFlow metrics, scan imports them too. See [Met
 
 ### Rescan only when the project changed
 
-`--if-changed` hashes what each configured connector reads: the dbt `manifest.json` and every model's SQL file, `schema.prisma`, the `*.sql` files under `views_dir`, and the DAG files. Each hash also covers the connector's settings from `.puxti.yml` (a SQL `dialect` or `default_schema`, for example) and the puxti version, so a settings change or an upgrade triggers one rescan. It also covers which connectors are configured together, since references between them (a SQL view reading a Prisma table) resolve only when they are scanned in the same run. It compares each hash with the one stored by the last completed scan of that connector and skips when all of them match. LLM provider and model settings are not part of the hash.
+`--if-changed` hashes what each configured connector reads: the dbt `manifest.json` and every model's SQL file, `schema.prisma`, the `*.sql` files under `views_dir`, the DAG files, and the BI spec files under `specs_dir`. Each hash also covers the connector's settings from `.puxti.yml` (a SQL `dialect` or `default_schema`, for example) and the puxti version, so a settings change or an upgrade triggers one rescan. It also covers which connectors are configured together, since references between them (a SQL view reading a Prisma table) resolve only when they are scanned in the same run. It compares each hash with the one stored by the last completed scan of that connector and skips when all of them match. LLM provider and model settings are not part of the hash.
 
 ```bash
 puxti scan --if-changed
@@ -120,7 +122,7 @@ puxti impact model.jaffle_shop.orders --change-type drop
 puxti impact model.jaffle_shop.orders --json
 ```
 
-Output shows each dependent entity, its hop distance from the target, and whether the relationship is semantic (concept-level) or structural (lineage/SQL reference). With `--change-type`, structural dependents are flagged as primary risk for `rename` and `drop`; semantic dependents for `redefine`.
+Output shows each dependent entity, its hop distance from the target, and whether the relationship is semantic (concept-level) or structural (lineage/SQL reference). Structural dependents are followed all the way downstream, so a model's downstream models and the BI datasets, charts and dashboards built on it all appear, each at its shortest hop. Run it on a column ID (`model.jaffle_shop.orders.amount`) to see the charts that read that column. With `--change-type`, structural dependents are flagged as primary risk for `rename` and `drop`; semantic dependents for `redefine`.
 
 ### `impact` options
 

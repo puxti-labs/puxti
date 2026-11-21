@@ -17,6 +17,8 @@ class EntityType(str, Enum):
     TASK = "task"  # Airflow task
     DASHBOARD = "dashboard"
     METRIC = "metric"
+    DATASET = "dataset"  # BI spec dataset (bi connector)
+    CHART = "chart"  # BI spec chart (bi connector)
 
 
 class ChangeType(str, Enum):
@@ -170,6 +172,7 @@ class UnverifiedReason(str, Enum):
     SHARED_FILE = "shared_file"
     REWRITE_DOES_NOT_PARSE = "rewrite_does_not_parse"
     NEW_NAME_EXISTS = "new_name_exists"
+    BI_SPEC_MANUAL = "bi_spec_manual"
     UNSPECIFIED = "unspecified"
 
     @property
@@ -187,6 +190,7 @@ class UnverifiedReason(str, Enum):
             self.SHARED_FILE: "file also defines views this change does not affect",
             self.REWRITE_DOES_NOT_PARSE: "rewritten SQL no longer parses",
             self.NEW_NAME_EXISTS: "model already has a column with the new name",
+            self.BI_SPEC_MANUAL: "BI specs are not updated automatically yet; edit the spec",
             self.UNSPECIFIED: "no reason was provided by the connector",
         }[self]
 

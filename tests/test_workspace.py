@@ -422,3 +422,18 @@ def test_cli_health_checks_workspace_repos():
     assert "acme/airflow" in result.output
     assert "dbt" in result.output
     assert "airflow" in result.output
+
+
+def test_parses_bi_connector(tmp_path):
+    (tmp_path / ".puxti.yml").write_text("""
+version: 1
+connectors:
+  bi:
+    project_dir: ./shop
+    specs_dir: specs
+""")
+    result = load_workspace(start_dir=tmp_path)
+    assert result.bi is not None
+    assert result.bi.project_dir == "./shop"
+    assert result.bi.extras.get("specs_dir") == "specs"
+    assert [name for name, _ in result.configured()] == ["bi"]

@@ -124,10 +124,11 @@ async def _run_health(
     else:
         console.print("[yellow]–[/yellow] Airflow (not configured in .puxti.yml)")
 
-    # Prisma and SQL views connectors — configured via .puxti.yml only
+    # Prisma, SQL views and BI spec connectors — configured via .puxti.yml only
     for conn_name, label, missing_hint in (
         ("prisma", "Prisma schema", "schema.prisma not found"),
         ("sql_views", "SQL views dir", "views directory not found"),
+        ("bi", "BI specs dir", "spec folder not found"),
     ):
         cfg = workspace.get(conn_name) if workspace else None
         if cfg and cfg.project_dir:

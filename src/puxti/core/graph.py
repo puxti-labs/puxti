@@ -16,7 +16,7 @@ import re
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 import aiosqlite
 
@@ -288,6 +288,9 @@ class GraphStore(Protocol):
     async def upsert_edge(self, edge: Edge) -> None: ...
     async def get_structural_dependents(self, entity_id: str) -> list[Entity]: ...
     async def get_structural_ancestors(self, entity_id: str) -> list[tuple[Entity, int]]: ...
+    async def get_structural_dependents_with_depth(
+        self, entity_id: str
+    ) -> list[tuple[Entity, int]]: ...
 
     # Semantic graph
     async def upsert_semantic_edge(self, edge: SemanticEdge) -> None: ...
@@ -321,6 +324,52 @@ class GraphStore(Protocol):
     async def get_projects(self) -> list[str]: ...
     async def purge_project(self, project: str) -> int: ...
     async def purge_all(self) -> int: ...
+
+
+async def _name_fallback(graph: Any, entity_id: str) -> list[Entity]:
+    """Dependents of the model an ID names. Column IDs put the model name
+    second-to-last ("model.jaffle_shop.orders.amount" → "orders"); model IDs put
+    it last ("model.jaffle_shop.orders" → "orders"). The column reading is tried
+    first, then the model one."""
+    parts = entity_id.split(".")
+    candidates = ([parts[-2]] if len(parts) >= 2 else []) + [parts[-1]]
+    for model_name in candidates:
+        if model_name:
+            found = await graph._dependents_of_model_named(model_name)
+            if found:
+                return found
+    return []
+
+
+async def _fallback_seeds(graph: Any, entity_id: str, direct: list[Entity]) -> list[Entity]:
+    """What the name lookup adds to the direct dependents: everything it finds when
+    there are no direct ones, and always for a column (see get_structural_dependents)."""
+    if direct and await graph._entity_type(entity_id) != EntityType.COLUMN.value:
+        return []
+    seen = {e.id for e in direct}
+    return [e for e in await _name_fallback(graph, entity_id) if e.id not in seen]
+
+
+async def _merged_dependents(graph: Any, entity_id: str) -> list[Entity]:
+    direct = await graph._direct_dependents(entity_id)
+    return direct + await _fallback_seeds(graph, entity_id, direct)
+
+
+async def _walk_with_fallback(graph: Any, entity_id: str) -> list[tuple[Entity, int]]:
+    best: dict[str, tuple[Entity, int]] = {}
+
+    def keep(entity: Entity, depth: int) -> None:
+        if entity.id != entity_id and (entity.id not in best or depth < best[entity.id][1]):
+            best[entity.id] = (entity, depth)
+
+    for entity, depth in await graph._walk_dependents(entity_id):
+        keep(entity, depth)
+    direct = [e for e, depth in best.values() if depth == 1]
+    for seed in await _fallback_seeds(graph, entity_id, direct):
+        keep(seed, 1)
+        for entity, depth in await graph._walk_dependents(seed.id):
+            keep(entity, depth + 1)
+    return sorted(best.values(), key=lambda pair: (pair[1], pair[0].name))
 
 
 class SqliteKnowledgeGraph:
@@ -630,7 +679,27 @@ class SqliteKnowledgeGraph:
         await self._db.commit()
 
     async def get_structural_dependents(self, entity_id: str) -> list[Entity]:
-        """Return direct structural dependents (single-hop LINEAGE). Falls back to name lookup."""
+        """Return direct structural dependents (single-hop LINEAGE). Falls back to name lookup.
+
+        For a column, dependents of its model (found by name) are always included:
+        dbt has no column-level lineage, so the column's own edges (from BI specs)
+        never list the downstream models that read it."""
+        return await _merged_dependents(self, entity_id)
+
+    async def get_structural_dependents_with_depth(
+        self, entity_id: str
+    ) -> list[tuple[Entity, int]]:
+        """Every entity downstream through lineage, with its shortest hop depth.
+
+        Walks DEPENDS_ON edges against their direction (a dashboard depends on a
+        chart, which depends on a model), so a model's charts and dashboards are
+        reached too. Where get_structural_dependents falls back to the name lookup,
+        the walk continues from each entity that lookup found."""
+        return await _walk_with_fallback(self, entity_id)
+
+    # Primitives for the module-level helpers shared with the Postgres backend.
+
+    async def _direct_dependents(self, entity_id: str) -> list[Entity]:
         async with self._db.execute(
             """
             SELECT DISTINCT e.* FROM lineage_edges le
@@ -639,33 +708,44 @@ class SqliteKnowledgeGraph:
             """,
             (entity_id,),
         ) as cur:
-            rows = await cur.fetchall()
+            return [_to_entity(r) for r in await cur.fetchall()]
 
-        if rows:
-            return [_to_entity(r) for r in rows]
+    async def _dependents_of_model_named(self, model_name: str) -> list[Entity]:
+        async with self._db.execute(
+            """
+            SELECT DISTINCT e.* FROM lineage_edges le
+            JOIN entities e ON e.id = le.from_id
+            JOIN entities src ON src.id = le.to_id
+            WHERE src.name=? AND src.type='model'
+            """,
+            (model_name,),
+        ) as cur:
+            return [_to_entity(r) for r in await cur.fetchall()]
 
-        # Fallback: resolve by model name. Column IDs put the model name
-        # second-to-last ("model.jaffle_shop.orders.amount" → "orders");
-        # model IDs put it last ("model.jaffle_shop.orders" → "orders").
-        # Try the column interpretation first, then the model one.
-        parts = entity_id.split(".")
-        candidates = ([parts[-2]] if len(parts) >= 2 else []) + [parts[-1]]
-        for model_name in candidates:
-            if not model_name:
-                continue
-            async with self._db.execute(
-                """
-                SELECT DISTINCT e.* FROM lineage_edges le
-                JOIN entities e ON e.id = le.from_id
-                JOIN entities src ON src.id = le.to_id
-                WHERE src.name=? AND src.type='model'
-                """,
-                (model_name,),
-            ) as cur:
-                rows = await cur.fetchall()
-            if rows:
-                return [_to_entity(r) for r in rows]
-        return []
+    async def _entity_type(self, entity_id: str) -> str | None:
+        async with self._db.execute("SELECT type FROM entities WHERE id=?", (entity_id,)) as cur:
+            row = await cur.fetchone()
+        return row["type"] if row else None
+
+    async def _walk_dependents(self, entity_id: str) -> list[tuple[Entity, int]]:
+        # UNION rather than UNION ALL drops repeated (id, depth) pairs, which
+        # bounds the walk on wide graphs; the depth cap bounds it on cycles.
+        async with self._db.execute(
+            """
+            WITH RECURSIVE deps(id, depth) AS (
+                SELECT from_id, 1 FROM lineage_edges WHERE to_id=?
+                UNION
+                SELECT le.from_id, deps.depth + 1
+                FROM lineage_edges le JOIN deps ON le.to_id = deps.id
+                WHERE deps.depth < 20
+            )
+            SELECT e.*, MIN(deps.depth) AS depth
+            FROM deps JOIN entities e ON e.id = deps.id
+            GROUP BY deps.id
+            """,
+            (entity_id,),
+        ) as cur:
+            return [(_to_entity(r), r["depth"]) for r in await cur.fetchall()]
 
     async def get_structural_ancestors(self, entity_id: str) -> list[tuple[Entity, int]]:
         """Return upstream model ancestors with hop depth via recursive CTE."""

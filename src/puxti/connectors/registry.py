@@ -10,6 +10,7 @@ from pathlib import Path
 
 from puxti.connectors.airflow import AirflowConnector
 from puxti.connectors.base import BaseConnector
+from puxti.connectors.bi_specs import BiSpecsConnector
 from puxti.connectors.dbt import DbtConnector
 from puxti.connectors.prisma import PrismaConnector
 from puxti.connectors.sql_views import SqlViewsConnector
@@ -42,6 +43,13 @@ def build_connector(name: str, cfg: ConnectorConfig) -> BaseConnector | None:
                 "views_dir": cfg.extras.get("views_dir", "."),
                 "dialect": cfg.extras.get("dialect"),
                 "default_schema": cfg.extras.get("default_schema", "public"),
+            }
+        )
+    if name == "bi":
+        return BiSpecsConnector(
+            config={
+                "project_dir": cfg.project_dir,
+                "specs_dir": cfg.extras.get("specs_dir", "bi"),
             }
         )
     raise ValueError(f"Unknown connector: {name!r}")

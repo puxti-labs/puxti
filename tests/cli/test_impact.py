@@ -56,7 +56,7 @@ def test_impact_no_dependents_shows_message():
     mock_graph.get_entity_by_id = AsyncMock(return_value=entity)
     mock_graph.get_latest_definition = AsyncMock(return_value=None)
     mock_graph.get_semantic_dependents_with_depth = AsyncMock(return_value=[])
-    mock_graph.get_structural_dependents = AsyncMock(return_value=[])
+    mock_graph.get_structural_dependents_with_depth = AsyncMock(return_value=[])
 
     with patch("puxti.cli.impact.KnowledgeGraph", return_value=mock_graph):
         result = runner.invoke(app, ["impact", "model.jaffle_shop.orders"])
@@ -95,7 +95,7 @@ def test_impact_shows_semantic_dependents():
     mock_graph.get_entity_by_id = AsyncMock(return_value=entity)
     mock_graph.get_latest_definition = AsyncMock(return_value=definition)
     mock_graph.get_semantic_dependents_with_depth = AsyncMock(return_value=[(dep, 1)])
-    mock_graph.get_structural_dependents = AsyncMock(return_value=[])
+    mock_graph.get_structural_dependents_with_depth = AsyncMock(return_value=[])
 
     with patch("puxti.cli.impact.KnowledgeGraph", return_value=mock_graph):
         result = runner.invoke(app, ["impact", "model.jaffle_shop.orders"])
@@ -130,7 +130,7 @@ def test_impact_shows_structural_dependents():
     mock_graph.get_entity_by_id = AsyncMock(return_value=entity)
     mock_graph.get_latest_definition = AsyncMock(return_value=None)
     mock_graph.get_semantic_dependents_with_depth = AsyncMock(return_value=[])
-    mock_graph.get_structural_dependents = AsyncMock(return_value=[dep])
+    mock_graph.get_structural_dependents_with_depth = AsyncMock(return_value=[(dep, 1)])
 
     with patch("puxti.cli.impact.KnowledgeGraph", return_value=mock_graph):
         result = runner.invoke(app, ["impact", "model.jaffle_shop.orders"])
@@ -166,7 +166,7 @@ def test_impact_json_output():
     mock_graph.get_entity_by_id = AsyncMock(return_value=entity)
     mock_graph.get_latest_definition = AsyncMock(return_value=None)
     mock_graph.get_semantic_dependents_with_depth = AsyncMock(return_value=[(dep, 1)])
-    mock_graph.get_structural_dependents = AsyncMock(return_value=[])
+    mock_graph.get_structural_dependents_with_depth = AsyncMock(return_value=[])
 
     with patch("puxti.cli.impact.KnowledgeGraph", return_value=mock_graph):
         result = runner.invoke(app, ["impact", "model.jaffle_shop.orders", "--json"])
@@ -201,7 +201,7 @@ def test_impact_json_with_change_type():
     mock_graph.get_entity_by_id = AsyncMock(return_value=entity)
     mock_graph.get_latest_definition = AsyncMock(return_value=None)
     mock_graph.get_semantic_dependents_with_depth = AsyncMock(return_value=[])
-    mock_graph.get_structural_dependents = AsyncMock(return_value=[])
+    mock_graph.get_structural_dependents_with_depth = AsyncMock(return_value=[])
 
     with patch("puxti.cli.impact.KnowledgeGraph", return_value=mock_graph):
         result = runner.invoke(
@@ -237,7 +237,7 @@ def test_impact_change_type_rename_shows_structural_warning():
     mock_graph.get_entity_by_id = AsyncMock(return_value=entity)
     mock_graph.get_latest_definition = AsyncMock(return_value=None)
     mock_graph.get_semantic_dependents_with_depth = AsyncMock(return_value=[])
-    mock_graph.get_structural_dependents = AsyncMock(return_value=[dep])
+    mock_graph.get_structural_dependents_with_depth = AsyncMock(return_value=[(dep, 1)])
 
     with patch("puxti.cli.impact.KnowledgeGraph", return_value=mock_graph):
         result = runner.invoke(
@@ -274,7 +274,7 @@ def test_impact_merges_both_relationship_types():
     mock_graph.get_entity_by_id = AsyncMock(return_value=entity)
     mock_graph.get_latest_definition = AsyncMock(return_value=None)
     mock_graph.get_semantic_dependents_with_depth = AsyncMock(return_value=[(dep, 1)])
-    mock_graph.get_structural_dependents = AsyncMock(return_value=[dep])
+    mock_graph.get_structural_dependents_with_depth = AsyncMock(return_value=[(dep, 1)])
 
     with patch("puxti.cli.impact.KnowledgeGraph", return_value=mock_graph):
         result = runner.invoke(app, ["impact", "model.jaffle_shop.orders"])

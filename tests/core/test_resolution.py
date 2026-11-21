@@ -135,3 +135,71 @@ def test_resolve_reports_unresolved_sorted_and_unique():
     ]
     _, unresolved = resolve_edges(edges, {})
     assert unresolved == ["alpha", "zeta"]
+
+
+def _dbt_column(model_id: str, name: str) -> Entity:
+    return Entity(
+        id=f"{model_id}.{name}",
+        name=name,
+        type=EntityType.COLUMN,
+        source_connector="dbt",
+        metadata={"model_id": model_id},
+    )
+
+
+def test_index_columns_under_each_key_of_their_table():
+    model = _dbt_model("shop", "orders", schema="analytics")
+    index = build_reference_index([model, _dbt_column(model.id, "Amount")])
+    assert index["orders#amount"] == "model.shop.orders.Amount"
+    assert index["analytics.orders#amount"] == "model.shop.orders.Amount"
+
+
+def test_index_dbt_metrics_by_name():
+    metric = Entity(
+        id="metric.shop.arr", name="arr", type=EntityType.METRIC, source_connector="dbt"
+    )
+    assert build_reference_index([metric]) == {"metric:arr": "metric.shop.arr"}
+
+
+def test_index_drops_columns_of_an_ambiguous_table():
+    a, b = _dbt_model("a", "orders"), _dbt_model("b", "orders")
+    index = build_reference_index([a, b, _dbt_column(a.id, "x"), _dbt_column(b.id, "x")])
+    assert "orders" not in index and "orders#x" not in index
+
+
+def test_resolve_column_and_metric_references():
+    model = _dbt_model("shop", "orders", schema="analytics")
+    index = build_reference_index([model, _dbt_column(model.id, "amount")])
+    edges, unresolved = resolve_edges(
+        [
+            _sqlref_edge("chart.bi.c", "analytics.orders#amount"),
+            _sqlref_edge("chart.bi.c", "orders#missing"),
+        ],
+        index,
+    )
+    assert edges[0].to_entity_id == "model.shop.orders.amount"
+    assert unresolved == ["orders#missing"]
+
+
+def test_columns_of_an_ambiguous_table_key_stay_unresolved():
+    """A dbt model and a view are both `orders`; only the model declares `amount`.
+    `orders#amount` must not resolve to the model, since `orders` itself does not."""
+    model = _dbt_model("shop", "orders", schema="analytics")
+    view = _view("public", "orders")
+    index = build_reference_index([model, view, _dbt_column(model.id, "amount")])
+    assert "orders" not in index and "orders#amount" not in index
+    assert index["analytics.orders#amount"] == "model.shop.orders.amount"
+
+
+def test_prisma_columns_go_by_their_database_name():
+    table = _prisma_table("User", "users")
+    field = Entity(
+        id="table.prisma.User.createdAt",
+        name="createdAt",
+        type=EntityType.COLUMN,
+        source_connector="prisma",
+        metadata={"db_column": "created_at"},
+    )
+    index = build_reference_index([table, field])
+    assert index["users#created_at"] == "table.prisma.User.createdAt"
+    assert "users#createdat" not in index

@@ -62,7 +62,7 @@ async def _run_impact(entity: str, change_type: str | None, as_json: bool) -> No
 
         definition = await graph.get_latest_definition(entity)
         semantic_deps = await graph.get_semantic_dependents_with_depth(entity)
-        structural_deps = await graph.get_structural_dependents(entity)
+        structural_deps = await graph.get_structural_dependents_with_depth(entity)
 
         # Merge into a single map keyed by entity ID.
         # An entity can appear in both semantic and structural — track both.
@@ -71,9 +71,10 @@ async def _run_impact(entity: str, change_type: str | None, as_json: bool) -> No
             entry = dep_map.setdefault(dep.id, {"entity": dep, "hop": hop, "rels": set()})
             entry["rels"].add("semantic")
             entry["hop"] = min(entry["hop"], hop)
-        for dep in structural_deps:
-            entry = dep_map.setdefault(dep.id, {"entity": dep, "hop": 1, "rels": set()})
+        for dep, hop in structural_deps:
+            entry = dep_map.setdefault(dep.id, {"entity": dep, "hop": hop, "rels": set()})
             entry["rels"].add("structural")
+            entry["hop"] = min(entry["hop"], hop)
 
         rows = sorted(dep_map.values(), key=lambda r: (r["hop"], r["entity"].name))
 

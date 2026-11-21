@@ -53,7 +53,7 @@ def scan(
     """Populate the Knowledge Graph so puxti can propagate changes safely.
 
     Scans every producer connector configured in .puxti.yml (dbt, prisma,
-    sql_views — plus --dbt-project-dir/DBT_PROJECT_DIR for dbt), extracts all
+    sql_views, bi — plus --dbt-project-dir/DBT_PROJECT_DIR for dbt), extracts all
     entities and lineage, infers starter definitions via LLM, and proposes
     semantic edges. Table references that cross connectors (e.g. a SQL view
     reading a Prisma-managed table) are resolved into lineage edges.
@@ -69,8 +69,8 @@ def scan(
       you confirm or edit each definition before moving to the next.
 
     --if-changed compares a content hash of every connector's inputs (dbt
-    manifest and model SQL, schema.prisma, SQL view files, DAG files) with the
-    last completed scan, and skips when all of them match. Use it from a git
+    manifest and model SQL, schema.prisma, SQL view files, DAG files, BI spec
+    files) with the last completed scan, and skips when all of them match. Use it from a git
     hook or CI.
 
     Nothing is written to the Knowledge Graph without your explicit confirmation.
@@ -266,14 +266,7 @@ async def _run_scan(
             raise typer.Exit(EXIT_RESCAN_NEEDED)
         return
 
-    # Cross-connector reference resolution — built from every producer's
-    # entities so `sqlref.` placeholder edges resolve at write time.
-    reference_index = None
-    if len(connectors) > 1:
-        all_entities = []
-        for connector in connectors:
-            all_entities.extend(await connector.extract_entities())
-        reference_index = build_reference_index(all_entities)
+    reference_index = await _reference_index(connectors)
 
     graph = KnowledgeGraph()
     try:
@@ -300,6 +293,20 @@ async def _run_scan(
         await _record_scan_runs(graph, fingerprints, incomplete)
     finally:
         await graph.close()
+
+
+async def _reference_index(connectors: list[BaseConnector]) -> dict[str, str] | None:
+    """Cross-connector reference resolution, built from every producer's entities
+    so `sqlref.` placeholder edges resolve at write time. BI specs always reference
+    dbt, so with `bi` scanned alone the index is still built: every dbt reference
+    then stays unresolved and scan says so. None when nothing can reference
+    another connector."""
+    if len(connectors) < 2 and not any(c.name == "bi" for c in connectors):
+        return None
+    all_entities = []
+    for connector in connectors:
+        all_entities.extend(await connector.extract_entities())
+    return build_reference_index(all_entities)
 
 
 async def _scan_connectors(

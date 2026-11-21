@@ -4,9 +4,10 @@ Datasets, charts and dashboards as short YAML files in git, one asset per file. 
 defined by the `puxti-bi-core` package in this repository and published as a
 [JSON Schema](../packages/puxti-bi-core/src/puxti_bi_core/schemas/v1alpha1.json).
 
-**Status:** the schema is `v1alpha1` and may still change in breaking ways. No Puxti command reads
-these files yet: graph ingestion, `puxti validate` and `puxti impact` on specs come next, and
-deploying to a BI tool comes after that. The plan is in
+**Status:** the schema is `v1alpha1` and may still change in breaking ways. `puxti scan` reads specs
+into the Knowledge Graph, so `puxti impact` shows the charts and dashboards a dbt change reaches
+(see [In the Knowledge Graph](#in-the-knowledge-graph)). `puxti validate`, `puxti impact` against a
+base manifest, and deploying to a BI tool come next. The plan is in
 [#28](https://github.com/puxti-labs/puxti/issues/28).
 
 ## Layout
@@ -86,6 +87,33 @@ rows:
       - revenue_by_region
     height: 2
 ```
+
+## In the Knowledge Graph
+
+Add a `bi` connector to `.puxti.yml` (see [Configuration](configuration.md#workspace-config-puxtiyml))
+and `puxti scan` reads the spec folder with no LLM calls. Each asset becomes an entity:
+`dataset.bi.<name>`, `chart.bi.<name>` and `dashboard.bi.<name>`. Each one depends on what it
+reads:
+
+- a dashboard on each of its charts
+- a chart on its dataset, and on the dbt columns it reads: its `x` column, `group_by`, table
+  `columns`, and the column behind each dataset metric it shows
+- a dataset on its dbt model, on the columns it lists or aggregates, and on the dbt metrics it
+  names with `dbt_metric`
+
+dbt names resolve against what the dbt connector scanned, so scan both together. `puxti impact
+model.<project>.orders` then lists the datasets, charts and dashboards above `orders`, and
+`puxti impact model.<project>.orders.amount` lists the ones that read `amount`.
+
+A file that fails to load is skipped with a warning that names the file and line, and so is a
+reference to a spec that does not exist. dbt only knows the columns declared in a model's YAML,
+so a reference to an undeclared column stays unresolved, and scan lists it in its warning about
+references no connector owns.
+
+`puxti capture` lists the BI assets a change reaches under the entities to review by hand: for a
+model, every dataset on it and their charts; for a column, the datasets and charts that name it,
+directly or through a dataset metric. Dashboards holding a listed chart are listed too. Puxti does
+not edit specs yet.
 
 ## Common fields and the escape hatch
 

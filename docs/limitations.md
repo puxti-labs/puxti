@@ -19,8 +19,8 @@ The SQL views connector renames a column across the whole `.sql` file. A file th
 `puxti capture` lists each skipped entity with the connector's reason. The same
 reason appears in the generated PR: for example, a Jinja reference, a qualified
 column reference, a missing column, a dependency that cannot be verified as
-a direct reference to the source, a dependent that already has the new name, or
-a rewrite that no longer parses. Airflow and Prisma also report missing source
+a direct reference to the source, a dependent that already has the new name,
+a rewrite that no longer parses, or a BI spec that needs editing by hand. Airflow and Prisma also report missing source
 files, unavailable task docstrings, or missing schema models as applicable.
 Review these entities manually before merging; generated diffs do not resolve
 the skipped cases. A connector with no diffs opens no PR, but its skipped
@@ -63,6 +63,10 @@ When you classify a correction as a "real change", Puxti prints the `redefine` c
 
 A metric created with `puxti define` is a definition with no backing model. It holds no value and has no structural dependents until it is bound. `puxti scan` only auto-suggests a bind when a scanned model, view or dbt metric has the exact same name. A dbt metric wins over a model with the same name (jaffle-shop has both an `orders` metric and an `orders` model), and a name that two metrics or two models share is skipped; for anything else, bind it explicitly with `puxti bind`.
 
-## Metric impact is one hop
+## Consumers are one hop
 
-`impact_of_change` and `consumers` list direct dependents. A simple metric built on `orders` shows up in the impact of `orders`; a derived metric built on that simple metric does not, until you run impact on the simple metric itself. A column rename also leaves the semantic model YAML that references the column untouched.
+`puxti impact` and `impact_of_change` follow structural dependents all the way downstream, so a derived metric built on a simple metric built on `orders` shows up in the impact of `orders`, two hops away. `consumers` lists direct dependents only. A column rename also leaves the semantic model YAML that references the column untouched.
+
+## BI specs are reported, not edited
+
+A change that reaches a BI dataset, chart or dashboard lists it in `puxti capture` output for review by hand; Puxti does not rewrite specs yet. Column-level impact on BI specs needs the column declared in the dbt model's YAML, since dbt's manifest only knows those columns.

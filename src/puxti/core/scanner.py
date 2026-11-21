@@ -467,9 +467,10 @@ class SemanticScanner:
         if reference_index is not None:
             lineage, unresolved_refs = resolve_edges(lineage, reference_index)
             if unresolved_refs:
-                refs = ", ".join(f"`{r}`" for r in unresolved_refs)
+                refs = ", ".join(f"`{escape(r)}`" for r in unresolved_refs)
                 console.print(
-                    f"[yellow]⚠[/yellow]  {len(unresolved_refs)} referenced table(s) "
+                    f"[yellow]⚠[/yellow]  {len(unresolved_refs)} referenced table(s), "
+                    f"column(s) or metric(s) "
                     f"not owned by any configured connector: {refs}. "
                     f"Their lineage edges stay unresolved."
                 )
@@ -741,6 +742,8 @@ class SemanticScanner:
     ) -> dict[str, str]:
         generated: dict[str, str] = {}
         targets = [e for e in model_entities if sql_map.get(e.id)]
+        if not targets:  # e.g. the bi connector: nothing to define, nothing to confirm
+            return generated
         done = 0
 
         status = console.status(f"[bold]Generating definitions... 0/{len(targets)}[/bold]")

@@ -30,7 +30,7 @@ Once connected, five read-only tools are available:
 | Tool | What it answers |
 |---|---|
 | `search_entities` | What is the exact ID of the entity called "average order value"? Matches name and ID, filters by type. |
-| `impact_of_change` | Which entities depend on this one and would break? |
+| `impact_of_change` | Which entities depend on this one and would break, including BI charts and dashboards, at any distance? |
 | `consumers` | Which models directly read from this entity? |
 | `describe_entity` | What does this entity mean? What semantic edges does it have? |
 | `definition_history` | How has the meaning of this entity evolved over time? |
