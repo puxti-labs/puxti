@@ -645,6 +645,101 @@
     },
     "Metric": {
       "additionalProperties": false,
+      "anyOf": [
+        {
+          "allOf": [
+            {
+              "properties": {
+                "dbt_metric": {
+                  "not": {
+                    "type": "null"
+                  }
+                }
+              },
+              "required": [
+                "dbt_metric"
+              ]
+            },
+            {
+              "properties": {
+                "agg": {
+                  "type": "null"
+                }
+              }
+            },
+            {
+              "properties": {
+                "column": {
+                  "type": "null"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "properties": {
+                "dbt_metric": {
+                  "type": "null"
+                }
+              }
+            },
+            {
+              "properties": {
+                "agg": {
+                  "not": {
+                    "type": "null"
+                  }
+                }
+              },
+              "required": [
+                "agg"
+              ]
+            },
+            {
+              "properties": {
+                "column": {
+                  "not": {
+                    "type": "null"
+                  }
+                }
+              },
+              "required": [
+                "column"
+              ]
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "properties": {
+                "dbt_metric": {
+                  "type": "null"
+                }
+              }
+            },
+            {
+              "properties": {
+                "column": {
+                  "type": "null"
+                }
+              }
+            },
+            {
+              "properties": {
+                "agg": {
+                  "const": "count"
+                }
+              },
+              "required": [
+                "agg"
+              ]
+            }
+          ]
+        }
+      ],
       "description": "A metric on a dataset: an aggregation of one column, or a dbt metric by name.",
       "properties": {
         "agg": {
@@ -848,6 +943,57 @@
     },
     "TableChart": {
       "additionalProperties": false,
+      "anyOf": [
+        {
+          "allOf": [
+            {
+              "properties": {
+                "columns": {
+                  "minItems": 1
+                }
+              },
+              "required": [
+                "columns"
+              ]
+            },
+            {
+              "properties": {
+                "metrics": {
+                  "maxItems": 0
+                }
+              }
+            },
+            {
+              "properties": {
+                "group_by": {
+                  "maxItems": 0
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "properties": {
+                "columns": {
+                  "maxItems": 0
+                }
+              }
+            },
+            {
+              "properties": {
+                "metrics": {
+                  "minItems": 1
+                }
+              },
+              "required": [
+                "metrics"
+              ]
+            }
+          ]
+        }
+      ],
       "description": "Raw rows (``columns``) or an aggregate (``metrics``, optionally ``group_by``).",
       "properties": {
         "apiVersion": {

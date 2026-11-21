@@ -176,6 +176,15 @@ def test_one_bad_file_does_not_hide_the_others(tmp_path: Path) -> None:
     assert len(errors) == 2  # name pattern, and model missing
 
 
+def test_unknown_yaml_tag_is_an_error_and_later_files_still_load(tmp_path: Path) -> None:
+    _write(tmp_path, "apiVersion: puxti/v1alpha1\nkind: dataset\nname: a\ntitle: !foo x\n", "a.yml")
+    _write(tmp_path, "apiVersion: puxti/v1alpha1\nkind: dataset\nname: ok\nmodel: m\n", "b.yml")
+    specs, errors = load_specs(tmp_path)
+    assert list(specs.datasets) == ["ok"]
+    assert [(e.path.name, e.line) for e in errors] == [("a.yml", 4)]
+    assert errors[0].message.startswith("invalid YAML:")
+
+
 SPEC_HEAD = "apiVersion: puxti/v1alpha1\nkind: chart\nname: c\ndataset: orders\n"
 
 

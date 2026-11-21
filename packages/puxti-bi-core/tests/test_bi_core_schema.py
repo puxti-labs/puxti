@@ -5,11 +5,23 @@ from pathlib import Path
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from puxti_bi_core import load_specs
 from puxti_bi_core.schema import committed_schema, json_schema, render
+from puxti_bi_core.spec import SPEC_ADAPTER
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def _dataset(metric: dict) -> dict:
+    head = {"apiVersion": "puxti/v1alpha1", "kind": "dataset", "name": "d", "model": "m"}
+    return {**head, "metrics": [metric]}
+
+
+def _table(fields: dict) -> dict:
+    head = {"apiVersion": "puxti/v1alpha1", "kind": "chart", "name": "c", "dataset": "d"}
+    return {**head, "type": "table", **fields}
 
 
 def test_committed_schema_matches_the_models() -> None:
@@ -48,9 +60,38 @@ def test_schema_accepts_the_valid_fixtures() -> None:
             "metric": "m",
             "extra": 1,
         },
+        _dataset({"name": "revenue"}),  # no definition
+        _dataset({"name": "revenue", "agg": "sum"}),  # sum without a column
+        _dataset({"name": "revenue", "dbt_metric": "rev", "agg": "sum", "column": "x"}),
+        _dataset({"name": "revenue", "dbt_metric": "rev", "column": "x"}),
+        _table({}),  # neither mode
+        _table({"group_by": ["region"]}),  # group_by alone is not a mode
+        _table({"columns": ["a"], "metrics": ["m"]}),  # both modes
+        _table({"columns": ["a"], "group_by": ["region"]}),
     ],
 )
 def test_schema_rejects_what_the_models_reject(spec: dict) -> None:
     jsonschema = pytest.importorskip("jsonschema")
     validator = jsonschema.Draft202012Validator(json_schema())
     assert list(validator.iter_errors(spec))
+    with pytest.raises(ValidationError):
+        SPEC_ADAPTER.validate_python(spec)
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        _dataset({"name": "orders", "agg": "count"}),
+        _dataset({"name": "revenue", "agg": "sum", "column": "amount"}),
+        _dataset({"name": "revenue", "dbt_metric": "rev"}),
+        _table({"columns": ["a"]}),
+        _table({"metrics": ["m"]}),
+        _table({"metrics": ["m"], "group_by": ["region"]}),
+        _table({"columns": ["a"], "metrics": [], "group_by": []}),
+    ],
+)
+def test_schema_accepts_what_the_models_accept(spec: dict) -> None:
+    jsonschema = pytest.importorskip("jsonschema")
+    validator = jsonschema.Draft202012Validator(json_schema())
+    assert [e.message for e in validator.iter_errors(spec)] == []
+    SPEC_ADAPTER.validate_python(spec)

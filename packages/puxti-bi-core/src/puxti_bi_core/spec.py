@@ -67,6 +67,25 @@ class _Model(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
 
+# JSON Schema fragments for the cross-field rules the model validators enforce, so editors
+# using the published schema reject the same files. Fields default to None or [], so
+# "unset" means absent or that default.
+def _set(field: str) -> dict[str, Any]:
+    return {"required": [field], "properties": {field: {"not": {"type": "null"}}}}
+
+
+def _unset(field: str) -> dict[str, Any]:
+    return {"properties": {field: {"type": "null"}}}
+
+
+def _nonempty(field: str) -> dict[str, Any]:
+    return {"required": [field], "properties": {field: {"minItems": 1}}}
+
+
+def _empty(field: str) -> dict[str, Any]:
+    return {"properties": {field: {"maxItems": 0}}}
+
+
 class _Spec(_Model):
     api_version: Literal["puxti/v1alpha1"] = Field(alias="apiVersion")
     name: Name
@@ -89,6 +108,22 @@ class Aggregation(str, Enum):
 
 class Metric(_Model):
     """A metric on a dataset: an aggregation of one column, or a dbt metric by name."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "anyOf": [  # mirrors _one_definition
+                {"allOf": [_set("dbt_metric"), _unset("agg"), _unset("column")]},
+                {"allOf": [_unset("dbt_metric"), _set("agg"), _set("column")]},
+                {
+                    "allOf": [
+                        _unset("dbt_metric"),
+                        _unset("column"),
+                        {"required": ["agg"], "properties": {"agg": {"const": "count"}}},
+                    ]
+                },
+            ]
+        }
+    )
 
     name: Name
     title: str | None = None
@@ -170,6 +205,15 @@ class BarChart(_Chart):
 
 class TableChart(_Chart):
     """Raw rows (``columns``) or an aggregate (``metrics``, optionally ``group_by``)."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "anyOf": [  # mirrors _one_mode
+                {"allOf": [_nonempty("columns"), _empty("metrics"), _empty("group_by")]},
+                {"allOf": [_empty("columns"), _nonempty("metrics")]},
+            ]
+        }
+    )
 
     type: Literal["table"]
     columns: list[Ident] = Field(default_factory=list)

@@ -16,6 +16,20 @@ allowed_for() {
 }
 
 status=0
+shopt -s nullglob
+for sdist in "$DIR"/*.tar.gz; do
+  base=$(basename "$sdist")
+  known=0
+  for name in "${EXPECTED[@]}"; do
+    [[ "$base" =~ ^${name}-[0-9] ]] && known=1
+  done
+  if [ "$known" -eq 0 ]; then
+    echo "ERROR: $base is not a workspace package sdist"
+    status=1
+  fi
+done
+shopt -u nullglob
+
 for name in "${EXPECTED[@]}"; do
   shopt -s nullglob
   matches=("$DIR/$name"-[0-9]*.tar.gz)
@@ -26,7 +40,12 @@ for name in "${EXPECTED[@]}"; do
     continue
   fi
   sdist="${matches[0]}"
-  unexpected=$(tar -tzf "$sdist" | sed 's|^[^/]*/||' | grep -Ev "$(allowed_for "$name")" || true)
+  if ! listing=$(tar -tzf "$sdist"); then
+    echo "ERROR: cannot read $(basename "$sdist")"
+    status=1
+    continue
+  fi
+  unexpected=$(echo "$listing" | sed 's|^[^/]*/||' | grep -Ev "$(allowed_for "$name")" || true)
   if [ -n "$unexpected" ]; then
     echo "ERROR: unexpected files in $(basename "$sdist"); add them to that package's sdist exclude list:"
     echo "$unexpected" | sed 's/^/    /'

@@ -129,7 +129,12 @@ def load_spec_file(path: Path) -> tuple[Any | None, list[SpecError]]:
     if duplicates:
         return None, duplicates
 
-    data = _SpecLoader("").construct_document(nodes[0])
+    try:
+        data = _SpecLoader("").construct_document(nodes[0])
+    except yaml.MarkedYAMLError as exc:  # e.g. an unknown tag such as !foo
+        mark = exc.problem_mark or exc.context_mark
+        line = mark.line + 1 if mark else None
+        return None, [SpecError(path=path, line=line, message=f"invalid YAML: {exc.problem}")]
     try:
         return SPEC_ADAPTER.validate_python(data), []
     except ValidationError as exc:
