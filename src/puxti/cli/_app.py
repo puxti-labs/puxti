@@ -34,7 +34,11 @@ def _version_callback(value: bool) -> None:
 @app.callback()
 def main(
     version: bool = typer.Option(
-        False, "--version", "-v", callback=_version_callback, is_eager=True,
+        False,
+        "--version",
+        "-v",
+        callback=_version_callback,
+        is_eager=True,
         help="Show puxti version and exit.",
     ),
 ) -> None:

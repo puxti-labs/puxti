@@ -8,6 +8,7 @@ from puxti.cli._shared import console
 def telemetry_on() -> None:
     """Enable anonymous usage telemetry."""
     from puxti.telemetry import get_install_id, set_enabled
+
     set_enabled(True)
     install_id = get_install_id()
     console.print("[green]✓[/green] Telemetry enabled.")
@@ -22,6 +23,7 @@ def telemetry_on() -> None:
 def telemetry_off() -> None:
     """Disable anonymous usage telemetry."""
     from puxti.telemetry import set_enabled
+
     set_enabled(False)
     console.print("[green]✓[/green] Telemetry disabled. No events will be sent.")
 
@@ -30,6 +32,7 @@ def telemetry_off() -> None:
 def telemetry_show() -> None:
     """Show current telemetry state and install ID."""
     from puxti.telemetry import get_install_id, is_enabled
+
     enabled = is_enabled()
     status = "[green]enabled[/green]" if enabled else "[dim]disabled (default)[/dim]"
     console.print(f"[bold]Telemetry:[/bold]  {status}")

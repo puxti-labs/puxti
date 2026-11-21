@@ -46,17 +46,17 @@ class _PrismaField:
     is_list: bool
     is_optional: bool
     attrs: str
-    db_column: str          # @map(...) or the field name itself
-    is_relation: bool       # type is another model (enum-typed fields are columns)
+    db_column: str  # @map(...) or the field name itself
+    is_relation: bool  # type is another model (enum-typed fields are columns)
     description: str = ""
 
 
 @dataclass
 class _PrismaModel:
     name: str
-    body: str               # text between the braces
-    span: tuple[int, int]   # (start, end) offsets of the whole block in the schema
-    db_table: str           # @@map(...) or the model name itself
+    body: str  # text between the braces
+    span: tuple[int, int]  # (start, end) offsets of the whole block in the schema
+    db_table: str  # @@map(...) or the model name itself
     description: str = ""
     fields: list[_PrismaField] = field(default_factory=list)
 
@@ -123,35 +123,39 @@ class PrismaConnector(BaseConnector):
         entities: list[Entity] = []
         for model in self._load_models().values():
             model_id = self._entity_id(model.name)
-            entities.append(Entity(
-                id=model_id,
-                name=model.name,
-                type=EntityType.TABLE,
-                source_connector=self.name,
-                project="prisma",
-                metadata={
-                    "path": self._schema_rel_path(),
-                    "db_table": model.db_table,
-                    "description": model.description,
-                },
-            ))
-            for f in model.fields:
-                if f.is_relation:
-                    continue  # relation fields are virtual — no DB column
-                entities.append(Entity(
-                    id=self._entity_id(model.name, f.name),
-                    name=f.name,
-                    type=EntityType.COLUMN,
+            entities.append(
+                Entity(
+                    id=model_id,
+                    name=model.name,
+                    type=EntityType.TABLE,
                     source_connector=self.name,
                     project="prisma",
                     metadata={
-                        "model_id": model_id,
-                        "model_name": model.name,
-                        "data_type": f.type,
-                        "db_column": f.db_column,
-                        "description": f.description,
+                        "path": self._schema_rel_path(),
+                        "db_table": model.db_table,
+                        "description": model.description,
                     },
-                ))
+                )
+            )
+            for f in model.fields:
+                if f.is_relation:
+                    continue  # relation fields are virtual — no DB column
+                entities.append(
+                    Entity(
+                        id=self._entity_id(model.name, f.name),
+                        name=f.name,
+                        type=EntityType.COLUMN,
+                        source_connector=self.name,
+                        project="prisma",
+                        metadata={
+                            "model_id": model_id,
+                            "model_name": model.name,
+                            "data_type": f.type,
+                            "db_column": f.db_column,
+                            "description": f.description,
+                        },
+                    )
+                )
         return entities
 
     async def extract_lineage(self) -> list[Edge]:
@@ -187,7 +191,7 @@ class PrismaConnector(BaseConnector):
         """
         schema_text = self._load_schema_text()
         return {
-            self._entity_id(m.name): schema_text[m.span[0]:m.span[1]]
+            self._entity_id(m.name): schema_text[m.span[0] : m.span[1]]
             for m in self._load_models().values()
         }
 
@@ -236,8 +240,7 @@ class PrismaConnector(BaseConnector):
             ]
 
         target = next(
-            (f for f in model.fields
-             if not f.is_relation and old_name in (f.name, f.db_column)),
+            (f for f in model.fields if not f.is_relation and old_name in (f.name, f.db_column)),
             None,
         )
         if target is None:
@@ -257,11 +260,9 @@ class PrismaConnector(BaseConnector):
 
         if _MAP_RE.search(target.attrs) and target.db_column == old_name:
             # Mapped field: the DB column lives in the @map string only.
-            block = schema_text[model.span[0]:model.span[1]]
+            block = schema_text[model.span[0] : model.span[1]]
             new_block = block.replace(f'@map("{old_name}")', f'@map("{new_name}")')
-            updated = (
-                schema_text[:model.span[0]] + new_block + schema_text[model.span[1]:]
-            )
+            updated = schema_text[: model.span[0]] + new_block + schema_text[model.span[1] :]
             description = (
                 f"Renamed mapped column `{old_name}` → `{new_name}` on field "
                 f"`{model.name}.{target.name}` (@map updated). {migration_note}"
@@ -269,8 +270,7 @@ class PrismaConnector(BaseConnector):
         else:
             updated = _rename_field_in_schema(schema_text, models, model_name, old_name, new_name)
             description = (
-                f"Renamed field `{model.name}.{old_name}` → `{new_name}`. "
-                f"{migration_note}"
+                f"Renamed field `{model.name}.{old_name}` → `{new_name}`. {migration_note}"
             )
 
         if updated == schema_text:
@@ -281,16 +281,19 @@ class PrismaConnector(BaseConnector):
                 )
             ]
 
-        return [FileDiff(
-            file_path=self._schema_rel_path(),
-            before=schema_text,
-            after=updated,
-            connector=self.name,
-            description=description,
-        )], []
+        return [
+            FileDiff(
+                file_path=self._schema_rel_path(),
+                before=schema_text,
+                after=updated,
+                connector=self.name,
+                description=description,
+            )
+        ], []
 
 
 # ── Schema parsing ────────────────────────────────────────────────────────────
+
 
 def _parse_schema(text: str) -> dict[str, _PrismaModel]:
     """Parse model blocks (and enum names, to classify field types) from a schema."""
@@ -335,18 +338,20 @@ def _parse_fields(body: str, model_names: set[str]) -> list[_PrismaField]:
             continue
         fname, ftype, list_marker, optional_marker, attrs = m.groups()
         field_map = _MAP_RE.search(attrs)
-        fields.append(_PrismaField(
-            name=fname,
-            type=ftype,
-            is_list=list_marker is not None,
-            is_optional=optional_marker is not None,
-            attrs=attrs,
-            db_column=field_map.group(1) if field_map else fname,
-            # Enum-typed fields are real DB columns; only model-typed
-            # fields are virtual relation fields.
-            is_relation=ftype in model_names,
-            description=" ".join(pending_doc),
-        ))
+        fields.append(
+            _PrismaField(
+                name=fname,
+                type=ftype,
+                is_list=list_marker is not None,
+                is_optional=optional_marker is not None,
+                attrs=attrs,
+                db_column=field_map.group(1) if field_map else fname,
+                # Enum-typed fields are real DB columns; only model-typed
+                # fields are virtual relation fields.
+                is_relation=ftype in model_names,
+                description=" ".join(pending_doc),
+            )
+        )
         pending_doc = []
     return fields
 
@@ -377,7 +382,7 @@ def _rename_field_in_schema(
     # Replace bottom-up so earlier spans stay valid.
     replacements: list[tuple[int, int, str]] = []
 
-    block_text = schema_text[model.span[0]:model.span[1]]
+    block_text = schema_text[model.span[0] : model.span[1]]
     replacements.append((model.span[0], model.span[1], ident.sub(new_name, block_text)))
 
     for other in models.values():
@@ -386,7 +391,7 @@ def _rename_field_in_schema(
         relation_types = {f.type for f in other.fields if f.is_relation}
         if model_name not in relation_types:
             continue
-        block = schema_text[other.span[0]:other.span[1]]
+        block = schema_text[other.span[0] : other.span[1]]
         new_block = _RELATION_REFS_RE.sub(
             lambda m: m.group(0).replace(m.group(1), ident.sub(new_name, m.group(1))),
             block,

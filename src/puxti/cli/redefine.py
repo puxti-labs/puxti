@@ -33,11 +33,15 @@ from puxti.settings import settings
 @app.command()
 def redefine(
     entity: str = typer.Option(
-        ..., "--entity", "-e",
-        help="Entity ID being redefined (e.g. model.demo_shop.orders.gross_revenue)"
+        ...,
+        "--entity",
+        "-e",
+        help="Entity ID being redefined (e.g. model.demo_shop.orders.gross_revenue)",
     ),
     description: str = typer.Option(
-        ..., "--description", "-d",
+        ...,
+        "--description",
+        "-d",
         help="New definition — what this entity means now and why it changed",
     ),
     repo: Optional[str] = typer.Option(
@@ -51,11 +55,13 @@ def redefine(
         None, help="Base branch for the PR (default: main or from .puxti.yml)."
     ),
     dbt_project_dir: Optional[str] = typer.Option(
-        None, "--dbt-project-dir",
+        None,
+        "--dbt-project-dir",
         help="Path to dbt project root (overrides .puxti.yml and DBT_PROJECT_DIR)",
     ),
     dry_run: bool = typer.Option(
-        False, "--dry-run",
+        False,
+        "--dry-run",
         help=(
             "Show affected entities and the cost estimate, then generate and print the "
             "diffs without saving the definition or calling GitHub. Calls the LLM."
@@ -117,9 +123,7 @@ async def _run_redefine(
         raise typer.Exit(1)
 
     if not dry_run and not settings.github_token:
-        err_console.print(
-            "[red]Error:[/red] GitHub token not configured. Set GITHUB_TOKEN."
-        )
+        err_console.print("[red]Error:[/red] GitHub token not configured. Set GITHUB_TOKEN.")
         raise typer.Exit(1)
 
     if not dry_run:
@@ -195,8 +199,7 @@ async def _run_redefine(
             backend = get_backend()
             sql_map = dbt.get_model_sql_map()
             calls: list[tuple[str, str]] = [
-                (_PASSTHROUGH_SYSTEM_PROMPT, message)
-                for _, _, _, message in upstream_prompts
+                (_PASSTHROUGH_SYSTEM_PROMPT, message) for _, _, _, message in upstream_prompts
             ]
             passthrough_calls = len(calls)
             skipped_deep = 0
@@ -207,12 +210,14 @@ async def _run_redefine(
                 model_sql = sql_map.get(dep_entity.id)
                 if not model_sql:
                     continue
-                calls.append((
-                    _REDEFINE_SYSTEM_PROMPT,
-                    redefine_user_message(
-                        entity, old_definition, description, dep_entity.name, depth, model_sql
-                    ),
-                ))
+                calls.append(
+                    (
+                        _REDEFINE_SYSTEM_PROMPT,
+                        redefine_user_message(
+                            entity, old_definition, description, dep_entity.name, depth, model_sql
+                        ),
+                    )
+                )
 
             total_input_tokens = 0
             tokens_exact = True
@@ -225,10 +230,9 @@ async def _run_redefine(
             est_output_tokens = llm_calls * 512
             est_cost: float | None = None
             if backend.input_cost_per_mtok is not None and backend.output_cost_per_mtok is not None:
-                est_cost = (
-                    (total_input_tokens / 1_000_000) * backend.input_cost_per_mtok
-                    + (est_output_tokens / 1_000_000) * backend.output_cost_per_mtok
-                )
+                est_cost = (total_input_tokens / 1_000_000) * backend.input_cost_per_mtok + (
+                    est_output_tokens / 1_000_000
+                ) * backend.output_cost_per_mtok
             approx = "" if tokens_exact else " (approximate)"
             cost_line = (
                 f"Est. cost:              ${est_cost:.4f} USD"
@@ -315,21 +319,19 @@ async def _run_redefine(
         # saved after the PR opens.
         if dry_run:
             console.print(
-                "\n[yellow]Dry run:[/yellow] 1 pull request would be opened. "
-                "Nothing was written."
+                "\n[yellow]Dry run:[/yellow] 1 pull request would be opened. Nothing was written."
             )
             return
 
         if not _confirm("\nOpen 1 pull request? ([bold]y[/bold]=yes, n=cancel) > "):
-            console.print(
-                "[yellow]No PR opened.[/yellow] Cancelled; the definition was not saved."
-            )
+            console.print("[yellow]No PR opened.[/yellow] Cancelled; the definition was not saved.")
             return
 
         # 3. Build event and propagation objects — IDs needed before PR creation.
         # Writes to the graph are deferred until after the PR succeeds so a failed
         # open_pr() does not leave orphaned definitions or change events behind.
         from puxti.models import Definition, PropagationResult, SemanticChangeEvent
+
         new_definition = Definition(
             entity_id=entity,
             description=description,
@@ -380,8 +382,7 @@ async def _run_redefine(
         file_list = ", ".join(f"`{d.file_path}`" for d in updated.diffs)
         console.print(
             Panel(
-                f"[bold green]PR opened:[/bold green] {updated.pr_url}\n"
-                f"Files: {file_list}",
+                f"[bold green]PR opened:[/bold green] {updated.pr_url}\nFiles: {file_list}",
                 title="[bold]Puxti[/bold]",
                 border_style="green",
             )

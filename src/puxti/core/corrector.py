@@ -114,24 +114,28 @@ class SemanticCorrector:
             key = (item.get("from_entity_id"), item.get("to_entity_id"))
             if key not in edge_index:
                 continue  # skip assessments for edges we didn't ask about
-            assessments.append(EdgeAssessment(
-                from_entity_id=key[0],
-                to_entity_id=key[1],
-                action=item.get("action", "keep"),
-                updated_description=item.get("updated_description"),
-                reasoning=item.get("reasoning", ""),
-            ))
+            assessments.append(
+                EdgeAssessment(
+                    from_entity_id=key[0],
+                    to_entity_id=key[1],
+                    action=item.get("action", "keep"),
+                    updated_description=item.get("updated_description"),
+                    reasoning=item.get("reasoning", ""),
+                )
+            )
 
         # Any edge the LLM didn't assess defaults to keep
         assessed_keys = {(a.from_entity_id, a.to_entity_id) for a in assessments}
         for e in edges:
             if (e.from_entity_id, e.to_entity_id) not in assessed_keys:
-                assessments.append(EdgeAssessment(
-                    from_entity_id=e.from_entity_id,
-                    to_entity_id=e.to_entity_id,
-                    action="keep",
-                    reasoning="Not assessed by LLM — defaulting to keep",
-                ))
+                assessments.append(
+                    EdgeAssessment(
+                        from_entity_id=e.from_entity_id,
+                        to_entity_id=e.to_entity_id,
+                        action="keep",
+                        reasoning="Not assessed by LLM — defaulting to keep",
+                    )
+                )
 
         return assessments
 
@@ -161,12 +165,14 @@ class SemanticCorrector:
                 removed_pairs.append(key)
             elif assessment.action == "update":
                 updated_pairs.append(key)
-                updated_edges.append(SemanticEdge(
-                    from_entity_id=edge.from_entity_id,
-                    to_entity_id=edge.to_entity_id,
-                    type=EdgeType(edge.type.value),
-                    description=assessment.updated_description or edge.description,
-                    created_by="correct",
-                ))
+                updated_edges.append(
+                    SemanticEdge(
+                        from_entity_id=edge.from_entity_id,
+                        to_entity_id=edge.to_entity_id,
+                        type=EdgeType(edge.type.value),
+                        description=assessment.updated_description or edge.description,
+                        created_by="correct",
+                    )
+                )
 
         return updated_edges, removed_pairs, updated_pairs

@@ -186,9 +186,7 @@ def output_columns(sql: str, dialect: str | None = None) -> set[str] | None:
 _QUALIFIER_CHARS = re.compile(r"""[\w$."`\[\]\x00]*$""")
 # Whitespace and comments, which SQL allows between a qualifier's dot and name.
 _GAP = r"(?:\s|--[^\n]*|/\*.*?\*/)*"
-_RELATION_KEYWORD = re.compile(
-    r"\b(?:from|join|into|update|table|view)\s+$", re.IGNORECASE
-)
+_RELATION_KEYWORD = re.compile(r"\b(?:from|join|into|update|table|view)\s+$", re.IGNORECASE)
 
 
 def _rename_in_plain_sql(sql: str, old_name: str, new_name: str) -> tuple[str, bool]:

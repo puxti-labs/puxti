@@ -42,9 +42,9 @@ SQLREF_PREFIX = "sqlref."
 
 @dataclass
 class _ParsedView:
-    schema: str                 # lowercased; default_schema when unqualified
-    name: str                   # lowercased view name
-    display_name: str           # as written in the file
+    schema: str  # lowercased; default_schema when unqualified
+    name: str  # lowercased view name
+    display_name: str  # as written in the file
     file: Path
     columns: list[str] = field(default_factory=list)
     table_refs: list[tuple[str | None, str]] = field(default_factory=list)
@@ -140,26 +140,30 @@ class SqlViewsConnector(BaseConnector):
     async def extract_entities(self) -> list[Entity]:
         entities: list[Entity] = []
         for view in self._load_views().values():
-            entities.append(Entity(
-                id=view.entity_id,
-                name=view.name,
-                type=EntityType.VIEW,
-                source_connector=self.name,
-                project=view.schema,
-                metadata={
-                    "path": self._rel_path(view.file),
-                    "schema": view.schema,
-                },
-            ))
-            for col in view.columns:
-                entities.append(Entity(
-                    id=f"{view.entity_id}.{col}",
-                    name=col,
-                    type=EntityType.COLUMN,
+            entities.append(
+                Entity(
+                    id=view.entity_id,
+                    name=view.name,
+                    type=EntityType.VIEW,
                     source_connector=self.name,
                     project=view.schema,
-                    metadata={"view_id": view.entity_id, "view_name": view.name},
-                ))
+                    metadata={
+                        "path": self._rel_path(view.file),
+                        "schema": view.schema,
+                    },
+                )
+            )
+            for col in view.columns:
+                entities.append(
+                    Entity(
+                        id=f"{view.entity_id}.{col}",
+                        name=col,
+                        type=EntityType.COLUMN,
+                        source_connector=self.name,
+                        project=view.schema,
+                        metadata={"view_id": view.entity_id, "view_name": view.name},
+                    )
+                )
         return entities
 
     async def extract_lineage(self) -> list[Edge]:
@@ -190,7 +194,7 @@ class SqlViewsConnector(BaseConnector):
                     connector=self.name,
                 )
                 if target.startswith(SQLREF_PREFIX):
-                    edge.metadata["raw_reference"] = target[len(SQLREF_PREFIX):]
+                    edge.metadata["raw_reference"] = target[len(SQLREF_PREFIX) :]
                 edges.append(edge)
         return edges
 
@@ -235,9 +239,7 @@ class SqlViewsConnector(BaseConnector):
 
         affected_ids = set(event.affected_entity_ids or [])
         views = self._load_views()
-        source_view = next(
-            (v for v in views.values() if v.entity_id == source_parent_id), None
-        )
+        source_view = next((v for v in views.values() if v.entity_id == source_parent_id), None)
 
         def _is_direct(view: _ParsedView) -> bool:
             # When the source is one of these views, its schema is known: a
@@ -246,8 +248,7 @@ class SqlViewsConnector(BaseConnector):
             return any(
                 ref_name == source_parent_name
                 and (
-                    source_view is None
-                    or (ref_schema or self.default_schema) == source_view.schema
+                    source_view is None or (ref_schema or self.default_schema) == source_view.schema
                 )
                 for ref_schema, ref_name in view.table_refs
             )
@@ -264,8 +265,11 @@ class SqlViewsConnector(BaseConnector):
         patched_files: set[Path] = set()
 
         for view in views.values():
-            if affected_ids and view.entity_id not in affected_ids \
-                    and view.entity_id != source_parent_id:
+            if (
+                affected_ids
+                and view.entity_id not in affected_ids
+                and view.entity_id != source_parent_id
+            ):
                 continue
 
             is_source = view.entity_id == source_parent_id
@@ -321,21 +325,23 @@ class SqlViewsConnector(BaseConnector):
                 continue
 
             patched_files.add(view.file)
-            diffs.append(FileDiff(
-                file_path=self._rel_path(view.file),
-                before=original_sql,
-                after=updated_sql,
-                connector=self.name,
-                description=(
-                    f"Renamed column `{old_name}` → `{new_name}` "
-                    f"in view `{view.display_name}`"
-                ),
-            ))
+            diffs.append(
+                FileDiff(
+                    file_path=self._rel_path(view.file),
+                    before=original_sql,
+                    after=updated_sql,
+                    connector=self.name,
+                    description=(
+                        f"Renamed column `{old_name}` → `{new_name}` in view `{view.display_name}`"
+                    ),
+                )
+            )
 
         return diffs, unverified
 
 
 # ── sqlglot helpers ───────────────────────────────────────────────────────────
+
 
 def _output_columns(query: exp.Expression | None) -> list[str]:
     """Output column names of a view query, skipping stars and unnamed items."""

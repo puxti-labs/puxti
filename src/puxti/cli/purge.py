@@ -13,7 +13,9 @@ from puxti.core.graph import KnowledgeGraph
 @app.command()
 def purge(
     project: Optional[str] = typer.Option(
-        None, "--project", "-p",
+        None,
+        "--project",
+        "-p",
         help="Project name to purge (removes all its entities, definitions, and edges).",
     ),
     all_projects: bool = typer.Option(
@@ -47,13 +49,15 @@ async def _run_purge(project: str | None, all_projects: bool) -> None:
         if all_projects:
             projects = await graph.get_projects()
             project_list = ", ".join(projects) if projects else "(none tagged)"
-            console.print(Panel(
-                f"This will delete [bold]everything[/bold] in the Knowledge Graph:\n"
-                f"all entities, definitions, semantic edges, and audit records.\n\n"
-                f"Projects currently in graph: {project_list}",
-                title="[bold red]Purge entire Knowledge Graph[/bold red]",
-                border_style="red",
-            ))
+            console.print(
+                Panel(
+                    f"This will delete [bold]everything[/bold] in the Knowledge Graph:\n"
+                    f"all entities, definitions, semantic edges, and audit records.\n\n"
+                    f"Projects currently in graph: {project_list}",
+                    title="[bold red]Purge entire Knowledge Graph[/bold red]",
+                    border_style="red",
+                )
+            )
             confirm = console.input("Type [bold]yes[/bold] to confirm > ").strip().lower()
             if confirm != "yes":
                 console.print("[yellow]Cancelled — nothing deleted.[/yellow]")
@@ -70,12 +74,14 @@ async def _run_purge(project: str | None, all_projects: bool) -> None:
                 )
                 raise typer.Exit(1)
 
-            console.print(Panel(
-                f"This will delete all entities, definitions, and semantic edges\n"
-                f"for project [bold]{project}[/bold].",
-                title="[bold red]Purge project[/bold red]",
-                border_style="red",
-            ))
+            console.print(
+                Panel(
+                    f"This will delete all entities, definitions, and semantic edges\n"
+                    f"for project [bold]{project}[/bold].",
+                    title="[bold red]Purge project[/bold red]",
+                    border_style="red",
+                )
+            )
             confirm = console.input("Type [bold]yes[/bold] to confirm > ").strip().lower()
             if confirm != "yes":
                 console.print("[yellow]Cancelled — nothing deleted.[/yellow]")

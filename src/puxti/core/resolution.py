@@ -48,7 +48,8 @@ def build_reference_index(entities: list[Entity]) -> dict[str, str]:
             if schema:
                 claim(f"{schema}.{entity.name}", entity.id)
         elif entity.source_connector == "dbt" and entity.type in (
-            EntityType.MODEL, EntityType.TABLE
+            EntityType.MODEL,
+            EntityType.TABLE,
         ):
             claim(entity.name, entity.id)
             schema = meta.get("schema")
@@ -69,7 +70,7 @@ def resolve_edges(edges: list[Edge], index: dict[str, str]) -> tuple[list[Edge],
     for edge in edges:
         if not edge.to_entity_id.startswith(SQLREF_PREFIX):
             continue
-        raw = edge.to_entity_id[len(SQLREF_PREFIX):].lower()
+        raw = edge.to_entity_id[len(SQLREF_PREFIX) :].lower()
         resolved = index.get(raw)
         if resolved is None and "." in raw:
             # schema-qualified reference whose owner indexed only the bare name

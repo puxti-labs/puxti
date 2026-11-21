@@ -11,18 +11,18 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 class EntityType(str, Enum):
     TABLE = "table"
     COLUMN = "column"
-    MODEL = "model"          # dbt model
-    VIEW = "view"            # SQL view
-    DAG = "dag"              # Airflow DAG
-    TASK = "task"            # Airflow task
+    MODEL = "model"  # dbt model
+    VIEW = "view"  # SQL view
+    DAG = "dag"  # Airflow DAG
+    TASK = "task"  # Airflow task
     DASHBOARD = "dashboard"
     METRIC = "metric"
 
 
 class ChangeType(str, Enum):
-    STRUCTURAL = "structural"    # Case 1 — column rename, table restructure
-    SEMANTIC = "semantic"        # Case 3 — definition redefinition
-    SURFACE = "surface"          # Case 2 — attribute surfacing to reporting layer
+    STRUCTURAL = "structural"  # Case 1 — column rename, table restructure
+    SEMANTIC = "semantic"  # Case 3 — definition redefinition
+    SURFACE = "surface"  # Case 2 — attribute surfacing to reporting layer
     UNKNOWN = "unknown"
 
 
@@ -34,26 +34,27 @@ class ChangeStatus(str, Enum):
 
 
 class EntityStatus(str, Enum):
-    PROPOSED = "proposed"    # defined ahead of the code that implements it — not yet bound
-    BOUND = "bound"          # backed by a real scanned entity
+    PROPOSED = "proposed"  # defined ahead of the code that implements it — not yet bound
+    BOUND = "bound"  # backed by a real scanned entity
 
 
 class EdgeType(str, Enum):
     DEPENDS_ON = "depends_on"
     TRANSFORMS = "transforms"
     REFERENCES = "references"
-    DERIVED_FROM = "derived_from"   # semantic graph — concept derived from another
-    FEEDS = "feeds"                 # cross-system: upstream producer → downstream entity
+    DERIVED_FROM = "derived_from"  # semantic graph — concept derived from another
+    FEEDS = "feeds"  # cross-system: upstream producer → downstream entity
 
 
 # ── Structural lineage entities ──────────────────────────────────────────────
+
 
 class Entity(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
     type: EntityType
     source_connector: str
-    project: str = ""                        # project name — e.g. dbt project, Airflow instance
+    project: str = ""  # project name — e.g. dbt project, Airflow instance
     status: EntityStatus = EntityStatus.BOUND  # proposed = defined before a backing model exists
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -72,40 +73,45 @@ class Edge(BaseModel):
 # Sits above structural lineage. Captures what entities mean and how concepts
 # relate across the full stack, regardless of which connector owns them.
 
+
 class Definition(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     entity_id: str
-    description: str                        # semantic text — what this entity means
+    description: str  # semantic text — what this entity means
     version: int = 1
-    created_by: str                         # "user" | "llm" | "import"
-    change_event_id: str | None = None      # the change that triggered this definition
+    created_by: str  # "user" | "llm" | "import"
+    change_event_id: str | None = None  # the change that triggered this definition
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class SemanticEdge(BaseModel):
     """Concept-level relationship in the semantic graph.
     Example: revenue DERIVED_FROM sales — so redefining sales affects revenue."""
+
     from_entity_id: str
     to_entity_id: str
     type: EdgeType
-    description: str                        # why this semantic relationship exists
+    description: str  # why this semantic relationship exists
     created_by: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 # ── Scan runs ────────────────────────────────────────────────────────────────
 
+
 class SourceFingerprint(BaseModel):
     """Content hash of everything a producer connector reads during a scan.
     `source` identifies where the inputs live (resolved path), so two projects
     behind the same connector name never share a fingerprint."""
+
     source: str
-    digest: str                             # sha256 hex
+    digest: str  # sha256 hex
 
 
 class ScanRun(BaseModel):
     """One completed `puxti scan` of one connector. `scan --if-changed` compares
     the latest row per (connector, source) with the current fingerprint."""
+
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     connector: str
     source: str
@@ -116,36 +122,39 @@ class ScanRun(BaseModel):
 
 # ── Change events ─────────────────────────────────────────────────────────────
 
+
 class ChangeEvent(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     type: ChangeType
     source_entity_id: str
-    change: dict[str, Any]                  # before/after representation
-    semantic_context: str | None = None     # filled by semantic capture
-    declared_by: str | None = None          # user who declared it (proactive mode)
+    change: dict[str, Any]  # before/after representation
+    semantic_context: str | None = None  # filled by semantic capture
+    declared_by: str | None = None  # user who declared it (proactive mode)
     status: ChangeStatus = ChangeStatus.DETECTED
     detected_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class SemanticChangeEvent(BaseModel):
     """A ChangeEvent enriched with semantic context — ready for propagation."""
+
     change_event_id: str
     entity_id: str
     change_type: ChangeType
     semantic_context: str
-    affected_entity_ids: list[str]          # entities the semantic graph says are affected
-    reasoning: str                          # LLM chain of reasoning for the propagation
+    affected_entity_ids: list[str]  # entities the semantic graph says are affected
+    reasoning: str  # LLM chain of reasoning for the propagation
     change: dict[str, Any]
 
 
 # ── Propagation ───────────────────────────────────────────────────────────────
+
 
 class FileDiff(BaseModel):
     file_path: str
     before: str
     after: str
     connector: str
-    description: str                        # human-readable explanation of this change
+    description: str  # human-readable explanation of this change
 
 
 class UnverifiedReason(str, Enum):
@@ -202,7 +211,7 @@ class PropagationResult(BaseModel):
     diffs: list[FileDiff]
     unverified_entities: list[UnverifiedEntity] = Field(default_factory=list)
     pr_url: str | None = None
-    status: str = "pending"                 # pending | opened | merged | rejected
+    status: str = "pending"  # pending | opened | merged | rejected
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @model_validator(mode="before")
@@ -235,24 +244,27 @@ class PropagationResult(BaseModel):
 
 # ── Correction ────────────────────────────────────────────────────────────────
 
+
 class EdgeAssessment(BaseModel):
     """LLM-proposed disposition for a single semantic edge during correction."""
+
     from_entity_id: str
     to_entity_id: str
-    action: str                             # "keep" | "update" | "remove"
+    action: str  # "keep" | "update" | "remove"
     updated_description: str | None = None  # populated when action == "update"
     reasoning: str
 
 
 class CorrectionEvent(BaseModel):
     """Records a user correction to an entity definition and its edge impacts."""
+
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     entity_id: str
     old_definition_id: str
     new_definition_id: str
-    edges_kept: list[tuple[str, str]] = Field(default_factory=list)     # (from_id, to_id)
+    edges_kept: list[tuple[str, str]] = Field(default_factory=list)  # (from_id, to_id)
     edges_updated: list[tuple[str, str]] = Field(default_factory=list)  # (from_id, to_id)
     edges_removed: list[tuple[str, str]] = Field(default_factory=list)  # (from_id, to_id)
-    classified_as: str                      # "correction" | "real_change"
-    change_event_id: str | None = None      # set when classified_as == "real_change"
+    classified_as: str  # "correction" | "real_change"
+    change_event_id: str | None = None  # set when classified_as == "real_change"
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

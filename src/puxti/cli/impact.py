@@ -13,15 +13,15 @@ from puxti.core.graph import KnowledgeGraph
 
 @app.command()
 def impact(
-    entity: str = typer.Argument(
-        ..., help="Entity ID to analyze (e.g. model.jaffle_shop.orders)"
-    ),
+    entity: str = typer.Argument(..., help="Entity ID to analyze (e.g. model.jaffle_shop.orders)"),
     change_type: Optional[str] = typer.Option(
-        None, "--change-type",
+        None,
+        "--change-type",
         help="Type of change to evaluate: rename, redefine, drop, type_change",
     ),
     as_json: bool = typer.Option(
-        False, "--json",
+        False,
+        "--json",
         help="Output as JSON (same shape as the MCP impact_of_change tool).",
     ),
 ) -> None:
@@ -97,9 +97,7 @@ async def _run_impact(entity: str, change_type: str | None, as_json: bool) -> No
             return
 
         def_text = (
-            definition.description
-            if definition
-            else "[dim]no definition — run puxti scan[/dim]"
+            definition.description if definition else "[dim]no definition — run puxti scan[/dim]"
         )
         header_lines = (
             f"[bold]Entity:[/bold]      {entity_obj.name}  [dim]({entity_obj.type.value})[/dim]\n"
@@ -151,8 +149,7 @@ async def _run_impact(entity: str, change_type: str | None, as_json: bool) -> No
         sem_count = sum(1 for r in rows if "semantic" in r["rels"])
         str_count = sum(1 for r in rows if "structural" in r["rels"])
         console.print(
-            f"\n[dim]{len(rows)} dependent(s) — "
-            f"{sem_count} semantic, {str_count} structural[/dim]"
+            f"\n[dim]{len(rows)} dependent(s) — {sem_count} semantic, {str_count} structural[/dim]"
         )
 
         if change_type in ("rename", "drop", "type_change") and str_count:

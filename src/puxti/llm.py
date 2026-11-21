@@ -78,8 +78,7 @@ def _approximate_token_count(user_message: str, system: str | None) -> TokenCoun
 
 # Shown by --dry-run panels when a model's pricing is unknown.
 COST_UNKNOWN_HINT = (
-    "unknown for this model — set LLM_INPUT_COST_PER_MTOK "
-    "and LLM_OUTPUT_COST_PER_MTOK"
+    "unknown for this model — set LLM_INPUT_COST_PER_MTOK and LLM_OUTPUT_COST_PER_MTOK"
 )
 
 
@@ -124,9 +123,7 @@ class LLMBackend(Protocol):
     input_cost_per_mtok: float | None
     output_cost_per_mtok: float | None
 
-    async def complete(
-        self, system: str, user_message: str, max_tokens: int
-    ) -> LLMResponse: ...
+    async def complete(self, system: str, user_message: str, max_tokens: int) -> LLMResponse: ...
 
     async def count_input_tokens(
         self, user_message: str, system: str | None = None
@@ -204,9 +201,7 @@ class AnthropicBackend:
             "Check your plan and billing details."
         )
 
-    async def complete(
-        self, system: str, user_message: str, max_tokens: int
-    ) -> LLMResponse:
+    async def complete(self, system: str, user_message: str, max_tokens: int) -> LLMResponse:
         _logger.debug(
             "LLM call | model=%s prompt_chars=%d hash=%s",
             self.model,
@@ -234,9 +229,7 @@ class AnthropicBackend:
             truncated=response.stop_reason == "max_tokens",
         )
 
-    async def count_input_tokens(
-        self, user_message: str, system: str | None = None
-    ) -> TokenCount:
+    async def count_input_tokens(self, user_message: str, system: str | None = None) -> TokenCount:
         """Exact input-token count via the count_tokens API — consumes no credits.
 
         A non-Anthropic endpoint that lacks count_tokens gets an estimate."""
@@ -304,9 +297,7 @@ class OpenAICompatBackend:
         self.key_configured = bool(api_key) or provider in _KEY_OPTIONAL or client is not None
         self.input_cost_per_mtok, self.output_cost_per_mtok = _resolve_pricing(model)
 
-    async def complete(
-        self, system: str, user_message: str, max_tokens: int
-    ) -> LLMResponse:
+    async def complete(self, system: str, user_message: str, max_tokens: int) -> LLMResponse:
         _logger.debug(
             "LLM call | provider=%s model=%s prompt_chars=%d hash=%s",
             self.provider,
@@ -326,9 +317,7 @@ class OpenAICompatBackend:
                 ],
             )
         except openai.AuthenticationError as exc:
-            raise LLMAuthError(
-                f"{self.provider} rejected the API key. Check LLM_API_KEY."
-            ) from exc
+            raise LLMAuthError(f"{self.provider} rejected the API key. Check LLM_API_KEY.") from exc
         except openai.RateLimitError as exc:
             # OpenAI-compatible providers signal an out-of-credit account as a
             # 429 with an insufficient_quota code — that's billing, not pacing.
@@ -344,9 +333,7 @@ class OpenAICompatBackend:
             truncated=choice.finish_reason == "length",
         )
 
-    async def count_input_tokens(
-        self, user_message: str, system: str | None = None
-    ) -> TokenCount:
+    async def count_input_tokens(self, user_message: str, system: str | None = None) -> TokenCount:
         """Approximate count — the OpenAI wire format has no free counting
         endpoint, and per-model tokenizers vary across providers."""
         return _approximate_token_count(user_message, system)
@@ -358,9 +345,7 @@ class OpenAICompatBackend:
         try:
             await self._client.models.list()
         except openai.AuthenticationError as exc:
-            raise LLMAuthError(
-                f"{self.provider} rejected the API key. Check LLM_API_KEY."
-            ) from exc
+            raise LLMAuthError(f"{self.provider} rejected the API key. Check LLM_API_KEY.") from exc
         except openai.NotFoundError:
             pass
 
@@ -380,9 +365,7 @@ def get_backend() -> LLMBackend:
                 "(the Bedrock model ID of a Claude model)."
             )
         if not settings.llm_api_key:
-            raise LLMConfigError(
-                f"LLM_API_KEY is required for provider '{provider}'."
-            )
+            raise LLMConfigError(f"LLM_API_KEY is required for provider '{provider}'.")
         return AnthropicBackend(
             provider=provider,
             model=settings.llm_model,
@@ -413,9 +396,7 @@ def get_backend() -> LLMBackend:
             "(e.g. LLM_MODEL=mistral-large-latest)."
         )
     if provider not in _KEY_OPTIONAL and not settings.llm_api_key:
-        raise LLMConfigError(
-            f"LLM_API_KEY is required for provider '{provider}'."
-        )
+        raise LLMConfigError(f"LLM_API_KEY is required for provider '{provider}'.")
 
     return OpenAICompatBackend(
         provider=provider,

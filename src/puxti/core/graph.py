@@ -7,6 +7,7 @@ a SQLite one (:class:`SqliteKnowledgeGraph`, the default, a local file at
 ``DATABASE_URL``). Call sites construct a store through the :func:`KnowledgeGraph`
 factory, which picks the backend at runtime.
 """
+
 from __future__ import annotations
 
 import json
@@ -286,9 +287,7 @@ class GraphStore(Protocol):
     # Structural lineage edges
     async def upsert_edge(self, edge: Edge) -> None: ...
     async def get_structural_dependents(self, entity_id: str) -> list[Entity]: ...
-    async def get_structural_ancestors(
-        self, entity_id: str
-    ) -> list[tuple[Entity, int]]: ...
+    async def get_structural_ancestors(self, entity_id: str) -> list[tuple[Entity, int]]: ...
 
     # Semantic graph
     async def upsert_semantic_edge(self, edge: SemanticEdge) -> None: ...
@@ -300,9 +299,7 @@ class GraphStore(Protocol):
     ) -> list[tuple[Entity, int]]: ...
     async def get_semantic_dependents(self, entity_id: str) -> list[Entity]: ...
     async def get_feeds_producers(self, entity_id: str) -> list[Entity]: ...
-    async def delete_semantic_edge(
-        self, from_entity_id: str, to_entity_id: str
-    ) -> None: ...
+    async def delete_semantic_edge(self, from_entity_id: str, to_entity_id: str) -> None: ...
 
     # Definitions
     async def upsert_definition(self, definition: Definition) -> None: ...
@@ -347,9 +344,7 @@ class SqliteKnowledgeGraph:
             else:
                 self._db = await aiosqlite.connect(":memory:")
             self._db.row_factory = aiosqlite.Row
-            async with self._db.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            ) as cur:
+            async with self._db.execute("SELECT name FROM sqlite_master WHERE type='table'") as cur:
                 present = {row["name"] for row in await cur.fetchall()}
             self._missing_tables = {"entities", "scan_runs"} - present
             return
@@ -374,9 +369,7 @@ class SqliteKnowledgeGraph:
             await self._db.execute(
                 "ALTER TABLE entities ADD COLUMN status TEXT NOT NULL DEFAULT 'bound'"
             )
-        await self._db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_entities_status ON entities(status)"
-        )
+        await self._db.execute("CREATE INDEX IF NOT EXISTS idx_entities_status ON entities(status)")
         await self._db.commit()
 
     async def close(self) -> None:
@@ -398,9 +391,16 @@ class SqliteKnowledgeGraph:
                 project=excluded.project, status=excluded.status,
                 updated_at=excluded.updated_at
             """,
-            (entity.id, entity.name, entity.type.value, entity.source_connector,
-             entity.project, entity.status.value,
-             entity.created_at.isoformat(), entity.updated_at.isoformat()),
+            (
+                entity.id,
+                entity.name,
+                entity.type.value,
+                entity.source_connector,
+                entity.project,
+                entity.status.value,
+                entity.created_at.isoformat(),
+                entity.updated_at.isoformat(),
+            ),
         )
         await self._db.commit()
 
@@ -416,8 +416,13 @@ class SqliteKnowledgeGraph:
             existing_id = row["id"]
             await self._db.execute(
                 "UPDATE entities SET type=?, project=?, status=?, updated_at=? WHERE id=?",
-                (entity.type.value, entity.project, entity.status.value,
-                 entity.updated_at.isoformat(), existing_id),
+                (
+                    entity.type.value,
+                    entity.project,
+                    entity.status.value,
+                    entity.updated_at.isoformat(),
+                    existing_id,
+                ),
             )
             await self._db.commit()
             return Entity(
@@ -435,9 +440,16 @@ class SqliteKnowledgeGraph:
                 (id, name, type, source_connector, project, status, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (entity.id, entity.name, entity.type.value, entity.source_connector,
-             entity.project, entity.status.value,
-             entity.created_at.isoformat(), entity.updated_at.isoformat()),
+            (
+                entity.id,
+                entity.name,
+                entity.type.value,
+                entity.source_connector,
+                entity.project,
+                entity.status.value,
+                entity.created_at.isoformat(),
+                entity.updated_at.isoformat(),
+            ),
         )
         await self._db.commit()
         return entity
@@ -451,9 +463,7 @@ class SqliteKnowledgeGraph:
         return _to_entity(row) if row else None
 
     async def get_entity_by_id(self, entity_id: str) -> Entity | None:
-        async with self._db.execute(
-            "SELECT * FROM entities WHERE id=?", (entity_id,)
-        ) as cur:
+        async with self._db.execute("SELECT * FROM entities WHERE id=?", (entity_id,)) as cur:
             row = await cur.fetchone()
         return _to_entity(row) if row else None
 
@@ -529,7 +539,9 @@ class SqliteKnowledgeGraph:
     async def get_reconcile_candidates(self) -> list[Entity]:
         """Bound model/view/table/metric entities a proposed metric could bind to."""
         types = (
-            EntityType.MODEL.value, EntityType.VIEW.value, EntityType.TABLE.value,
+            EntityType.MODEL.value,
+            EntityType.VIEW.value,
+            EntityType.TABLE.value,
             EntityType.METRIC.value,
         )
         placeholders = ",".join("?" * len(types))
@@ -563,8 +575,15 @@ class SqliteKnowledgeGraph:
                     (id, entity_id, description, version, created_by, change_event_id, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (new_def.id, new_def.entity_id, new_def.description, new_def.version,
-                 new_def.created_by, new_def.change_event_id, new_def.created_at.isoformat()),
+                (
+                    new_def.id,
+                    new_def.entity_id,
+                    new_def.description,
+                    new_def.version,
+                    new_def.created_by,
+                    new_def.change_event_id,
+                    new_def.created_at.isoformat(),
+                ),
             )
 
         # Re-point semantic edges from the placeholder onto the real entity,
@@ -682,8 +701,14 @@ class SqliteKnowledgeGraph:
                 created_by=excluded.created_by,
                 created_at=excluded.created_at
             """,
-            (edge.from_entity_id, edge.to_entity_id, edge.type.value,
-             edge.description, edge.created_by, edge.created_at.isoformat()),
+            (
+                edge.from_entity_id,
+                edge.to_entity_id,
+                edge.type.value,
+                edge.description,
+                edge.created_by,
+                edge.created_at.isoformat(),
+            ),
         )
         await self._db.commit()
 
@@ -734,9 +759,7 @@ class SqliteKnowledgeGraph:
             rows = await cur.fetchall()
         return [_to_semantic_edge(r) for r in rows]
 
-    async def get_semantic_dependents_with_depth(
-        self, entity_id: str
-    ) -> list[tuple[Entity, int]]:
+    async def get_semantic_dependents_with_depth(self, entity_id: str) -> list[tuple[Entity, int]]:
         """Return entities with SEMANTIC paths pointing to entity_id, with min hop depth."""
         async with self._db.execute(
             """
@@ -816,9 +839,15 @@ class SqliteKnowledgeGraph:
                 version=excluded.version,
                 created_by=excluded.created_by
             """,
-            (definition.id, definition.entity_id, definition.description,
-             definition.version, definition.created_by, definition.change_event_id,
-             definition.created_at.isoformat()),
+            (
+                definition.id,
+                definition.entity_id,
+                definition.description,
+                definition.version,
+                definition.created_by,
+                definition.change_event_id,
+                definition.created_at.isoformat(),
+            ),
         )
         await self._db.commit()
 
@@ -854,10 +883,16 @@ class SqliteKnowledgeGraph:
                 status=excluded.status,
                 semantic_context=excluded.semantic_context
             """,
-            (event.id, event.type.value, event.source_entity_id,
-             json.dumps(event.change), event.semantic_context or "",
-             event.declared_by or "", event.status.value,
-             event.detected_at.isoformat()),
+            (
+                event.id,
+                event.type.value,
+                event.source_entity_id,
+                json.dumps(event.change),
+                event.semantic_context or "",
+                event.declared_by or "",
+                event.status.value,
+                event.detected_at.isoformat(),
+            ),
         )
         await self._db.commit()
 
@@ -881,8 +916,14 @@ class SqliteKnowledgeGraph:
                     created_by=excluded.created_by,
                     created_at=excluded.created_at
                 """,
-                (edge.from_entity_id, edge.to_entity_id, edge.type.value,
-                 edge.description, edge.created_by, edge.created_at.isoformat()),
+                (
+                    edge.from_entity_id,
+                    edge.to_entity_id,
+                    edge.type.value,
+                    edge.description,
+                    edge.created_by,
+                    edge.created_at.isoformat(),
+                ),
             )
 
         await self._db.execute(
@@ -892,9 +933,15 @@ class SqliteKnowledgeGraph:
                  classified_as, change_event_id, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (event.id, event.entity_id, event.old_definition_id,
-             event.new_definition_id, event.classified_as,
-             event.change_event_id, event.created_at.isoformat()),
+            (
+                event.id,
+                event.entity_id,
+                event.old_definition_id,
+                event.new_definition_id,
+                event.classified_as,
+                event.change_event_id,
+                event.created_at.isoformat(),
+            ),
         )
         await self._db.commit()
 
@@ -910,8 +957,14 @@ class SqliteKnowledgeGraph:
         await self._db.execute(
             "INSERT INTO scan_runs (id, connector, source, project, fingerprint, scanned_at) "
             "VALUES (?, ?, ?, ?, ?, ?)",
-            (run.id, run.connector, run.source, run.project, run.fingerprint,
-             run.scanned_at.isoformat()),
+            (
+                run.id,
+                run.connector,
+                run.source,
+                run.project,
+                run.fingerprint,
+                run.scanned_at.isoformat(),
+            ),
         )
         await self._db.commit()
 
@@ -947,9 +1000,7 @@ class SqliteKnowledgeGraph:
     async def purge_project(self, project: str) -> int:
         # A purged project must rescan (see _PURGE_SCAN_RUNS_SQL).
         await self._db.execute(_PURGE_SCAN_RUNS_SQL.replace("$1", "?"), (project, project))
-        async with self._db.execute(
-            "SELECT id FROM entities WHERE project=?", (project,)
-        ) as cur:
+        async with self._db.execute("SELECT id FROM entities WHERE project=?", (project,)) as cur:
             ids = [row["id"] for row in await cur.fetchall()]
 
         count = len(ids)
@@ -969,9 +1020,7 @@ class SqliteKnowledgeGraph:
             await self._db.execute(
                 f"DELETE FROM change_events WHERE source_entity_id IN ({ph})", ids
             )
-            await self._db.execute(
-                f"DELETE FROM correction_events WHERE entity_id IN ({ph})", ids
-            )
+            await self._db.execute(f"DELETE FROM correction_events WHERE entity_id IN ({ph})", ids)
             await self._db.execute("DELETE FROM entities WHERE project=?", (project,))
         await self._db.commit()
         return count
@@ -981,8 +1030,15 @@ class SqliteKnowledgeGraph:
             row = await cur.fetchone()
         count = row["n"] if row else 0
 
-        for table in ("correction_events", "change_events", "definitions",
-                      "semantic_edges", "lineage_edges", "entities", "scan_runs"):
+        for table in (
+            "correction_events",
+            "change_events",
+            "definitions",
+            "semantic_edges",
+            "lineage_edges",
+            "entities",
+            "scan_runs",
+        ):
             await self._db.execute(f"DELETE FROM {table}")
         await self._db.commit()
         return count

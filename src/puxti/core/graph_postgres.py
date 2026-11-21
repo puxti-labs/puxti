@@ -10,6 +10,7 @@ Requires the ``asyncpg`` driver (``pip install 'puxti[postgres]'``), imported
 lazily in :meth:`PostgresKnowledgeGraph.connect` so it is only needed when this
 backend is actually used.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -52,6 +53,7 @@ def _serialized(method):
     reentrant, so a serialized method must never call another serialized method
     on the same instance; nested reads use the unlocked `_*` helpers instead.
     """
+
     @functools.wraps(method)
     async def wrapper(self, *args, **kwargs):
         async with self._lock:
@@ -94,11 +96,10 @@ class PostgresKnowledgeGraph:
         self._conn = await asyncpg.connect(self._dsn)
         if read_only:
             try:
-                await self._conn.execute(
-                    "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY"
-                )
+                await self._conn.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")
                 self._missing_tables = {
-                    t for t in ("entities", "scan_runs")
+                    t
+                    for t in ("entities", "scan_runs")
                     if await self._conn.fetchval("SELECT to_regclass($1)", t) is None
                 }
             except BaseException:
@@ -155,9 +156,14 @@ class PostgresKnowledgeGraph:
                 project = EXCLUDED.project, status = EXCLUDED.status,
                 updated_at = EXCLUDED.updated_at
             """,
-            entity.id, entity.name, entity.type.value, entity.source_connector,
-            entity.project, entity.status.value,
-            entity.created_at.isoformat(), entity.updated_at.isoformat(),
+            entity.id,
+            entity.name,
+            entity.type.value,
+            entity.source_connector,
+            entity.project,
+            entity.status.value,
+            entity.created_at.isoformat(),
+            entity.updated_at.isoformat(),
         )
 
     @_serialized
@@ -165,7 +171,8 @@ class PostgresKnowledgeGraph:
         """Create or update an entity keyed on (name, source_connector). Returns stored entity."""
         row = await self._conn.fetchrow(
             "SELECT id FROM entities WHERE name = $1 AND source_connector = $2",
-            entity.name, entity.source_connector,
+            entity.name,
+            entity.source_connector,
         )
 
         if row:
@@ -173,8 +180,11 @@ class PostgresKnowledgeGraph:
             await self._conn.execute(
                 "UPDATE entities SET type = $1, project = $2, status = $3, updated_at = $4 "
                 "WHERE id = $5",
-                entity.type.value, entity.project, entity.status.value,
-                entity.updated_at.isoformat(), existing_id,
+                entity.type.value,
+                entity.project,
+                entity.status.value,
+                entity.updated_at.isoformat(),
+                existing_id,
             )
             return Entity(
                 id=existing_id,
@@ -191,9 +201,14 @@ class PostgresKnowledgeGraph:
                 (id, name, type, source_connector, project, status, created_at, updated_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             """,
-            entity.id, entity.name, entity.type.value, entity.source_connector,
-            entity.project, entity.status.value,
-            entity.created_at.isoformat(), entity.updated_at.isoformat(),
+            entity.id,
+            entity.name,
+            entity.type.value,
+            entity.source_connector,
+            entity.project,
+            entity.status.value,
+            entity.created_at.isoformat(),
+            entity.updated_at.isoformat(),
         )
         return entity
 
@@ -201,15 +216,14 @@ class PostgresKnowledgeGraph:
     async def get_entity_by_name(self, name: str, connector: str) -> Entity | None:
         row = await self._conn.fetchrow(
             "SELECT * FROM entities WHERE name = $1 AND source_connector = $2",
-            name, connector,
+            name,
+            connector,
         )
         return _to_entity(row) if row else None
 
     @_serialized
     async def get_entity_by_id(self, entity_id: str) -> Entity | None:
-        row = await self._conn.fetchrow(
-            "SELECT * FROM entities WHERE id = $1", entity_id
-        )
+        row = await self._conn.fetchrow("SELECT * FROM entities WHERE id = $1", entity_id)
         return _to_entity(row) if row else None
 
     @_serialized
@@ -288,12 +302,15 @@ class PostgresKnowledgeGraph:
     async def get_reconcile_candidates(self) -> list[Entity]:
         """Bound model/view/table/metric entities a proposed metric could bind to."""
         types = [
-            EntityType.MODEL.value, EntityType.VIEW.value, EntityType.TABLE.value,
+            EntityType.MODEL.value,
+            EntityType.VIEW.value,
+            EntityType.TABLE.value,
             EntityType.METRIC.value,
         ]
         rows = await self._conn.fetch(
             "SELECT * FROM entities WHERE status = $1 AND type = ANY($2::text[])",
-            EntityStatus.BOUND.value, types,
+            EntityStatus.BOUND.value,
+            types,
         )
         return [_to_entity(r) for r in rows]
 
@@ -320,8 +337,13 @@ class PostgresKnowledgeGraph:
                          created_by, change_event_id, created_at)
                     VALUES ($1, $2, $3, $4, $5, $6, $7)
                     """,
-                    new_def.id, new_def.entity_id, new_def.description, new_def.version,
-                    new_def.created_by, new_def.change_event_id, new_def.created_at.isoformat(),
+                    new_def.id,
+                    new_def.entity_id,
+                    new_def.description,
+                    new_def.version,
+                    new_def.created_by,
+                    new_def.change_event_id,
+                    new_def.created_at.isoformat(),
                 )
 
             # Re-point semantic edges from the placeholder onto the real entity,
@@ -343,15 +365,18 @@ class PostgresKnowledgeGraph:
                     VALUES ($1, $2, $3, $4, $5, $6)
                     ON CONFLICT (from_id, to_id, type) DO NOTHING
                     """,
-                    new_from, new_to, e["type"], e["description"], e["created_by"], e["created_at"],
+                    new_from,
+                    new_to,
+                    e["type"],
+                    e["description"],
+                    e["created_by"],
+                    e["created_at"],
                 )
 
             await self._conn.execute(
                 "DELETE FROM semantic_edges WHERE from_id = $1 OR to_id = $1", proposed_id
             )
-            await self._conn.execute(
-                "DELETE FROM definitions WHERE entity_id = $1", proposed_id
-            )
+            await self._conn.execute("DELETE FROM definitions WHERE entity_id = $1", proposed_id)
             await self._conn.execute("DELETE FROM entities WHERE id = $1", proposed_id)
 
     # ── Structural lineage edges ───────────────────────────────────────────────
@@ -364,7 +389,10 @@ class PostgresKnowledgeGraph:
             VALUES ($1, $2, $3, $4)
             ON CONFLICT (from_id, to_id, connector) DO UPDATE SET type = EXCLUDED.type
             """,
-            edge.from_entity_id, edge.to_entity_id, edge.connector, edge.type.value,
+            edge.from_entity_id,
+            edge.to_entity_id,
+            edge.connector,
+            edge.type.value,
         )
 
     @_serialized
@@ -441,8 +469,12 @@ class PostgresKnowledgeGraph:
                 created_by = EXCLUDED.created_by,
                 created_at = EXCLUDED.created_at
             """,
-            edge.from_entity_id, edge.to_entity_id, edge.type.value,
-            edge.description, edge.created_by, edge.created_at.isoformat(),
+            edge.from_entity_id,
+            edge.to_entity_id,
+            edge.type.value,
+            edge.description,
+            edge.created_by,
+            edge.created_at.isoformat(),
         )
 
     @_serialized
@@ -493,9 +525,7 @@ class PostgresKnowledgeGraph:
         return [_to_semantic_edge(r) for r in rows]
 
     @_serialized
-    async def get_semantic_dependents_with_depth(
-        self, entity_id: str
-    ) -> list[tuple[Entity, int]]:
+    async def get_semantic_dependents_with_depth(self, entity_id: str) -> list[tuple[Entity, int]]:
         """Return entities with SEMANTIC paths pointing to entity_id, with min hop depth."""
         rows = await self._conn.fetch(
             """
@@ -558,7 +588,8 @@ class PostgresKnowledgeGraph:
     async def delete_semantic_edge(self, from_entity_id: str, to_entity_id: str) -> None:
         await self._conn.execute(
             "DELETE FROM semantic_edges WHERE from_id = $1 AND to_id = $2",
-            from_entity_id, to_entity_id,
+            from_entity_id,
+            to_entity_id,
         )
 
     # ── Definitions ───────────────────────────────────────────────────────────
@@ -575,8 +606,12 @@ class PostgresKnowledgeGraph:
                 version = EXCLUDED.version,
                 created_by = EXCLUDED.created_by
             """,
-            definition.id, definition.entity_id, definition.description,
-            definition.version, definition.created_by, definition.change_event_id,
+            definition.id,
+            definition.entity_id,
+            definition.description,
+            definition.version,
+            definition.created_by,
+            definition.change_event_id,
             definition.created_at.isoformat(),
         )
 
@@ -618,9 +653,13 @@ class PostgresKnowledgeGraph:
                 status = EXCLUDED.status,
                 semantic_context = EXCLUDED.semantic_context
             """,
-            event.id, event.type.value, event.source_entity_id,
-            json.dumps(event.change), event.semantic_context or "",
-            event.declared_by or "", event.status.value,
+            event.id,
+            event.type.value,
+            event.source_entity_id,
+            json.dumps(event.change),
+            event.semantic_context or "",
+            event.declared_by or "",
+            event.status.value,
             event.detected_at.isoformat(),
         )
 
@@ -632,7 +671,8 @@ class PostgresKnowledgeGraph:
             for from_id, to_id in event.edges_removed:
                 await self._conn.execute(
                     "DELETE FROM semantic_edges WHERE from_id = $1 AND to_id = $2",
-                    from_id, to_id,
+                    from_id,
+                    to_id,
                 )
 
             for edge in updated_edges:
@@ -646,8 +686,12 @@ class PostgresKnowledgeGraph:
                         created_by = EXCLUDED.created_by,
                         created_at = EXCLUDED.created_at
                     """,
-                    edge.from_entity_id, edge.to_entity_id, edge.type.value,
-                    edge.description, edge.created_by, edge.created_at.isoformat(),
+                    edge.from_entity_id,
+                    edge.to_entity_id,
+                    edge.type.value,
+                    edge.description,
+                    edge.created_by,
+                    edge.created_at.isoformat(),
                 )
 
             await self._conn.execute(
@@ -657,9 +701,13 @@ class PostgresKnowledgeGraph:
                      classified_as, change_event_id, created_at)
                 VALUES ($1, $2, $3, $4, $5, $6, $7)
                 """,
-                event.id, event.entity_id, event.old_definition_id,
-                event.new_definition_id, event.classified_as,
-                event.change_event_id, event.created_at.isoformat(),
+                event.id,
+                event.entity_id,
+                event.old_definition_id,
+                event.new_definition_id,
+                event.classified_as,
+                event.change_event_id,
+                event.created_at.isoformat(),
             )
 
     # ── Project management ────────────────────────────────────────────────────
@@ -680,12 +728,18 @@ class PostgresKnowledgeGraph:
             # See SqliteKnowledgeGraph.record_scan_run.
             await self._conn.execute(
                 "DELETE FROM scan_runs WHERE connector = $1 AND project = $2 AND source != $3",
-                run.connector, run.project, run.source,
+                run.connector,
+                run.project,
+                run.source,
             )
             await self._conn.execute(
                 "INSERT INTO scan_runs (id, connector, source, project, fingerprint, scanned_at) "
                 "VALUES ($1, $2, $3, $4, $5, $6)",
-                run.id, run.connector, run.source, run.project, run.fingerprint,
+                run.id,
+                run.connector,
+                run.source,
+                run.project,
+                run.fingerprint,
                 run.scanned_at.isoformat(),
             )
 
@@ -703,7 +757,8 @@ class PostgresKnowledgeGraph:
         row = await self._conn.fetchrow(
             "SELECT fingerprint FROM scan_runs WHERE connector = $1 AND source = $2 "
             "ORDER BY scanned_at DESC LIMIT 1",
-            connector, source,
+            connector,
+            source,
         )
         return row["fingerprint"] if row else None
 
@@ -712,9 +767,7 @@ class PostgresKnowledgeGraph:
         async with self._conn.transaction():
             # A purged project must rescan; see SqliteKnowledgeGraph.purge_project.
             await self._conn.execute(_PURGE_SCAN_RUNS_SQL, project)
-            rows = await self._conn.fetch(
-                "SELECT id FROM entities WHERE project = $1", project
-            )
+            rows = await self._conn.fetch("SELECT id FROM entities WHERE project = $1", project)
             ids = [row["id"] for row in rows]
 
             if ids:
@@ -739,9 +792,7 @@ class PostgresKnowledgeGraph:
                 await self._conn.execute(
                     "DELETE FROM correction_events WHERE entity_id = ANY($1::text[])", ids
                 )
-                await self._conn.execute(
-                    "DELETE FROM entities WHERE project = $1", project
-                )
+                await self._conn.execute("DELETE FROM entities WHERE project = $1", project)
         return len(ids)
 
     @_serialized
@@ -750,7 +801,14 @@ class PostgresKnowledgeGraph:
             row = await self._conn.fetchrow("SELECT COUNT(*) AS n FROM entities")
             count = row["n"] if row else 0
 
-            for table in ("correction_events", "change_events", "definitions",
-                          "semantic_edges", "lineage_edges", "entities", "scan_runs"):
+            for table in (
+                "correction_events",
+                "change_events",
+                "definitions",
+                "semantic_edges",
+                "lineage_edges",
+                "entities",
+                "scan_runs",
+            ):
                 await self._conn.execute(f"DELETE FROM {table}")
         return count
