@@ -1,0 +1,1039 @@
+{
+  "$defs": {
+    "Aggregation": {
+      "enum": [
+        "sum",
+        "count",
+        "count_distinct",
+        "avg",
+        "min",
+        "max"
+      ],
+      "title": "Aggregation",
+      "type": "string"
+    },
+    "BarChart": {
+      "additionalProperties": false,
+      "properties": {
+        "apiVersion": {
+          "const": "puxti/v1alpha1",
+          "title": "Apiversion",
+          "type": "string"
+        },
+        "dataset": {
+          "description": "Lowercase slug: letters, digits and underscores, starting with a letter.",
+          "maxLength": 100,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Dataset",
+          "type": "string"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "group_by": {
+          "items": {
+            "description": "A dbt model, column or metric name, as dbt spells it.",
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^\\S+$",
+            "type": "string"
+          },
+          "title": "Group By",
+          "type": "array"
+        },
+        "id": {
+          "anyOf": [
+            {
+              "description": "An existing asset ID to keep, set when an asset is adopted from a live BI tool. Without it the ID is derived from the kind and name.",
+              "maxLength": 512,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Id"
+        },
+        "kind": {
+          "const": "chart",
+          "title": "Kind",
+          "type": "string"
+        },
+        "metrics": {
+          "items": {
+            "description": "Lowercase slug: letters, digits and underscores, starting with a letter.",
+            "maxLength": 100,
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Metrics",
+          "type": "array"
+        },
+        "name": {
+          "description": "Lowercase slug: letters, digits and underscores, starting with a letter.",
+          "maxLength": 100,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Name",
+          "type": "string"
+        },
+        "superset": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "description": "Raw Superset fields merged into the compiled Superset asset last, for options the spec does not cover yet. Ignored by other BI tools.",
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Superset"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        },
+        "type": {
+          "const": "bar",
+          "title": "Type",
+          "type": "string"
+        },
+        "x": {
+          "$ref": "#/$defs/XAxis"
+        }
+      },
+      "required": [
+        "apiVersion",
+        "name",
+        "kind",
+        "dataset",
+        "type",
+        "x",
+        "metrics"
+      ],
+      "title": "BarChart",
+      "type": "object"
+    },
+    "BigNumberChart": {
+      "additionalProperties": false,
+      "properties": {
+        "apiVersion": {
+          "const": "puxti/v1alpha1",
+          "title": "Apiversion",
+          "type": "string"
+        },
+        "dataset": {
+          "description": "Lowercase slug: letters, digits and underscores, starting with a letter.",
+          "maxLength": 100,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Dataset",
+          "type": "string"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "id": {
+          "anyOf": [
+            {
+              "description": "An existing asset ID to keep, set when an asset is adopted from a live BI tool. Without it the ID is derived from the kind and name.",
+              "maxLength": 512,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Id"
+        },
+        "kind": {
+          "const": "chart",
+          "title": "Kind",
+          "type": "string"
+        },
+        "metric": {
+          "description": "Lowercase slug: letters, digits and underscores, starting with a letter.",
+          "maxLength": 100,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Metric",
+          "type": "string"
+        },
+        "name": {
+          "description": "Lowercase slug: letters, digits and underscores, starting with a letter.",
+          "maxLength": 100,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Name",
+          "type": "string"
+        },
+        "superset": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "description": "Raw Superset fields merged into the compiled Superset asset last, for options the spec does not cover yet. Ignored by other BI tools.",
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Superset"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        },
+        "type": {
+          "const": "big_number",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "apiVersion",
+        "name",
+        "kind",
+        "dataset",
+        "type",
+        "metric"
+      ],
+      "title": "BigNumberChart",
+      "type": "object"
+    },
+    "Dashboard": {
+      "additionalProperties": false,
+      "properties": {
+        "apiVersion": {
+          "const": "puxti/v1alpha1",
+          "title": "Apiversion",
+          "type": "string"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "id": {
+          "anyOf": [
+            {
+              "description": "An existing asset ID to keep, set when an asset is adopted from a live BI tool. Without it the ID is derived from the kind and name.",
+              "maxLength": 512,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Id"
+        },
+        "kind": {
+          "const": "dashboard",
+          "title": "Kind",
+          "type": "string"
+        },
+        "name": {
+          "description": "Lowercase slug: letters, digits and underscores, starting with a letter.",
+          "maxLength": 100,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Name",
+          "type": "string"
+        },
+        "rows": {
+          "items": {
+            "$ref": "#/$defs/DashboardRow"
+          },
+          "minItems": 1,
+          "title": "Rows",
+          "type": "array"
+        },
+        "superset": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "description": "Raw Superset fields merged into the compiled Superset asset last, for options the spec does not cover yet. Ignored by other BI tools.",
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Superset"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        }
+      },
+      "required": [
+        "apiVersion",
+        "name",
+        "kind",
+        "rows"
+      ],
+      "title": "Dashboard",
+      "type": "object"
+    },
+    "DashboardCell": {
+      "additionalProperties": false,
+      "properties": {
+        "chart": {
+          "description": "Lowercase slug: letters, digits and underscores, starting with a letter.",
+          "maxLength": 100,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Chart",
+          "type": "string"
+        },
+        "width": {
+          "anyOf": [
+            {
+              "maximum": 12,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Width in twelfths of the dashboard.",
+          "title": "Width"
+        }
+      },
+      "required": [
+        "chart"
+      ],
+      "title": "DashboardCell",
+      "type": "object"
+    },
+    "DashboardRow": {
+      "additionalProperties": false,
+      "properties": {
+        "charts": {
+          "items": {
+            "oneOf": [
+              {
+                "description": "Lowercase slug: letters, digits and underscores, starting with a letter.",
+                "maxLength": 100,
+                "pattern": "^[a-z][a-z0-9_]*$",
+                "type": "string"
+              },
+              {
+                "$ref": "#/$defs/DashboardCell"
+              }
+            ]
+          },
+          "minItems": 1,
+          "title": "Charts",
+          "type": "array"
+        },
+        "height": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Relative height; each BI tool maps it to its own units. Defaults per chart type.",
+          "title": "Height"
+        }
+      },
+      "required": [
+        "charts"
+      ],
+      "title": "DashboardRow",
+      "type": "object"
+    },
+    "Dataset": {
+      "additionalProperties": false,
+      "description": "A dbt model exposed to the BI tool, with the metrics charts can use.",
+      "properties": {
+        "apiVersion": {
+          "const": "puxti/v1alpha1",
+          "title": "Apiversion",
+          "type": "string"
+        },
+        "columns": {
+          "anyOf": [
+            {
+              "items": {
+                "description": "A dbt model, column or metric name, as dbt spells it.",
+                "maxLength": 255,
+                "minLength": 1,
+                "pattern": "^\\S+$",
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Columns to expose. Defaults to every column dbt knows.",
+          "title": "Columns"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "id": {
+          "anyOf": [
+            {
+              "description": "An existing asset ID to keep, set when an asset is adopted from a live BI tool. Without it the ID is derived from the kind and name.",
+              "maxLength": 512,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Id"
+        },
+        "kind": {
+          "const": "dataset",
+          "title": "Kind",
+          "type": "string"
+        },
+        "metrics": {
+          "items": {
+            "$ref": "#/$defs/Metric"
+          },
+          "title": "Metrics",
+          "type": "array"
+        },
+        "model": {
+          "description": "A dbt model, column or metric name, as dbt spells it.",
+          "maxLength": 255,
+          "minLength": 1,
+          "pattern": "^\\S+$",
+          "title": "Model",
+          "type": "string"
+        },
+        "name": {
+          "description": "Lowercase slug: letters, digits and underscores, starting with a letter.",
+          "maxLength": 100,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Name",
+          "type": "string"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        }
+      },
+      "required": [
+        "apiVersion",
+        "name",
+        "kind",
+        "model"
+      ],
+      "title": "Dataset",
+      "type": "object"
+    },
+    "Grain": {
+      "enum": [
+        "day",
+        "week",
+        "month",
+        "quarter",
+        "year"
+      ],
+      "title": "Grain",
+      "type": "string"
+    },
+    "LineChart": {
+      "additionalProperties": false,
+      "properties": {
+        "apiVersion": {
+          "const": "puxti/v1alpha1",
+          "title": "Apiversion",
+          "type": "string"
+        },
+        "dataset": {
+          "description": "Lowercase slug: letters, digits and underscores, starting with a letter.",
+          "maxLength": 100,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Dataset",
+          "type": "string"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "group_by": {
+          "items": {
+            "description": "A dbt model, column or metric name, as dbt spells it.",
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^\\S+$",
+            "type": "string"
+          },
+          "title": "Group By",
+          "type": "array"
+        },
+        "id": {
+          "anyOf": [
+            {
+              "description": "An existing asset ID to keep, set when an asset is adopted from a live BI tool. Without it the ID is derived from the kind and name.",
+              "maxLength": 512,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Id"
+        },
+        "kind": {
+          "const": "chart",
+          "title": "Kind",
+          "type": "string"
+        },
+        "metrics": {
+          "items": {
+            "description": "Lowercase slug: letters, digits and underscores, starting with a letter.",
+            "maxLength": 100,
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Metrics",
+          "type": "array"
+        },
+        "name": {
+          "description": "Lowercase slug: letters, digits and underscores, starting with a letter.",
+          "maxLength": 100,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Name",
+          "type": "string"
+        },
+        "superset": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "description": "Raw Superset fields merged into the compiled Superset asset last, for options the spec does not cover yet. Ignored by other BI tools.",
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Superset"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        },
+        "type": {
+          "const": "line",
+          "title": "Type",
+          "type": "string"
+        },
+        "x": {
+          "$ref": "#/$defs/XAxis"
+        }
+      },
+      "required": [
+        "apiVersion",
+        "name",
+        "kind",
+        "dataset",
+        "type",
+        "x",
+        "metrics"
+      ],
+      "title": "LineChart",
+      "type": "object"
+    },
+    "Metric": {
+      "additionalProperties": false,
+      "description": "A metric on a dataset: an aggregation of one column, or a dbt metric by name.",
+      "properties": {
+        "agg": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Aggregation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "column": {
+          "anyOf": [
+            {
+              "description": "A dbt model, column or metric name, as dbt spells it.",
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^\\S+$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Column"
+        },
+        "dbt_metric": {
+          "anyOf": [
+            {
+              "description": "A dbt model, column or metric name, as dbt spells it.",
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^\\S+$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "A dbt semantic layer metric. v1alpha1 supports simple metrics.",
+          "title": "Dbt Metric"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "name": {
+          "description": "Lowercase slug: letters, digits and underscores, starting with a letter.",
+          "maxLength": 100,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Name",
+          "type": "string"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "Metric",
+      "type": "object"
+    },
+    "PieChart": {
+      "additionalProperties": false,
+      "properties": {
+        "apiVersion": {
+          "const": "puxti/v1alpha1",
+          "title": "Apiversion",
+          "type": "string"
+        },
+        "dataset": {
+          "description": "Lowercase slug: letters, digits and underscores, starting with a letter.",
+          "maxLength": 100,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Dataset",
+          "type": "string"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "group_by": {
+          "items": {
+            "description": "A dbt model, column or metric name, as dbt spells it.",
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^\\S+$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Group By",
+          "type": "array"
+        },
+        "id": {
+          "anyOf": [
+            {
+              "description": "An existing asset ID to keep, set when an asset is adopted from a live BI tool. Without it the ID is derived from the kind and name.",
+              "maxLength": 512,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Id"
+        },
+        "kind": {
+          "const": "chart",
+          "title": "Kind",
+          "type": "string"
+        },
+        "metric": {
+          "description": "Lowercase slug: letters, digits and underscores, starting with a letter.",
+          "maxLength": 100,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Metric",
+          "type": "string"
+        },
+        "name": {
+          "description": "Lowercase slug: letters, digits and underscores, starting with a letter.",
+          "maxLength": 100,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Name",
+          "type": "string"
+        },
+        "superset": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "description": "Raw Superset fields merged into the compiled Superset asset last, for options the spec does not cover yet. Ignored by other BI tools.",
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Superset"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        },
+        "type": {
+          "const": "pie",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "apiVersion",
+        "name",
+        "kind",
+        "dataset",
+        "type",
+        "metric",
+        "group_by"
+      ],
+      "title": "PieChart",
+      "type": "object"
+    },
+    "TableChart": {
+      "additionalProperties": false,
+      "description": "Raw rows (``columns``) or an aggregate (``metrics``, optionally ``group_by``).",
+      "properties": {
+        "apiVersion": {
+          "const": "puxti/v1alpha1",
+          "title": "Apiversion",
+          "type": "string"
+        },
+        "columns": {
+          "items": {
+            "description": "A dbt model, column or metric name, as dbt spells it.",
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^\\S+$",
+            "type": "string"
+          },
+          "title": "Columns",
+          "type": "array"
+        },
+        "dataset": {
+          "description": "Lowercase slug: letters, digits and underscores, starting with a letter.",
+          "maxLength": 100,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Dataset",
+          "type": "string"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "group_by": {
+          "items": {
+            "description": "A dbt model, column or metric name, as dbt spells it.",
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^\\S+$",
+            "type": "string"
+          },
+          "title": "Group By",
+          "type": "array"
+        },
+        "id": {
+          "anyOf": [
+            {
+              "description": "An existing asset ID to keep, set when an asset is adopted from a live BI tool. Without it the ID is derived from the kind and name.",
+              "maxLength": 512,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Id"
+        },
+        "kind": {
+          "const": "chart",
+          "title": "Kind",
+          "type": "string"
+        },
+        "metrics": {
+          "items": {
+            "description": "Lowercase slug: letters, digits and underscores, starting with a letter.",
+            "maxLength": 100,
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "type": "string"
+          },
+          "title": "Metrics",
+          "type": "array"
+        },
+        "name": {
+          "description": "Lowercase slug: letters, digits and underscores, starting with a letter.",
+          "maxLength": 100,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Name",
+          "type": "string"
+        },
+        "superset": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "description": "Raw Superset fields merged into the compiled Superset asset last, for options the spec does not cover yet. Ignored by other BI tools.",
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Superset"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        },
+        "type": {
+          "const": "table",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "apiVersion",
+        "name",
+        "kind",
+        "dataset",
+        "type"
+      ],
+      "title": "TableChart",
+      "type": "object"
+    },
+    "XAxis": {
+      "additionalProperties": false,
+      "properties": {
+        "column": {
+          "description": "A dbt model, column or metric name, as dbt spells it.",
+          "maxLength": 255,
+          "minLength": 1,
+          "pattern": "^\\S+$",
+          "title": "Column",
+          "type": "string"
+        },
+        "grain": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Grain"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Time grain, for a time column."
+        }
+      },
+      "required": [
+        "column"
+      ],
+      "title": "XAxis",
+      "type": "object"
+    }
+  },
+  "$id": "https://raw.githubusercontent.com/puxti-labs/puxti/main/packages/puxti-bi-core/src/puxti_bi_core/schemas/v1alpha1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/Dataset"
+    },
+    {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/LineChart"
+        },
+        {
+          "$ref": "#/$defs/BarChart"
+        },
+        {
+          "$ref": "#/$defs/TableChart"
+        },
+        {
+          "$ref": "#/$defs/BigNumberChart"
+        },
+        {
+          "$ref": "#/$defs/PieChart"
+        }
+      ]
+    },
+    {
+      "$ref": "#/$defs/Dashboard"
+    }
+  ],
+  "title": "Puxti BI spec (puxti/v1alpha1)"
+}

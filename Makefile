@@ -24,38 +24,26 @@ test-cli: ## Run CLI tests only
 
 .PHONY: lint
 lint: ## Lint with ruff
-	uv run ruff check src/
+	uv run ruff check src/ packages/
 
 .PHONY: format
 format: ## Format with ruff
-	uv run ruff format src/
+	uv run ruff format src/ packages/
+
+.PHONY: bi-schema
+bi-schema: ## Regenerate the BI spec JSON Schema from the puxti-bi-core models
+	uv run python -m puxti_bi_core.schema packages/puxti-bi-core/src/puxti_bi_core/schemas/v1alpha1.json
 
 # ── Release ───────────────────────────────────────────────────────────────────
 
-# Files allowed in the sdist outside src/puxti/ — anything else triggers a prompt.
-SDIST_ALLOWED = pyproject.toml LICENSE NOTICE.md README.md SECURITY.md TELEMETRY.md .env.example .gitignore PKG-INFO
-
 .PHONY: build
-build: ## Build wheel and sdist
-	uv build
+build: ## Build wheels and sdists for puxti and every workspace package
+	uv build --all-packages
 
 .PHONY: check-package
-check-package: ## Build sdist and abort if any unexpected files are present
-	@uv build --no-sources -q
-	@SDIST=$$(ls -t dist/*.tar.gz | head -1); \
-	echo "Checking $$SDIST ..."; \
-	ALLOWED_PAT="^src/puxti/|^$$|^($(subst $(eval) ,|,$(SDIST_ALLOWED))$$)"; \
-	UNEXPECTED=$$(tar -tzf $$SDIST \
-	  | sed 's|^[^/]*/||' \
-	  | grep -Ev "$$ALLOWED_PAT"); \
-	if [ -z "$$UNEXPECTED" ]; then \
-	  echo "  Package looks clean — only src/puxti/ and approved root files."; \
-	else \
-	  echo ""; \
-	  echo "  ERROR: unexpected files in sdist — add to pyproject.toml exclude list before tagging:"; \
-	  echo "$$UNEXPECTED" | sed 's/^/    /'; \
-	  exit 1; \
-	fi
+check-package: ## Build every sdist and abort if any holds unexpected files
+	@rm -rf dist/check && uv build --all-packages --no-sources -q -o dist/check
+	@scripts/check_sdist.sh dist/check
 
 .PHONY: publish
 publish: ## Run pre-release checks then publish to PyPI (usage: make publish VERSION=0.6.0)
@@ -63,15 +51,15 @@ publish: ## Run pre-release checks then publish to PyPI (usage: make publish VER
 	@$(MAKE) test
 	@$(MAKE) check-package
 	@echo ""
-	@echo "  Publishing puxti $(VERSION) to PyPI..."
-	@uv publish
+	@echo "  Publishing puxti $(VERSION) and its workspace packages to PyPI..."
+	@uv publish dist/check/*
 	@echo "  Done."
 
 # ── Setup ─────────────────────────────────────────────────────────────────────
 
 .PHONY: install
-install: ## Install all dependencies (including dev)
-	uv sync --extra dev
+install: ## Install all dependencies (including dev and workspace packages)
+	uv sync --all-packages --extra dev
 
 # ── Help ──────────────────────────────────────────────────────────────────────
 

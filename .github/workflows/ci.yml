@@ -21,7 +21,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: uv sync --extra dev
+        run: uv sync --all-packages --extra dev
 
       - name: Run tests
         run: uv run pytest
@@ -39,7 +39,23 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: uv sync --extra dev
+        run: uv sync --all-packages --extra dev
 
       - name: Lint (ruff)
-        run: uv run ruff check src/
+        run: uv run ruff check src/ packages/
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+          python-version: "3.12"
+
+      - name: Build every package
+        run: uv build --all-packages --no-sources -o dist
+
+      - name: Check sdist contents
+        run: scripts/check_sdist.sh dist

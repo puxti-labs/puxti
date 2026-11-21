@@ -1,0 +1,12 @@
+apiVersion: puxti/v1alpha1
+kind: dataset
+name: orders
+model: fct_orders
+metrics:
+  - name: revenue
+    agg: sum
+    column: amount
+  - name: order_count
+    agg: count
+  - name: customers
+    dbt_metric: active_customers

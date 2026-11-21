@@ -1,0 +1,9 @@
+apiVersion: puxti/v1alpha1
+kind: dashboard
+name: sales
+title: Sales overview
+rows:
+  - charts: [total_revenue]
+  - charts:
+      - { chart: revenue_by_month, width: 8 }
+      - total_revenue

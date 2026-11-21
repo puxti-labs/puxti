@@ -19,9 +19,9 @@ Puxti uses [uv](https://docs.astral.sh/uv/). Python 3.12 or 3.13.
 
 ```bash
 git clone https://github.com/puxti-labs/puxti && cd puxti
-uv sync --extra dev        # install everything, including dev tools
+uv sync --all-packages --extra dev   # install everything, including dev tools and workspace packages
 uv run pytest              # run the full test suite (~370 tests, no external services)
-uv run ruff check src/     # lint
+uv run ruff check src/ packages/     # lint
 ```
 
 No API keys, Docker, or external services are needed to run the tests —
@@ -76,7 +76,7 @@ src/puxti/
   command is added) and the `--help` text in the same PR.
 - **No drive-by refactors.** A bug fix is a bug fix; keep unrelated cleanups
   for their own PR so review stays easy.
-- **No new lint findings**: `uv run ruff check src/` should not get worse.
+- **No new lint findings**: `uv run ruff check src/ packages/` should not get worse.
 
 Deeper conventions (layering, error handling, tunables policy, security
 checklist) live in [AGENTS.md](AGENTS.md) — written for AI coding agents,
