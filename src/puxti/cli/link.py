@@ -11,15 +11,19 @@ from puxti.models import EdgeType, Entity, SemanticEdge
 @app.command()
 def link(
     from_entity: str = typer.Option(
-        ..., "--from",
+        ...,
+        "--from",
         help="Entity producing data (e.g. task.airflow.salesforce_sync.extract_opportunities)",
     ),
     to_entity: str = typer.Option(
-        ..., "--to",
+        ...,
+        "--to",
         help="Entity receiving data (e.g. source.clariva.raw_opportunities)",
     ),
     description: str = typer.Option(
-        ..., "--description", "-d",
+        ...,
+        "--description",
+        "-d",
         help=(
             "Semantic description of this cross-system relationship — "
             "what data flows and what it means"
@@ -66,20 +70,24 @@ async def _run_link(from_entity: str, to_entity: str, description: str) -> None:
             (to_entity, to_type, to_connector, to_project),
         ):
             if not await kg.get_entity_by_id(entity_id):
-                await kg.upsert_entity(Entity(
-                    id=entity_id,
-                    name=entity_id.rsplit(".", 1)[-1],
-                    type=entity_type,
-                    source_connector=connector,
-                    project=project,
-                ))
-        await kg.upsert_semantic_edge(SemanticEdge(
-            from_entity_id=from_entity,
-            to_entity_id=to_entity,
-            type=EdgeType.FEEDS,
-            description=description,
-            created_by="user",
-        ))
+                await kg.upsert_entity(
+                    Entity(
+                        id=entity_id,
+                        name=entity_id.rsplit(".", 1)[-1],
+                        type=entity_type,
+                        source_connector=connector,
+                        project=project,
+                    )
+                )
+        await kg.upsert_semantic_edge(
+            SemanticEdge(
+                from_entity_id=from_entity,
+                to_entity_id=to_entity,
+                type=EdgeType.FEEDS,
+                description=description,
+                created_by="user",
+            )
+        )
     finally:
         await kg.close()
 

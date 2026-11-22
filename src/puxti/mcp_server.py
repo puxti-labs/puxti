@@ -7,6 +7,7 @@ Exposes five read-only tools — all read directly from the Knowledge Graph, no 
   definition_history — full version history of an entity's definition
   describe_entity   — type, connector, definition, and semantic edges
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -57,8 +58,7 @@ async def _not_found(graph: GraphStore, entity_id: str) -> str:
     missing; otherwise the ID is wrong, and search_entities finds the right one."""
     if not await graph.has_entities():
         message = (
-            f"Entity '{entity_id}' not found: the Knowledge Graph is empty. "
-            "Run `puxti scan` first."
+            f"Entity '{entity_id}' not found: the Knowledge Graph is empty. Run `puxti scan` first."
         )
     else:
         message = (
@@ -97,26 +97,29 @@ async def search_entities(query: str, type: str | None = None, limit: int = 20) 
     hits = await graph.search_entities(query, entity_type=entity_type, limit=limit + 1)
     truncated = len(hits) > limit
     hits = hits[:limit]
-    return json.dumps({
-        "query": query,
-        "type": entity_type.value if entity_type else None,
-        "results": [
-            {
-                "entity_id": entity.id,
-                "name": entity.name,
-                "type": entity.type.value,
-                "project": entity.project,
-                "status": entity.status.value,
-                "definition": (
-                    definition.description.strip().splitlines()[0]
-                    if definition and definition.description.strip() else None
-                ),
-            }
-            for entity, definition in hits
-        ],
-        "total_count": len(hits),
-        "truncated": truncated,
-    })
+    return json.dumps(
+        {
+            "query": query,
+            "type": entity_type.value if entity_type else None,
+            "results": [
+                {
+                    "entity_id": entity.id,
+                    "name": entity.name,
+                    "type": entity.type.value,
+                    "project": entity.project,
+                    "status": entity.status.value,
+                    "definition": (
+                        definition.description.strip().splitlines()[0]
+                        if definition and definition.description.strip()
+                        else None
+                    ),
+                }
+                for entity, definition in hits
+            ],
+            "total_count": len(hits),
+            "truncated": truncated,
+        }
+    )
 
 
 @mcp.tool()
@@ -137,15 +140,17 @@ async def impact_of_change(entity_id: str, change_type: str | None = None) -> st
         return await _not_found(graph, entity_id)
 
     if entity.status == EntityStatus.PROPOSED:
-        return json.dumps({
-            "entity_id": entity_id,
-            "change_type": change_type,
-            "proposed": True,
-            "note": "This metric is proposed (defined but not yet implemented by a model). "
-                    "It has no structural dependents until it is bound to a real entity.",
-            "dependents": [],
-            "total_count": 0,
-        })
+        return json.dumps(
+            {
+                "entity_id": entity_id,
+                "change_type": change_type,
+                "proposed": True,
+                "note": "This metric is proposed (defined but not yet implemented by a model). "
+                "It has no structural dependents until it is bound to a real entity.",
+                "dependents": [],
+                "total_count": 0,
+            }
+        )
 
     semantic_deps = await graph.get_semantic_dependents_with_depth(entity_id)
     structural_deps = await graph.get_structural_dependents(entity_id)
@@ -160,21 +165,23 @@ async def impact_of_change(entity_id: str, change_type: str | None = None) -> st
         entry["rels"].add("structural")
 
     rows = sorted(dep_map.values(), key=lambda r: (r["hop"], r["entity"].name))
-    return json.dumps({
-        "entity_id": entity_id,
-        "change_type": change_type,
-        "dependents": [
-            {
-                "entity_id": r["entity"].id,
-                "name": r["entity"].name,
-                "type": r["entity"].type.value,
-                "hop": r["hop"],
-                "relationship": "+".join(sorted(r["rels"])),
-            }
-            for r in rows
-        ],
-        "total_count": len(rows),
-    })
+    return json.dumps(
+        {
+            "entity_id": entity_id,
+            "change_type": change_type,
+            "dependents": [
+                {
+                    "entity_id": r["entity"].id,
+                    "name": r["entity"].name,
+                    "type": r["entity"].type.value,
+                    "hop": r["hop"],
+                    "relationship": "+".join(sorted(r["rels"])),
+                }
+                for r in rows
+            ],
+            "total_count": len(rows),
+        }
+    )
 
 
 @mcp.tool()
@@ -193,23 +200,29 @@ async def consumers(entity_id: str) -> str:
         return await _not_found(graph, entity_id)
 
     if entity.status == EntityStatus.PROPOSED:
-        return json.dumps({
-            "entity_id": entity_id,
-            "proposed": True,
-            "note": "This metric is proposed (not yet implemented). No entity reads from it yet.",
-            "consumers": [],
-            "total_count": 0,
-        })
+        return json.dumps(
+            {
+                "entity_id": entity_id,
+                "proposed": True,
+                "note": (
+                    "This metric is proposed (not yet implemented). No entity reads from it yet."
+                ),
+                "consumers": [],
+                "total_count": 0,
+            }
+        )
 
     deps = await graph.get_structural_dependents(entity_id)
-    return json.dumps({
-        "entity_id": entity_id,
-        "consumers": [
-            {"entity_id": d.id, "name": d.name, "type": d.type.value, "project": d.project}
-            for d in deps
-        ],
-        "total_count": len(deps),
-    })
+    return json.dumps(
+        {
+            "entity_id": entity_id,
+            "consumers": [
+                {"entity_id": d.id, "name": d.name, "type": d.type.value, "project": d.project}
+                for d in deps
+            ],
+            "total_count": len(deps),
+        }
+    )
 
 
 @mcp.tool()
@@ -228,19 +241,21 @@ async def definition_history(entity_id: str) -> str:
         return await _not_found(graph, entity_id)
 
     history = await graph.get_definition_history(entity_id)
-    return json.dumps({
-        "entity_id": entity_id,
-        "history": [
-            {
-                "version": d.version,
-                "description": d.description,
-                "created_by": d.created_by,
-                "created_at": d.created_at.isoformat(),
-            }
-            for d in history
-        ],
-        "total_versions": len(history),
-    })
+    return json.dumps(
+        {
+            "entity_id": entity_id,
+            "history": [
+                {
+                    "version": d.version,
+                    "description": d.description,
+                    "created_by": d.created_by,
+                    "created_at": d.created_at.isoformat(),
+                }
+                for d in history
+            ],
+            "total_versions": len(history),
+        }
+    )
 
 
 @mcp.tool()
@@ -262,33 +277,39 @@ async def describe_entity(entity_id: str) -> str:
     edges = await graph.get_entity_semantic_edges(entity_id)
 
     is_bound = entity.status == EntityStatus.BOUND
-    return json.dumps({
-        "entity_id": entity_id,
-        "name": entity.name,
-        "type": entity.type.value,
-        "connector": entity.source_connector,
-        "project": entity.project,
-        "status": entity.status.value,
-        "bound": is_bound,
-        "note": None if is_bound else (
-            "PROPOSED: this metric is defined as intent but not yet implemented by any "
-            "model. The definition describes what it should mean. Do NOT report a value "
-            "for it as fact. Cite it as a proposed definition only."
-        ),
-        "definition": {
-            "description": definition.description,
-            "version": definition.version,
-            "created_by": definition.created_by,
-            "created_at": definition.created_at.isoformat(),
-        } if definition else None,
-        "semantic_edges": [
-            {
-                "from_entity_id": e.from_entity_id,
-                "to_entity_id": e.to_entity_id,
-                "type": e.type.value,
-                "description": e.description,
-                "direction": "outgoing" if e.from_entity_id == entity_id else "incoming",
+    return json.dumps(
+        {
+            "entity_id": entity_id,
+            "name": entity.name,
+            "type": entity.type.value,
+            "connector": entity.source_connector,
+            "project": entity.project,
+            "status": entity.status.value,
+            "bound": is_bound,
+            "note": None
+            if is_bound
+            else (
+                "PROPOSED: this metric is defined as intent but not yet implemented by any "
+                "model. The definition describes what it should mean. Do NOT report a value "
+                "for it as fact. Cite it as a proposed definition only."
+            ),
+            "definition": {
+                "description": definition.description,
+                "version": definition.version,
+                "created_by": definition.created_by,
+                "created_at": definition.created_at.isoformat(),
             }
-            for e in edges
-        ],
-    })
+            if definition
+            else None,
+            "semantic_edges": [
+                {
+                    "from_entity_id": e.from_entity_id,
+                    "to_entity_id": e.to_entity_id,
+                    "type": e.type.value,
+                    "description": e.description,
+                    "direction": "outgoing" if e.from_entity_id == entity_id else "incoming",
+                }
+                for e in edges
+            ],
+        }
+    )

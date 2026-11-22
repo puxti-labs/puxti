@@ -57,13 +57,15 @@ class AirflowConnector(BaseConnector):
                 continue
 
             for task_id in _extract_task_ids(tree):
-                entities.append(Entity(
-                    id=f"task.airflow.{dag_id}.{task_id}",
-                    name=task_id,
-                    type=EntityType.TASK,
-                    source_connector="airflow",
-                    project=dag_id,
-                ))
+                entities.append(
+                    Entity(
+                        id=f"task.airflow.{dag_id}.{task_id}",
+                        name=task_id,
+                        type=EntityType.TASK,
+                        source_connector="airflow",
+                        project=dag_id,
+                    )
+                )
         return entities
 
     async def extract_lineage(self) -> list[Edge]:
@@ -81,12 +83,14 @@ class AirflowConnector(BaseConnector):
                 continue
 
             for from_task, to_task in _extract_task_dependencies(source):
-                edges.append(Edge(
-                    from_entity_id=f"task.airflow.{dag_id}.{from_task}",
-                    to_entity_id=f"task.airflow.{dag_id}.{to_task}",
-                    type=EdgeType.DEPENDS_ON,
-                    connector="airflow",
-                ))
+                edges.append(
+                    Edge(
+                        from_entity_id=f"task.airflow.{dag_id}.{from_task}",
+                        to_entity_id=f"task.airflow.{dag_id}.{to_task}",
+                        type=EdgeType.DEPENDS_ON,
+                        connector="airflow",
+                    )
+                )
         return edges
 
     async def generate_changes(
@@ -94,8 +98,7 @@ class AirflowConnector(BaseConnector):
     ) -> tuple[list[FileDiff], list[UnverifiedEntity]]:
         """Generate docstring annotation diffs for Airflow tasks in the affected set."""
         affected_task_ids = [
-            eid for eid in (event.affected_entity_ids or [])
-            if eid.startswith("task.airflow.")
+            eid for eid in (event.affected_entity_ids or []) if eid.startswith("task.airflow.")
         ]
         if not affected_task_ids:
             return [], []
@@ -148,20 +151,23 @@ class AirflowConnector(BaseConnector):
                 )
                 continue
 
-            diffs.append(FileDiff(
-                file_path=str(dag_file.relative_to(self.dags_dir)),
-                before=original,
-                after=updated,
-                connector="airflow",
-                description=(
-                    f"Annotated task `{task_id}` in DAG `{dag_id}` with semantic change context"
-                ),
-            ))
+            diffs.append(
+                FileDiff(
+                    file_path=str(dag_file.relative_to(self.dags_dir)),
+                    before=original,
+                    after=updated,
+                    connector="airflow",
+                    description=(
+                        f"Annotated task `{task_id}` in DAG `{dag_id}` with semantic change context"
+                    ),
+                )
+            )
 
         return diffs, unverified
 
 
 # ── DAG file parsing ──────────────────────────────────────────────────────────
+
 
 def _extract_dag_id(tree: ast.AST, fallback: str) -> str:
     """Extract dag_id from @dag(dag_id="...") or dag(...) call. Falls back to filename stem."""
@@ -216,7 +222,7 @@ def _extract_task_dependencies(source: str) -> list[tuple[str, str]]:
     """
     return [
         (m.group(1), m.group(2))
-        for m in re.finditer(r'(\w+)(?:\([^)]*\))?\s*>>\s*(\w+)(?:\([^)]*\))?', source)
+        for m in re.finditer(r"(\w+)(?:\([^)]*\))?\s*>>\s*(\w+)(?:\([^)]*\))?", source)
     ]
 
 
@@ -233,6 +239,7 @@ def _find_dag_file(dags_dir: Path, dag_id: str) -> Path | None:
 
 
 # ── Docstring annotation ──────────────────────────────────────────────────────
+
 
 def _annotate_task_docstring(
     source: str,
@@ -278,15 +285,15 @@ def _annotate_task_docstring(
             continue
 
         doc_node = node.body[0].value
-        end_lineno = doc_node.end_lineno      # 1-based
-        end_col = doc_node.end_col_offset     # 0-based, points past the last quote char
+        end_lineno = doc_node.end_lineno  # 1-based
+        end_col = doc_node.end_col_offset  # 0-based, points past the last quote char
 
         line = lines[end_lineno - 1]
         closing_start = end_col - 3
-        if closing_start < 0 or line[closing_start:closing_start + 3] not in ('"""', "'''"):
+        if closing_start < 0 or line[closing_start : closing_start + 3] not in ('"""', "'''"):
             continue
 
-        quote = line[closing_start:closing_start + 3]
+        quote = line[closing_start : closing_start + 3]
         indent = " " * closing_start
 
         annotation = (
@@ -296,7 +303,7 @@ def _annotate_task_docstring(
             f"{indent}Context: {context}\n"
         )
 
-        new_line = line[:closing_start] + annotation + quote + line[closing_start + 3:]
+        new_line = line[:closing_start] + annotation + quote + line[closing_start + 3 :]
         lines[end_lineno - 1] = new_line
         return "\n".join(lines)
 

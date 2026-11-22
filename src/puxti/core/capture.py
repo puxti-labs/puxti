@@ -189,10 +189,9 @@ class SemanticCapture:
             self._backend.input_cost_per_mtok is not None
             and self._backend.output_cost_per_mtok is not None
         ):
-            cost = (
-                (count.tokens / 1_000_000) * self._backend.input_cost_per_mtok
-                + (_ESTIMATED_OUTPUT_TOKENS / 1_000_000) * self._backend.output_cost_per_mtok
-            )
+            cost = (count.tokens / 1_000_000) * self._backend.input_cost_per_mtok + (
+                _ESTIMATED_OUTPUT_TOKENS / 1_000_000
+            ) * self._backend.output_cost_per_mtok
         return {
             "input_tokens": count.tokens,
             "tokens_exact": count.exact,
@@ -223,6 +222,7 @@ class SemanticCapture:
 
 
 # ── Prompt builder ────────────────────────────────────────────────────────────
+
 
 def _build_user_message(
     event: ChangeEvent,

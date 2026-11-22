@@ -5,6 +5,7 @@ Telemetry is opt-in and disabled by default. Enable it with:
 
 See TELEMETRY.md for the full list of events and fields collected.
 """
+
 from __future__ import annotations
 
 import sys

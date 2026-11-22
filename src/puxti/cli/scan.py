@@ -30,18 +30,22 @@ logger = logging.getLogger(__name__)
 @app.command()
 def scan(
     dbt_project_dir: Optional[str] = typer.Option(
-        None, "--dbt-project-dir",
+        None,
+        "--dbt-project-dir",
         help="Path to dbt project root (overrides .puxti.yml and DBT_PROJECT_DIR)",
     ),
     interactive: bool = typer.Option(
-        False, "--interactive", "-i",
+        False,
+        "--interactive",
+        "-i",
         help="Confirm each definition one by one (slower, higher accuracy).",
     ),
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Estimate token count and cost without running the scan."
     ),
     if_changed: bool = typer.Option(
-        False, "--if-changed",
+        False,
+        "--if-changed",
         help="Skip the scan (exit 0) when no connector's inputs changed since the last "
         "completed scan. With --dry-run, exit 3 when a rescan is needed.",
     ),
@@ -76,7 +80,9 @@ def scan(
     resolved_project_dir = dbt_project_dir or (ws.dbt.project_dir if ws.dbt else None)
     _run(
         _run_scan(
-            dbt_project_dir=resolved_project_dir, interactive=interactive, dry_run=dry_run,
+            dbt_project_dir=resolved_project_dir,
+            interactive=interactive,
+            dry_run=dry_run,
             if_changed=if_changed,
         ),
         command="scan",
@@ -109,7 +115,8 @@ def _fingerprint(
                 json.dumps([c.name, c.config], sort_keys=True, default=str) for c in connectors
             ),
         },
-        sort_keys=True, default=str,
+        sort_keys=True,
+        default=str,
     )
     digest = hashlib.sha256(f"{fp.digest}\0{settings_key}".encode()).hexdigest()
     return SourceFingerprint(source=fp.source, digest=digest)
@@ -174,14 +181,20 @@ async def _record_scan_runs(
 ) -> None:
     for connector, fp in fingerprints:
         if fp is not None and connector.name not in incomplete:
-            await graph.record_scan_run(ScanRun(
-                connector=connector.name, source=fp.source,
-                project=_project_name(connector), fingerprint=fp.digest,
-            ))
+            await graph.record_scan_run(
+                ScanRun(
+                    connector=connector.name,
+                    source=fp.source,
+                    project=_project_name(connector),
+                    fingerprint=fp.digest,
+                )
+            )
 
 
 async def _run_scan(
-    dbt_project_dir: str | None, interactive: bool, dry_run: bool = False,
+    dbt_project_dir: str | None,
+    interactive: bool,
+    dry_run: bool = False,
     if_changed: bool = False,
 ) -> None:
     project_dir = dbt_project_dir or settings.dbt_project_dir
@@ -200,8 +213,7 @@ async def _run_scan(
     # on the next --if-changed run instead of being recorded as scanned.
     # A plain dry run neither checks nor records, so it skips the hashing.
     fingerprints = (
-        [(c, _fingerprint(c, connectors)) for c in connectors]
-        if if_changed or not dry_run else []
+        [(c, _fingerprint(c, connectors)) for c in connectors] if if_changed or not dry_run else []
     )
 
     rescan_needed = False
@@ -305,7 +317,10 @@ async def _scan_connectors(
     for connector in connectors:
         console.print(f"\n[bold]Scanning {connector.name}[/bold] ({mode} mode)")
         result = await scanner.scan(
-            connector, graph, interactive=interactive, console=console,
+            connector,
+            graph,
+            interactive=interactive,
+            console=console,
             reference_index=reference_index,
         )
         console.print(
@@ -377,16 +392,22 @@ async def _reconcile_proposed(graph: GraphStore, interactive: bool) -> None:
     confirmed: list[tuple] = []
     if interactive:
         for p, target_id in matches:
-            choice = console.input(
-                f"  [bold]Bind[/bold] {p.name} → {target_id}? "
-                "([green]y[/green]=yes, [red]n[/red]=skip) > "
-            ).strip().lower()
+            choice = (
+                console.input(
+                    f"  [bold]Bind[/bold] {p.name} → {target_id}? "
+                    "([green]y[/green]=yes, [red]n[/red]=skip) > "
+                )
+                .strip()
+                .lower()
+            )
             if choice == "y":
                 confirmed.append((p, target_id))
     else:
-        choice = console.input(
-            "\n[bold]Bind all?[/bold] ([green]y[/green]=yes, [red]n[/red]=cancel) > "
-        ).strip().lower()
+        choice = (
+            console.input("\n[bold]Bind all?[/bold] ([green]y[/green]=yes, [red]n[/red]=cancel) > ")
+            .strip()
+            .lower()
+        )
         if choice == "y":
             confirmed = matches
 

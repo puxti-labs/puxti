@@ -48,9 +48,7 @@ class GitHubConnector:
         base_branch - branch to open the PR against (default: "main")
     """
 
-    def __init__(
-        self, config: dict, client: httpx.AsyncClient | None = None
-    ) -> None:
+    def __init__(self, config: dict, client: httpx.AsyncClient | None = None) -> None:
         self._repo = config["repo"]
         self._token = config["token"]
         self._base_branch = config.get("base_branch", "main")
@@ -215,9 +213,7 @@ class GitHubConnector:
         )
         _raise_for_status(response, f"upsert file: {path}")
 
-    async def _create_pull_request(
-        self, title: str, body: str, head: str
-    ) -> str:
+    async def _create_pull_request(self, title: str, body: str, head: str) -> str:
         response = await self._client.post(
             f"{_BASE_URL}/repos/{self._repo}/pulls",
             headers=self._headers,
@@ -261,6 +257,7 @@ def _companion_section(companions: list[tuple[str, str, str]], this_connector: s
 
     return "\n".join(lines)
 
+
 def _pr_title(event: SemanticChangeEvent) -> str:
     """Concise imperative title derived from the change, not the prose description."""
     before = event.change.get("before", {}).get("name") if event.change else None
@@ -279,12 +276,15 @@ def _pr_title(event: SemanticChangeEvent) -> str:
 
 def _needs_attention(description: str) -> bool:
     """Return True if this diff requires human review rather than a clean auto-change."""
-    return any(kw in description.lower() for kw in (
-        "naming conflict",
-        "manual review required",
-        "manual resolution required",
-        "verify carefully",
-    ))
+    return any(
+        kw in description.lower()
+        for kw in (
+            "naming conflict",
+            "manual review required",
+            "manual resolution required",
+            "verify carefully",
+        )
+    )
 
 
 def _pr_body(
@@ -303,8 +303,7 @@ def _pr_body(
 
     if attention:
         attention_list = "\n".join(
-            f"- `{d.file_path}` — {_attention_reason(d.description)}"
-            for d in attention
+            f"- `{d.file_path}` — {_attention_reason(d.description)}" for d in attention
         )
         sections.append(f"## Requires your attention\n{attention_list}")
 
@@ -340,12 +339,8 @@ def _pr_body(
             source_list = "\n".join(
                 f"- {_inline_code(item.entity_id)}" for item in source_qualified
             )
-            old_name = (
-                event.change.get("before", {}).get("name", "?") if event.change else "?"
-            )
-            new_name = (
-                event.change.get("after", {}).get("name", "?") if event.change else "?"
-            )
+            old_name = event.change.get("before", {}).get("name", "?") if event.change else "?"
+            new_name = event.change.get("after", {}).get("name", "?") if event.change else "?"
             unverified_sections.append(
                 f"### 🛑 Do not merge until this is resolved\n"
                 f"The source model uses a qualified column reference (e.g. "
@@ -369,9 +364,7 @@ def _pr_body(
             for item in other_unverified:
                 entity_id = _inline_code(item.entity_id)
                 detail = f" ({_inline_code(item.detail)})" if item.detail else ""
-                unverified_list.append(
-                    f"- {entity_id} — {item.reason.description}{detail}"
-                )
+                unverified_list.append(f"- {entity_id} — {item.reason.description}{detail}")
             unverified_sections.append(
                 "No changes were generated for the entities below. Review each "
                 "skipped entity before merging; the generated diffs do not resolve "

@@ -160,7 +160,8 @@ class SemanticRedefiner:
             except json.JSONDecodeError:
                 _logger.warning(
                     "Skipping %s: LLM returned invalid JSON (truncated=%r)",
-                    entity_name, response.truncated,
+                    entity_name,
+                    response.truncated,
                 )
                 continue
 
@@ -176,17 +177,19 @@ class SemanticRedefiner:
                 continue
 
             label = "entity itself" if depth == 0 else f"upstream hop {depth}"
-            diffs.append(FileDiff(
-                file_path=model_path,
-                before=model_sql,
-                after=(
-                    f"-- PUXTI [passthrough — {label}]\n"
-                    f"-- {_first_sentence(reasoning)}\n"
-                    f"{_ensure_newline(proposed_sql)}"
-                ),
-                connector="dbt",
-                description=f"Pass through `{new_attribute}` ({label})",
-            ))
+            diffs.append(
+                FileDiff(
+                    file_path=model_path,
+                    before=model_sql,
+                    after=(
+                        f"-- PUXTI [passthrough — {label}]\n"
+                        f"-- {_first_sentence(reasoning)}\n"
+                        f"{_ensure_newline(proposed_sql)}"
+                    ),
+                    connector="dbt",
+                    description=f"Pass through `{new_attribute}` ({label})",
+                )
+            )
 
         return diffs
 
@@ -265,7 +268,8 @@ class SemanticRedefiner:
         except json.JSONDecodeError:
             _logger.warning(
                 "Skipping %s: LLM returned invalid JSON (truncated=%r)",
-                entity.name, response.truncated,
+                entity.name,
+                response.truncated,
             )
             return None
 
@@ -316,13 +320,13 @@ class SemanticRedefiner:
             after=annotated_sql,
             connector="dbt",
             description=(
-                f"Semantic redefinition of `{entity_id}` — "
-                f"hop depth {depth}, {confidence_label}"
+                f"Semantic redefinition of `{entity_id}` — hop depth {depth}, {confidence_label}"
             ),
         )
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def _sql_fragment(model_sql: str) -> str:
     """Model SQL as sent to the LLM: capped at _MAX_SQL_CHARS, with a marker if cut."""
@@ -467,8 +471,7 @@ def _annotation_only_diff(
         after=annotation + model_sql,
         connector="dbt",
         description=(
-            f"Semantic redefinition of `{entity_id}` — "
-            f"hop depth {depth}, manual review required"
+            f"Semantic redefinition of `{entity_id}` — hop depth {depth}, manual review required"
         ),
     )
 
@@ -488,11 +491,9 @@ def _annotate_sql(sql: str, confidence_label: str, reasoning: str, entity_id: st
 def _first_sentence(text: str, max_len: int = 200) -> str:
     """Return the first sentence of text, capped at max_len characters."""
     sentence = text.split("\n")[0].split(". ")[0].rstrip(".")
-    return sentence if len(sentence) <= max_len else sentence[:max_len - 1] + "…"
+    return sentence if len(sentence) <= max_len else sentence[: max_len - 1] + "…"
 
 
 def _ensure_newline(sql: str) -> str:
     """Ensure SQL ends with exactly one newline."""
     return sql.rstrip("\n") + "\n"
-
-

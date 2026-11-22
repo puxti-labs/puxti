@@ -18,7 +18,7 @@ def _render_proposed_section(proposed_pairs: list) -> None:
         return
     table = Table(
         title=f"[bold yellow]Proposed (unbound)[/bold yellow]  "
-              f"[dim]{len(proposed_pairs)} metric(s), not yet implemented[/dim]",
+        f"[dim]{len(proposed_pairs)} metric(s), not yet implemented[/dim]",
         show_lines=False,
     )
     table.add_column("Name", style="bold", no_wrap=True)
@@ -31,20 +31,23 @@ def _render_proposed_section(proposed_pairs: list) -> None:
         table.add_row(entity_obj.name, entity_obj.id, desc)
     console.print(table)
     console.print(
-        "[dim]Bind with `puxti scan` (reconcile) or "
-        "`puxti bind --proposed <id> --to <id>`.[/dim]\n"
+        "[dim]Bind with `puxti scan` (reconcile) or `puxti bind --proposed <id> --to <id>`.[/dim]\n"
     )
 
 
 @app.command()
 def describe(
     entity: Optional[str] = typer.Option(
-        None, "--entity", "-e",
-        help="Entity ID to inspect in detail. Omit to show the full Knowledge Graph."
+        None,
+        "--entity",
+        "-e",
+        help="Entity ID to inspect in detail. Omit to show the full Knowledge Graph.",
     ),
     project: Optional[str] = typer.Option(
-        None, "--project", "-p",
-        help="Filter overview to a single project. Ignored when --entity is set."
+        None,
+        "--project",
+        "-p",
+        help="Filter overview to a single project. Ignored when --entity is set.",
     ),
 ) -> None:
     """Display the current state of the Knowledge Graph.
@@ -90,18 +93,21 @@ async def _run_describe(entity: str | None, project: str | None = None) -> None:
             is_proposed = entity_obj.status == EntityStatus.PROPOSED
             status_line = (
                 "[bold]Status:[/bold]     [yellow]proposed · not yet implemented[/yellow]\n"
-                if is_proposed else ""
+                if is_proposed
+                else ""
             )
-            console.print(Panel(
-                f"[bold]Type:[/bold]       {entity_obj.type.value}\n"
-                f"[bold]Connector:[/bold]  {entity_obj.source_connector}\n"
-                f"{project_line}"
-                f"{status_line}"
-                f"[bold]Definition:[/bold] {def_text}\n"
-                f"[dim]{def_meta}[/dim]",
-                title=f"[bold]{entity_obj.name}[/bold]  [dim]{entity}[/dim]",
-                border_style="yellow" if is_proposed else "blue",
-            ))
+            console.print(
+                Panel(
+                    f"[bold]Type:[/bold]       {entity_obj.type.value}\n"
+                    f"[bold]Connector:[/bold]  {entity_obj.source_connector}\n"
+                    f"{project_line}"
+                    f"{status_line}"
+                    f"[bold]Definition:[/bold] {def_text}\n"
+                    f"[dim]{def_meta}[/dim]",
+                    title=f"[bold]{entity_obj.name}[/bold]  [dim]{entity}[/dim]",
+                    border_style="yellow" if is_proposed else "blue",
+                )
+            )
 
             outgoing = [e for e in edges if e.from_entity_id == entity]
             incoming = [e for e in edges if e.to_entity_id == entity]
@@ -144,7 +150,8 @@ async def _run_describe(entity: str | None, project: str | None = None) -> None:
                 pairs = [(e, d) for e, d in pairs if (e.project or "(untagged)") == project]
                 entity_ids = {e.id for e, _ in pairs}
                 semantic_edges = [
-                    edge for edge in semantic_edges
+                    edge
+                    for edge in semantic_edges
                     if edge.from_entity_id in entity_ids or edge.to_entity_id in entity_ids
                 ]
 

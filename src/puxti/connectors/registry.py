@@ -29,9 +29,7 @@ def build_connector(name: str, cfg: ConnectorConfig) -> BaseConnector | None:
         return DbtConnector(config={"project_dir": cfg.project_dir})
     if name == "airflow":
         dags_subdir = cfg.extras.get("dags_dir", "dags")
-        return AirflowConnector(
-            config={"dags_dir": str(Path(cfg.project_dir) / dags_subdir)}
-        )
+        return AirflowConnector(config={"dags_dir": str(Path(cfg.project_dir) / dags_subdir)})
     if name == "prisma":
         config: dict = {"project_dir": cfg.project_dir}
         if "schema_path" in cfg.extras:

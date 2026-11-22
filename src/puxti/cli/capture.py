@@ -30,7 +30,9 @@ from puxti.settings import settings
 @app.command()
 def capture(
     entity: str = typer.Option(
-        ..., "--entity", "-e",
+        ...,
+        "--entity",
+        "-e",
         help="Entity ID being changed (e.g. model.jaffle_shop.orders.order_date)",
     ),
     before: str = typer.Option(..., help="Value before the change (e.g. old column name)"),
@@ -52,16 +54,19 @@ def capture(
         None, help="Base branch for the PR (default: main or from .puxti.yml)."
     ),
     dbt_project_dir: Optional[str] = typer.Option(
-        None, "--dbt-project-dir",
+        None,
+        "--dbt-project-dir",
         help="Path to dbt project root (overrides .puxti.yml and DBT_PROJECT_DIR)",
     ),
     repo_subdir: Optional[str] = typer.Option(
-        None, "--repo-subdir",
+        None,
+        "--repo-subdir",
         help="Subdirectory of the repo where the dbt project lives (e.g. 'sports_sims'). "
-             "Use when the dbt project is not at the repo root."
+        "Use when the dbt project is not at the repo root.",
     ),
     dry_run: bool = typer.Option(
-        False, "--dry-run",
+        False,
+        "--dry-run",
         help=(
             "Show the cost estimate, then run the capture and print the diffs without "
             "saving to the Knowledge Graph or calling GitHub. Calls the LLM."
@@ -126,9 +131,7 @@ async def _run_capture(
         raise typer.Exit(1)
 
     if not dry_run and not settings.github_token:
-        err_console.print(
-            "[red]Error:[/red] GitHub token not configured. Set GITHUB_TOKEN."
-        )
+        err_console.print("[red]Error:[/red] GitHub token not configured. Set GITHUB_TOKEN.")
         raise typer.Exit(1)
 
     if not dry_run:
@@ -149,9 +152,7 @@ async def _run_capture(
     # Refuse a rename onto an existing column before the LLM call, so it costs
     # nothing and saves no enrichment for a rename that will not happen.
     try:
-        DbtConnector(config={"project_dir": project_dir}).check_column_rename(
-            entity, before, after
-        )
+        DbtConnector(config={"project_dir": project_dir}).check_column_rename(entity, before, after)
     except ColumnRenameCollisionError as exc:
         _refuse_rename(exc)
 
@@ -177,8 +178,7 @@ async def _run_capture(
             console.print(
                 f"[yellow]Note:[/yellow] Entity [bold]{escape(entity)}[/bold] not found in the "
                 f"Knowledge Graph — resolving lineage by model name. "
-                f"Run [bold]puxti describe[/bold] to see canonical entity IDs."
-                + parent_hint
+                f"Run [bold]puxti describe[/bold] to see canonical entity IDs." + parent_hint
             )
 
         capture = SemanticCapture()
@@ -236,8 +236,10 @@ async def _run_capture(
             for eid in semantic_event.affected_entity_ids:
                 console.print(f"  • {escape(eid)}")
         if semantic_event.reasoning:
-            console.print(f"\n[bold]Reasoning:[/bold] {escape(semantic_event.reasoning[:200])}"
-                          + ("…" if len(semantic_event.reasoning) > 200 else ""))
+            console.print(
+                f"\n[bold]Reasoning:[/bold] {escape(semantic_event.reasoning[:200])}"
+                + ("…" if len(semantic_event.reasoning) > 200 else "")
+            )
 
         if dry_run:
             console.print(
@@ -259,13 +261,10 @@ async def _run_capture(
             ws_for_propagation = _load_workspace()
             dbt = DbtConnector(config={"project_dir": project_dir})
             connectors = [dbt] + [
-                c for c in build_configured_connectors(ws_for_propagation)
-                if c.name != "dbt"
+                c for c in build_configured_connectors(ws_for_propagation) if c.name != "dbt"
             ]
             try:
-                results = await PropagationEngine(connectors=connectors).propagate(
-                    semantic_event
-                )
+                results = await PropagationEngine(connectors=connectors).propagate(semantic_event)
             except ColumnRenameCollisionError as exc:
                 # Only the source model refuses: dependents come back unverified.
                 _refuse_rename(exc)
@@ -280,7 +279,8 @@ async def _run_capture(
                 eid.split(".")[1]
                 for eid in affected
                 if eid.split(".")[0] in ("model", "source")
-                and len(eid.split(".")) >= 2 and eid.split(".")[1] != current_project
+                and len(eid.split(".")) >= 2
+                and eid.split(".")[1] != current_project
             }
             if foreign_projects:
                 projects_hint = ", ".join(f"`{escape(p)}`" for p in sorted(foreign_projects))
@@ -406,8 +406,7 @@ async def _run_capture(
                 file_list = ", ".join(f"`{d.file_path}`" for d in updated.diffs)
                 console.print(
                     Panel(
-                        f"[bold green]PR opened:[/bold green] {updated.pr_url}\n"
-                        f"Files: {file_list}",
+                        f"[bold green]PR opened:[/bold green] {updated.pr_url}\nFiles: {file_list}",
                         title="[bold]Puxti[/bold]",
                         border_style="green",
                     )
@@ -416,7 +415,7 @@ async def _run_capture(
             # Patch earlier PRs to add companion references to PRs opened after them
             if len(opened) > 1:
                 for i, (connector, pr_repo, pr_url, gh) in enumerate(opened[:-1]):
-                    later = [(c, r, u) for c, r, u, _ in opened[i + 1:]]
+                    later = [(c, r, u) for c, r, u, _ in opened[i + 1 :]]
                     await gh.add_companion_note(pr_url, later, this_connector=connector)
 
     finally:

@@ -28,7 +28,7 @@ _logger = logging.getLogger(__name__)
 
 # Billed output per definition call incl. thinking, claude-sonnet-5-5: mean 151, max 395 (n=16)
 _DEF_EST_OUTPUT_TOKENS = 150
-_MAX_SQL_CHARS = 15_000       # cap SQL size to prevent injection via large model files
+_MAX_SQL_CHARS = 15_000  # cap SQL size to prevent injection via large model files
 _EDGES_EST_OUTPUT_TOKENS = 2048  # per batch call; actual total scales with entity count
 
 
@@ -125,9 +125,7 @@ class SemanticScanner:
         upstream_names: list[str],
     ) -> str:
         """Ask the LLM to infer a starter definition for a model."""
-        upstream_context = (
-            f"Upstream models: {', '.join(upstream_names)}" if upstream_names else ""
-        )
+        upstream_context = f"Upstream models: {', '.join(upstream_names)}" if upstream_names else ""
         yml_description = entity.metadata.get("description", "") if entity.metadata else ""
         yml_context = f"dbt yml description: {yml_description}" if yml_description else ""
         sql_fragment = sql[:_MAX_SQL_CHARS]
@@ -187,6 +185,7 @@ class SemanticScanner:
                     user_message, system=_DEFINITION_SYSTEM_PROMPT
                 )
                 token_counts.append(count.tokens)
+
             return _run
 
         count_jobs: list[Callable[[], Awaitable[None]]] = []
@@ -196,7 +195,8 @@ class SemanticScanner:
                 continue
             upstream_context = (
                 f"Upstream models: {', '.join(upstream_map.get(entity.id, []))}"
-                if upstream_map.get(entity.id) else ""
+                if upstream_map.get(entity.id)
+                else ""
             )
             yml_description = entity.metadata.get("description", "") if entity.metadata else ""
             yml_context = f"dbt yml description: {yml_description}" if yml_description else ""
@@ -214,13 +214,9 @@ class SemanticScanner:
 
         # Count tokens for edges — one representative call (source batch + full context)
         placeholder_defs = {e.id: f"<definition for {e.name}>" for e in model_entities}
-        context_block = "\n".join(
-            f"- {e.id}: {placeholder_defs[e.id]}" for e in model_entities
-        )
+        context_block = "\n".join(f"- {e.id}: {placeholder_defs[e.id]}" for e in model_entities)
         source_sample = model_entities[: self._EDGES_SOURCE_BATCH]
-        source_block = "\n".join(
-            f"- {e.id}: {placeholder_defs[e.id]}" for e in source_sample
-        )
+        source_block = "\n".join(f"- {e.id}: {placeholder_defs[e.id]}" for e in source_sample)
         source_ids = ", ".join(e.id for e in source_sample)
         edges_message = (
             f"All entities in this project (one-line summaries):\n{context_block}\n\n"
@@ -247,10 +243,9 @@ class SemanticScanner:
             self._backend.input_cost_per_mtok is not None
             and self._backend.output_cost_per_mtok is not None
         ):
-            total_cost = (
-                (total_input / 1_000_000) * self._backend.input_cost_per_mtok
-                + (total_output / 1_000_000) * self._backend.output_cost_per_mtok
-            )
+            total_cost = (total_input / 1_000_000) * self._backend.input_cost_per_mtok + (
+                total_output / 1_000_000
+            ) * self._backend.output_cost_per_mtok
 
         return {
             "models": len(model_entities),
@@ -301,35 +296,30 @@ class SemanticScanner:
         truncated = 0
 
         # One-line summaries for the full entity list — used as context in every call
-        summaries = {
-            e.id: definitions.get(e.id, "(no definition)").split(".")[0]
-            for e in entities
-        }
-        context_block = "\n".join(
-            f"- {e.id}: {summaries[e.id]}" for e in entities
-        )
+        summaries = {e.id: definitions.get(e.id, "(no definition)").split(".")[0] for e in entities}
+        context_block = "\n".join(f"- {e.id}: {summaries[e.id]}" for e in entities)
 
         source_batches = [
             entities[i : i + self._EDGES_SOURCE_BATCH]
             for i in range(0, len(entities), self._EDGES_SOURCE_BATCH)
         ]
-        results: list[tuple[list[SemanticEdge], bool]] = [
-            ([], False) for _ in source_batches
-        ]
+        results: list[tuple[list[SemanticEdge], bool]] = [([], False) for _ in source_batches]
         completed = 0
 
-        def _batch_job(
-            index: int, source_batch: list[Entity]
-        ) -> Callable[[], Awaitable[None]]:
+        def _batch_job(index: int, source_batch: list[Entity]) -> Callable[[], Awaitable[None]]:
             async def _run() -> None:
                 nonlocal completed
                 results[index] = await self._edges_for_sources(
-                    source_batch, definitions, context_block, known_ids,
+                    source_batch,
+                    definitions,
+                    context_block,
+                    known_ids,
                     on_failed=on_batch_failed,
                 )
                 completed += 1
                 if on_batch_done:
                     on_batch_done(completed, len(source_batches))
+
             return _run
 
         await _bounded_gather(
@@ -368,8 +358,7 @@ class SemanticScanner:
             raising so the scan can continue; unparseable JSON still raises.
         """
         source_block = "\n".join(
-            f"- {e.id}: {definitions.get(e.id, '(no definition)')}"
-            for e in source_entities
+            f"- {e.id}: {definitions.get(e.id, '(no definition)')}" for e in source_entities
         )
         source_ids = ", ".join(e.id for e in source_entities)
         user_message = (
@@ -404,8 +393,7 @@ class SemanticScanner:
             if response.truncated:
                 return [], True
             _logger.warning(
-                "Skipping semantic edge batch: response is not an object with an "
-                "\"edges\" list"
+                'Skipping semantic edge batch: response is not an object with an "edges" list'
             )
             if on_failed:
                 on_failed()
@@ -438,13 +426,15 @@ class SemanticScanner:
                     "Skipping semantic edge without a description (%s -> %s)", from_id, to_id
                 )
                 continue
-            edges.append(SemanticEdge(
-                from_entity_id=from_id,
-                to_entity_id=to_id,
-                type=edge_type,
-                description=description.strip(),
-                created_by="scan",
-            ))
+            edges.append(
+                SemanticEdge(
+                    from_entity_id=from_id,
+                    to_entity_id=to_id,
+                    type=edge_type,
+                    description=description.strip(),
+                    created_by="scan",
+                )
+            )
         return edges, False
 
     async def scan(
@@ -529,12 +519,14 @@ class SemanticScanner:
         written = 0
         for entity_id, definition_text in definitions.items():
             existing = await graph.get_latest_definition(entity_id)
-            await graph.upsert_definition(Definition(
-                entity_id=entity_id,
-                description=definition_text,
-                version=(existing.version + 1) if existing else 1,
-                created_by="scan",
-            ))
+            await graph.upsert_definition(
+                Definition(
+                    entity_id=entity_id,
+                    description=definition_text,
+                    version=(existing.version + 1) if existing else 1,
+                    created_by="scan",
+                )
+            )
             written += 1
 
         console.print(f"[green]✓[/green] Wrote {written} definitions to Knowledge Graph")
@@ -641,13 +633,18 @@ class SemanticScanner:
         if interactive:
             total = len(to_write)
             for i, (entity_id, text, _) in enumerate(to_write, 1):
-                console.print(Text(f"\n[{i}/{total}] {names.get(entity_id, entity_id)}",
-                                   style="bold"))
+                console.print(
+                    Text(f"\n[{i}/{total}] {names.get(entity_id, entity_id)}", style="bold")
+                )
                 console.print(Text(text, style="dim"))
-                choice = console.input(
-                    "  [bold]Confirm?[/bold] ([green]y[/green]=yes, "
-                    "[yellow]e[/yellow]=edit, [red]s[/red]=skip) > "
-                ).strip().lower()
+                choice = (
+                    console.input(
+                        "  [bold]Confirm?[/bold] ([green]y[/green]=yes, "
+                        "[yellow]e[/yellow]=edit, [red]s[/red]=skip) > "
+                    )
+                    .strip()
+                    .lower()
+                )
                 # Only an explicit "y" confirms — blank input skips, never accepts.
                 if choice == "y":
                     confirmed[entity_id] = (text, "scan")
@@ -664,10 +661,14 @@ class SemanticScanner:
                 table.add_row(Text(names.get(entity_id, entity_id)), Text(text))
             console.print(table)
 
-            choice = console.input(
-                f"\n[bold]Write {len(to_write)} metric definition(s)?[/bold] "
-                "([green]y[/green]=yes, [red]n[/red]=skip) > "
-            ).strip().lower()
+            choice = (
+                console.input(
+                    f"\n[bold]Write {len(to_write)} metric definition(s)?[/bold] "
+                    "([green]y[/green]=yes, [red]n[/red]=skip) > "
+                )
+                .strip()
+                .lower()
+            )
             # Only an explicit "y" confirms — blank input skips, never accepts.
             if choice == "y":
                 confirmed = {entity_id: (text, "scan") for entity_id, text, _ in to_write}
@@ -676,12 +677,14 @@ class SemanticScanner:
             if entity_id not in confirmed:
                 continue
             description, created_by = confirmed[entity_id]
-            await graph.upsert_definition(Definition(
-                entity_id=entity_id,
-                description=description,
-                version=(latest.version + 1) if latest else 1,
-                created_by=created_by,
-            ))
+            await graph.upsert_definition(
+                Definition(
+                    entity_id=entity_id,
+                    description=description,
+                    version=(latest.version + 1) if latest else 1,
+                    created_by=created_by,
+                )
+            )
         if confirmed:
             console.print(f"[green]✓[/green] Wrote {len(confirmed)} metric definitions")
         return len(confirmed)
@@ -709,10 +712,14 @@ class SemanticScanner:
                 )
 
             console.print(f"  [dim]{definition}[/dim]")
-            choice = console.input(
-                "  [bold]Confirm?[/bold] ([green]y[/green]=yes, "
-                "[yellow]e[/yellow]=edit, [red]s[/red]=skip) > "
-            ).strip().lower()
+            choice = (
+                console.input(
+                    "  [bold]Confirm?[/bold] ([green]y[/green]=yes, "
+                    "[yellow]e[/yellow]=edit, [red]s[/red]=skip) > "
+                )
+                .strip()
+                .lower()
+            )
 
             # Only an explicit "y" confirms — blank input skips, never accepts.
             if choice == "y":
@@ -736,9 +743,7 @@ class SemanticScanner:
         targets = [e for e in model_entities if sql_map.get(e.id)]
         done = 0
 
-        status = console.status(
-            f"[bold]Generating definitions... 0/{len(targets)}[/bold]"
-        )
+        status = console.status(f"[bold]Generating definitions... 0/{len(targets)}[/bold]")
 
         def _definition_job(entity: Entity) -> Callable[[], Awaitable[None]]:
             async def _run() -> None:
@@ -748,15 +753,12 @@ class SemanticScanner:
                 )
                 generated[entity.id] = definition
                 done += 1
-                status.update(
-                    f"[bold]Generating definitions... {done}/{len(targets)}[/bold]"
-                )
+                status.update(f"[bold]Generating definitions... {done}/{len(targets)}[/bold]")
+
             return _run
 
         with status:
-            await _bounded_gather(
-                [_definition_job(e) for e in targets], settings.llm_concurrency
-            )
+            await _bounded_gather([_definition_job(e) for e in targets], settings.llm_concurrency)
 
         # Show summary table
         table = Table(title="Proposed definitions")
@@ -767,10 +769,14 @@ class SemanticScanner:
                 table.add_row(entity.name, generated[entity.id])
         console.print(table)
 
-        choice = console.input(
-            "\n[bold]Confirm all definitions?[/bold] "
-            "([green]y[/green]=yes, [red]n[/red]=cancel) > "
-        ).strip().lower()
+        choice = (
+            console.input(
+                "\n[bold]Confirm all definitions?[/bold] "
+                "([green]y[/green]=yes, [red]n[/red]=cancel) > "
+            )
+            .strip()
+            .lower()
+        )
 
         # Only an explicit "y" confirms — blank input cancels, never accepts.
         if choice == "y":
@@ -792,10 +798,13 @@ class SemanticScanner:
             )
             console.print(f"    [dim]{edge.description}[/dim]")
 
-        choice = console.input(
-            "\n[bold]Confirm all edges?[/bold] "
-            "([green]y[/green]=yes, [red]n[/red]=cancel) > "
-        ).strip().lower()
+        choice = (
+            console.input(
+                "\n[bold]Confirm all edges?[/bold] ([green]y[/green]=yes, [red]n[/red]=cancel) > "
+            )
+            .strip()
+            .lower()
+        )
 
         # Only an explicit "y" confirms — blank input cancels, never accepts.
         return proposed_edges if choice == "y" else []

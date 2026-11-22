@@ -15,15 +15,20 @@ from puxti.graph_template import render_graph_html
 @app.command()
 def graph(
     output: str = typer.Option(
-        "puxti-graph.html", "--output", "-o",
+        "puxti-graph.html",
+        "--output",
+        "-o",
         help="Path to write the HTML file to.",
     ),
     project: Optional[str] = typer.Option(
-        None, "--project", "-p",
+        None,
+        "--project",
+        "-p",
         help="Only include entities from this project.",
     ),
     open_browser: bool = typer.Option(
-        False, "--open",
+        False,
+        "--open",
         help="Open the generated file in your browser.",
     ),
 ) -> None:
@@ -54,48 +59,56 @@ async def _run_graph(output: str, project: str | None, open_browser: bool) -> No
         for entity, _ in pairs:
             history = await kg.get_definition_history(entity.id)
             current = history[-1] if history else None
-            nodes.append({
-                "id": entity.id,
-                "name": entity.name,
-                "type": entity.type.value,
-                "project": entity.project,
-                "status": entity.status.value,
-                "definition": {
-                    "description": current.description,
-                    "version": current.version,
-                    "created_by": current.created_by,
-                    "created_at": current.created_at.isoformat(),
-                } if current else None,
-                "history": [
-                    {
-                        "version": h.version,
-                        "description": h.description,
-                        "created_by": h.created_by,
-                        "created_at": h.created_at.isoformat(),
+            nodes.append(
+                {
+                    "id": entity.id,
+                    "name": entity.name,
+                    "type": entity.type.value,
+                    "project": entity.project,
+                    "status": entity.status.value,
+                    "definition": {
+                        "description": current.description,
+                        "version": current.version,
+                        "created_by": current.created_by,
+                        "created_at": current.created_at.isoformat(),
                     }
-                    for h in history
-                ],
-            })
+                    if current
+                    else None,
+                    "history": [
+                        {
+                            "version": h.version,
+                            "description": h.description,
+                            "created_by": h.created_by,
+                            "created_at": h.created_at.isoformat(),
+                        }
+                        for h in history
+                    ],
+                }
+            )
 
         edges = []
         for ledge in await kg.get_all_lineage_edges():
             if ledge.from_entity_id in included and ledge.to_entity_id in included:
-                edges.append({
-                    "source": ledge.from_entity_id,
-                    "target": ledge.to_entity_id,
-                    "kind": "lineage",
-                    "type": ledge.type.value,
-                    "description": "",
-                })
+                edges.append(
+                    {
+                        "source": ledge.from_entity_id,
+                        "target": ledge.to_entity_id,
+                        "kind": "lineage",
+                        "type": ledge.type.value,
+                        "description": "",
+                    }
+                )
         for sedge in await kg.get_all_semantic_edges():
             if sedge.from_entity_id in included and sedge.to_entity_id in included:
-                edges.append({
-                    "source": sedge.from_entity_id,
-                    "target": sedge.to_entity_id,
-                    "kind": "semantic",
-                    "type": sedge.type.value,
-                    "description": sedge.description,
-                })
+                edges.append(
+                    {
+                        "source": sedge.from_entity_id,
+                        "target": sedge.to_entity_id,
+                        "kind": "semantic",
+                        "type": sedge.type.value,
+                        "description": sedge.description,
+                    }
+                )
     finally:
         await kg.close()
 

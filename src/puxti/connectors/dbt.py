@@ -36,14 +36,24 @@ _logger = logging.getLogger(__name__)
 # Manifest fields dbt rewrites on every parse even when the project is
 # unchanged. Left in, every `dbt parse` would look like a change.
 _VOLATILE_METADATA_KEYS = (
-    "generated_at", "invocation_id", "invocation_started_at", "run_started_at",
+    "generated_at",
+    "invocation_id",
+    "invocation_started_at",
+    "run_started_at",
 )
 
 # Resource fields `dbt compile` adds and `dbt parse` does not. They derive from
 # raw_code and config, which stay in the hash, and the scanner never reads them.
-_COMPILE_ONLY_KEYS = frozenset({
-    "created_at", "compiled", "compiled_code", "compiled_path", "extra_ctes", "extra_ctes_injected",
-})
+_COMPILE_ONLY_KEYS = frozenset(
+    {
+        "created_at",
+        "compiled",
+        "compiled_code",
+        "compiled_path",
+        "extra_ctes",
+        "extra_ctes_injected",
+    }
+)
 
 
 def _stable_manifest(manifest: dict) -> dict:
@@ -65,7 +75,8 @@ def _stable_manifest(manifest: dict) -> dict:
             elif isinstance(resource, list):  # `disabled`: id → list of resources
                 resource = [
                     {k: v for k, v in r.items() if k not in _COMPILE_ONLY_KEYS}
-                    if isinstance(r, dict) else r
+                    if isinstance(r, dict)
+                    else r
                     for r in resource
                 ]
             cleaned[rid] = resource
@@ -332,7 +343,9 @@ class DbtConnector(BaseConnector):
                 if not models:
                     _logger.warning(
                         "Metric %s depends on %s, which resolves to no model; "
-                        "no lineage edge written for it.", metric_id, dep_id,
+                        "no lineage edge written for it.",
+                        metric_id,
+                        dep_id,
                     )
                 targets.extend(models)
             for target_id in dict.fromkeys(targets):
@@ -645,8 +658,7 @@ class DbtConnector(BaseConnector):
                     after=updated_sql,
                     connector="dbt",
                     description=(
-                        f"Renamed column `{old_name}` → `{new_name}` "
-                        f"in model `{node['name']}`"
+                        f"Renamed column `{old_name}` → `{new_name}` in model `{node['name']}`"
                     ),
                 )
             )
@@ -721,16 +733,12 @@ class DbtConnector(BaseConnector):
                         before=original,
                         after=updated,
                         connector="dbt",
-                        description=(
-                            f"Renamed column `{old_name}` → `{new_name}` in `{rel_path}`"
-                        ),
+                        description=(f"Renamed column `{old_name}` → `{new_name}` in `{rel_path}`"),
                     )
                 )
         return diffs
 
-    async def _generate_semantic_diffs(
-        self, event: SemanticChangeEvent
-    ) -> list[FileDiff]:
+    async def _generate_semantic_diffs(self, event: SemanticChangeEvent) -> list[FileDiff]:
         """Case 3 — definition redefinition and Case 2 — attribute surfacing.
 
         For non-deterministic changes, we generate a proposed diff with the
@@ -927,7 +935,8 @@ def _metric_definition(metric: dict, measures: dict[str, tuple[str, dict]]) -> s
         else:
             span = "over all time"
         formula = (
-            f"Cumulative metric: {aggregated}, {span}" if aggregated
+            f"Cumulative metric: {aggregated}, {span}"
+            if aggregated
             else f"Cumulative metric, {span}."
         )
     elif metric_type == "ratio":

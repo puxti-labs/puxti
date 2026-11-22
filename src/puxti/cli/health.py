@@ -35,6 +35,7 @@ async def _run_health(
 
     # Knowledge Graph
     from puxti.core.graph import DEFAULT_DB_PATH, KnowledgeGraph
+
     if settings.database_url.strip().startswith(("postgres://", "postgresql://")):
         # Actually reach the database — a health check that only inspects the
         # config would report ✓ for a backend every other command then fails on.
@@ -105,6 +106,7 @@ async def _run_health(
     # Airflow connector
     if workspace and workspace.airflow and workspace.airflow.project_dir:
         from pathlib import Path as _Path
+
         _dags_subdir = workspace.airflow.extras.get("dags_dir", "dags")
         _dags_dir = str(_Path(workspace.airflow.project_dir) / _dags_subdir)
         try:
