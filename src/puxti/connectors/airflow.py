@@ -82,11 +82,14 @@ class AirflowConnector(BaseConnector):
             if not dag_id:
                 continue
 
-            for from_task, to_task in _extract_task_dependencies(source):
+            # `upstream >> downstream`: the downstream task depends on the upstream
+            # one, so the edge runs downstream → upstream like every other
+            # DEPENDS_ON edge (dependent → dependency).
+            for upstream, downstream in _extract_task_dependencies(source):
                 edges.append(
                     Edge(
-                        from_entity_id=f"task.airflow.{dag_id}.{from_task}",
-                        to_entity_id=f"task.airflow.{dag_id}.{to_task}",
+                        from_entity_id=f"task.airflow.{dag_id}.{downstream}",
+                        to_entity_id=f"task.airflow.{dag_id}.{upstream}",
                         type=EdgeType.DEPENDS_ON,
                         connector="airflow",
                     )
@@ -216,7 +219,7 @@ def _get_task_id_from_decorator(decorator: ast.expr) -> str | None:
 
 
 def _extract_task_dependencies(source: str) -> list[tuple[str, str]]:
-    """Extract task dependencies from >> operator patterns (best-effort).
+    """Extract (upstream, downstream) task pairs from >> operator patterns (best-effort).
 
     Handles both variable syntax (t1 >> t2) and call syntax (task1() >> task2()).
     """

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Airflow task lineage pointed upstream.** `extract >> load` was stored as `extract` depending on `load`, so `puxti impact` and `capture` on a task listed the tasks before it instead of after it. The edge now runs from `load` to `extract`, like every other dependency edge. Scan adds edges but never removes them, so a graph scanned before this fix keeps the reversed edges. Delete the Airflow lineage edges and rescan: `sqlite3 ~/.puxti/graph.db "DELETE FROM lineage_edges WHERE connector = 'airflow'"` (or the same statement in `psql` against `DATABASE_URL`), then `puxti scan`. This leaves `puxti link` edges and definitions alone; `puxti purge` would remove those too.
+
 ## [0.21.0] — 2026-11-21
 
 ### Added
