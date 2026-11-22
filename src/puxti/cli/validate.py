@@ -9,7 +9,14 @@ from rich.text import Text
 
 from puxti.cli._app import app
 from puxti.cli._shared import _load_workspace, _run, console
-from puxti.core.bi_validate import ValidationReport, display_path, resolve_dirs, validate
+from puxti.core.bi_validate import (
+    ValidationReport,
+    config_error_report,
+    display_path,
+    resolve_dirs,
+    validate,
+)
+from puxti.workspace import load_workspace
 
 
 @app.command("validate")
@@ -42,7 +49,14 @@ def validate_command(
 
 
 async def _run_validate(specs_dir: str | None, dbt_project_dir: str | None, as_json: bool) -> None:
-    specs_path, dbt_path = resolve_dirs(_load_workspace(), specs_dir, dbt_project_dir)
+    try:
+        ws = load_workspace()
+    except ValueError as exc:
+        if not as_json:
+            _load_workspace()  # prints the config error and exits 1
+        console.print_json(json.dumps(config_error_report(exc).to_dict()))
+        raise typer.Exit(1)
+    specs_path, dbt_path = resolve_dirs(ws, specs_dir, dbt_project_dir)
     report = validate(specs_path, dbt_path)
     if as_json:
         console.print_json(json.dumps(report.to_dict()))

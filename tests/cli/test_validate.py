@@ -52,3 +52,12 @@ def test_spec_text_is_printed_literally(tmp_path: Path, monkeypatch) -> None:
     chart = CHART.replace("group_by: [status]", "group_by: ['[bold]x']")
     result = _invoke(_project(tmp_path, specs={"bi/chart.yml": chart}), monkeypatch)
     assert "column '[bold]x'" in plain(result.output)
+
+
+def test_json_output_for_a_broken_workspace_file(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / ".puxti.yml").write_text("version: 7\n")
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["validate", "--json"])
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["ok"] is False and payload["findings"][0]["path"] == ".puxti.yml"

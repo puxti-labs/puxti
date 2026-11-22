@@ -130,8 +130,21 @@ def validate(specs_dir: Path, dbt_project_dir: Path | None) -> ValidationReport:
                 severity="warning",
             )
         )
-    report.findings += _DbtChecks(specs, _DbtFacts(manifest, catalog)).run()
+    facts = _DbtFacts(manifest, catalog)
+    report.findings += _DbtChecks(specs, facts).run()
+    report.findings += [
+        SpecError(path=target / file, message=message, severity="warning")
+        for file, message in dict.fromkeys(facts.problems)
+    ]
     return _sorted(report)
+
+
+def config_error_report(exc: Exception) -> ValidationReport:
+    """A report whose one error is an unreadable .puxti.yml, in the usual JSON shape."""
+    return ValidationReport(
+        specs_dir=Path("."),
+        findings=[SpecError(path=Path(".puxti.yml"), message=f"invalid .puxti.yml: {exc}")],
+    )
 
 
 def display_path(path: Path) -> str:
@@ -147,10 +160,10 @@ def display_path(path: Path) -> str:
 
 def _load_json(path: Path) -> tuple[dict | None, str | None]:
     """A JSON object from a file, or None with what is wrong ("not found" is None, None)."""
-    if not path.exists():
-        return None, None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None, None
     except (OSError, ValueError) as exc:
         return None, f"is unreadable: {exc}"
     if not isinstance(data, dict):
@@ -158,18 +171,37 @@ def _load_json(path: Path) -> tuple[dict | None, str | None]:
     return data, None
 
 
-def _obj(value: Any) -> dict:
-    """value when it is a JSON object, else empty: a field of the wrong shape is no data."""
-    return value if isinstance(value, dict) else {}
+def _text(value: Any) -> str | None:
+    """value when it is a nonempty string; any other JSON value records nothing."""
+    return value if isinstance(value, str) and value else None
+
+
+def _version(value: Any) -> str | None:
+    """A dbt model version, which may be a number or a string, as text."""
+    if isinstance(value, bool) or value is None:
+        return None
+    return str(value) if isinstance(value, (str, int, float)) else None
+
+
+@dataclass
+class _Model:
+    """A manifest model, reduced to checked fields. unique_id is the manifest's key."""
+
+    unique_id: str
+    schema: str
+    package: str | None
+    version: str | None
+    latest_version: str | None
+    declared: dict[str, str | None]  # lowercase column name -> YAML data_type
 
 
 @dataclass
 class _Columns:
     """What is known about a model's columns, by lowercase name.
 
-    ``catalog`` holds the columns the warehouse has, None when the catalog has no entry for
-    the model; ``declared`` holds the ones its YAML declares. A type comes from the catalog
-    first, then the YAML's ``data_type``; None when neither records one."""
+    ``catalog`` holds the columns the warehouse has, None when the catalog has no usable
+    entry for the model; ``declared`` holds the ones its YAML declares. A type comes from
+    the catalog first, then the YAML's ``data_type``; None when neither records one."""
 
     catalog: set[str] | None
     declared: set[str]
@@ -182,60 +214,99 @@ class _Columns:
 
 
 class _DbtFacts:
-    def __init__(self, manifest: dict, catalog: dict | None) -> None:
-        self._models: dict[str, list[dict]] = {}
-        for node_id, node in _obj(manifest.get("nodes")).items():
-            node = _obj(node)
-            if node.get("resource_type") == "model" and isinstance(node.get("name"), str):
-                node = {**node, "unique_id": node.get("unique_id", node_id)}
-                self._models.setdefault(node["name"].lower(), []).append(node)
-        self._metrics = {
-            m["name"].lower(): m
-            for m in map(_obj, _obj(manifest.get("metrics")).values())
-            if isinstance(m.get("name"), str)
-        }
-        self._catalog_loaded = catalog is not None
-        self._catalog = _obj((catalog or {}).get("nodes"))
+    """The manifest and catalog, read defensively. Every malformed section becomes an
+    entry in ``problems`` (file name, message), reported as a warning; it never raises."""
 
-    def model(self, name: str) -> tuple[dict | None, str | None]:
+    def __init__(self, manifest: dict, catalog: dict | None) -> None:
+        self.problems: list[tuple[str, str]] = []
+        self._models: dict[str, list[_Model]] = {}
+        for node_id, node in self._section(manifest, "nodes", "manifest.json").items():
+            if not isinstance(node, dict) or node.get("resource_type") != "model":
+                continue
+            name = _text(node.get("name"))
+            if name is None:
+                continue
+            columns = node.get("columns")
+            declared = {
+                str(col).lower(): _text(meta.get("data_type")) if isinstance(meta, dict) else None
+                for col, meta in (columns.items() if isinstance(columns, dict) else [])
+            }
+            model = _Model(
+                unique_id=str(node_id),
+                schema=(_text(node.get("schema")) or "").lower(),
+                package=_text(node.get("package_name")),
+                version=_version(node.get("version")),
+                latest_version=_version(node.get("latest_version")),
+                declared=declared,
+            )
+            self._models.setdefault(name.lower(), []).append(model)
+        self._metrics: dict[str, str | None] = {}
+        for metric in self._section(manifest, "metrics", "manifest.json").values():
+            if isinstance(metric, dict) and (name := _text(metric.get("name"))):
+                self._metrics[name.lower()] = _text(metric.get("type"))
+        self._catalog_loaded = catalog is not None
+        self._catalog = self._section(catalog, "nodes", "catalog.json") if catalog else {}
+
+    def _section(self, data: dict, key: str, file: str) -> dict:
+        value = data.get(key)
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            self.problems.append((file, f"'{key}' is not a JSON object, so it was ignored"))
+            return {}
+        return value
+
+    def model(self, name: str) -> tuple[_Model | None, str | None]:
         """The model a dataset names, or None with the reason. A schema-qualified name
         (`analytics.orders`) matches the model of that name in that schema."""
         schema, _, bare = name.lower().rpartition(".")
-        nodes = self._models.get(bare, [])
+        models = self._models.get(bare, [])
         if schema:
-            nodes = [n for n in nodes if str(n.get("schema", "")).lower() == schema]
-        if not nodes:
+            models = [m for m in models if m.schema == schema]
+        if not models:
             return None, f"dbt model '{name}' does not exist"
-        if len(nodes) == 1:
-            return nodes[0], None
-        latest = [
-            n
-            for n in nodes
-            if n.get("version") is not None
-            and str(n.get("version")) == str(n.get("latest_version"))
-        ]
-        if len(latest) == 1 and len({n.get("package_name") for n in nodes}) == 1:
+        if len(models) == 1:
+            (model,) = models
+            if model.version and model.latest_version and model.version != model.latest_version:
+                return None, (
+                    f"dbt model '{name}' matches version {model.version} "
+                    f"({model.unique_id}), not its latest version {model.latest_version}"
+                )
+            return model, None
+        latest = [m for m in models if m.version and m.version == m.latest_version]
+        packages = {m.package for m in models}
+        if len(latest) == 1 and len(packages) == 1 and None not in packages:
             return latest[0], None
-        ids = ", ".join(sorted(str(n["unique_id"]) for n in nodes))
+        ids = ", ".join(sorted(m.unique_id for m in models))
         return None, f"dbt model name '{name}' is ambiguous: {ids}"
 
-    def columns(self, node: dict) -> _Columns:
-        types: dict[str, str | None] = {}
-        declared: set[str] = set()
-        for col_name, col in _obj(node.get("columns")).items():
-            declared.add(col_name.lower())
-            types[col_name.lower()] = _obj(col).get("data_type") or None
+    def columns(self, model: _Model) -> _Columns:
+        types = dict(model.declared)
         catalog: set[str] | None = None
-        entry = self._catalog.get(node["unique_id"])
+        entry = self._catalog.get(model.unique_id)
         if entry is not None:
-            catalog = set()
-            for col_name, col in _obj(_obj(entry).get("columns")).items():
-                catalog.add(col_name.lower())
-                types[col_name.lower()] = _obj(col).get("type") or types.get(col_name.lower())
-        return _Columns(catalog, declared, types, self._catalog_loaded)
+            columns = entry.get("columns") if isinstance(entry, dict) else None
+            if isinstance(columns, dict):
+                catalog = set()
+                for col, meta in columns.items():
+                    name = str(col).lower()
+                    catalog.add(name)
+                    catalog_type = _text(meta.get("type")) if isinstance(meta, dict) else None
+                    types[name] = catalog_type or types.get(name)
+            else:
+                self.problems.append(
+                    (
+                        "catalog.json",
+                        f"the entry for {model.unique_id} has no 'columns' object, so the "
+                        "catalog was not used for that model",
+                    )
+                )
+        return _Columns(catalog, set(model.declared), types, self._catalog_loaded)
 
-    def metric(self, name: str) -> dict | None:
-        return self._metrics.get(name.lower())
+    def metric(self, name: str) -> tuple[bool, str | None]:
+        """(exists, type) for a dbt metric; type None when the manifest records none."""
+        key = name.lower()
+        return key in self._metrics, self._metrics.get(key)
 
 
 # ── dbt checks ────────────────────────────────────────────────────────────────
@@ -254,8 +325,11 @@ class _DbtChecks:
 
     def run(self) -> list[SpecError]:
         for dataset in self.specs.datasets.values():
-            node, problem = self.facts.model(dataset.model)
             path = self._path("dataset", dataset.name)
+            for i, metric in enumerate(dataset.metrics):  # needs no model, so always checked
+                if metric.dbt_metric:
+                    self._check_dbt_metric(path, ("metrics", i, "dbt_metric"), metric.dbt_metric)
+            node, problem = self.facts.model(dataset.model)
             if node is None:
                 self._add(path, ("model",), problem or "", "error")
                 continue
@@ -279,8 +353,6 @@ class _DbtChecks:
                     need="numeric",
                     why=f"`{metric.agg.value}`",
                 )
-            if metric.dbt_metric:
-                self._check_dbt_metric(path, ("metrics", i, "dbt_metric"), metric.dbt_metric)
 
     def _check_chart(self, chart: Any, dataset: Dataset, columns: _Columns) -> None:
         path = self._path("chart", chart.name)
@@ -369,15 +441,23 @@ class _DbtChecks:
             self._add(path, loc, f"{why} needs {kind} column; '{column}' is {dtype}", "error")
 
     def _check_dbt_metric(self, path: Path, loc: tuple, name: str) -> None:
-        metric = self.facts.metric(name)
-        if metric is None:
+        exists, metric_type = self.facts.metric(name)
+        if not exists:
             self._add(path, loc, f"dbt metric '{name}' does not exist", "error")
-        elif (metric.get("type") or "simple") != "simple":
+        elif metric_type is None:
             self._add(
                 path,
                 loc,
-                f"dbt metric '{name}' is a {metric['type']} metric; v1alpha1 supports "
-                "simple metrics only",
+                f"the manifest records no type for dbt metric '{name}', so whether it is a "
+                "simple metric was not checked",
+                "warning",
+            )
+        elif metric_type != "simple":
+            self._add(
+                path,
+                loc,
+                f"dbt metric '{name}' is a {metric_type} metric; v1alpha1 supports simple "
+                "metrics only",
                 "error",
             )
 
@@ -408,7 +488,7 @@ def _base_type(dtype: str) -> str:
     base = dtype.strip().lower()
     while (match := _WRAPPER.fullmatch(base)) is not None:
         base = match.group(2).strip()
-    if base.endswith("[]") or _CONTAINER.match(base):
+    if base.endswith("[]") or _CONTAINER.match(base) or re.search(r"\barray\b", base):
         return ""
     return re.split(r"[\s(<]", base, maxsplit=1)[0]
 

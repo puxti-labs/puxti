@@ -112,3 +112,18 @@ def test_references_to_a_spec_that_failed_to_load_are_not_repeated(tmp_path: Pat
     assert [e.path.name for e in errors] == ["orders.yml"]
     assert specs.unloaded == {"dataset:orders"}
     assert [e.message for e in check_references(specs)] == ["chart 'gone' does not exist"]
+
+
+def test_identity_of_a_broken_file_is_read_without_constructing_it(tmp_path: Path) -> None:
+    """A duplicate key and an impossible date: the date must not raise while the loader
+    recovers kind and name to quiet the references to this dataset."""
+    broken = DATASET + "title: a\ntitle: b\nexpires: 2026-02-30\n"
+    specs, errors = load_specs(_write(tmp_path, {"orders.yml": broken}))
+    assert errors and specs.unloaded == {"dataset:orders"}
+
+
+def test_field_line_stops_at_the_first_part_the_file_lacks(tmp_path: Path) -> None:
+    path = _write(tmp_path, {"orders.yml": DATASET}) / "orders.yml"
+    assert field_line(path, ("absent", "model")) == 1
+    assert field_line(path, ("columns", 9)) == 5  # past the list: the list's line
+    assert field_line(path, ("model", "nested")) == 4  # a scalar has no keys

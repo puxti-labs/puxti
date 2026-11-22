@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
 
@@ -335,18 +334,12 @@ async def validate_bi_specs() -> str:
     findings: [{path, line, severity, message}]}. ok is false when any error was found;
     warnings mark what could not be checked (for example a column type with no catalog).
     """
-    from puxti.core.bi_validate import ValidationReport, resolve_dirs, validate
+    from puxti.core.bi_validate import config_error_report, resolve_dirs, validate
     from puxti.workspace import load_workspace
-    from puxti_bi_core import SpecError
 
     try:
         ws = load_workspace()
-    except ValueError as exc:
-        # Same shape as a run: the broken config is the one error finding.
-        report = ValidationReport(
-            specs_dir=Path("."),
-            findings=[SpecError(path=Path(".puxti.yml"), message=f"invalid .puxti.yml: {exc}")],
-        )
-        return json.dumps(report.to_dict())
+    except ValueError as exc:  # same shape as a run: the broken config is the one error
+        return json.dumps(config_error_report(exc).to_dict())
     specs_dir, dbt_dir = resolve_dirs(ws)
     return json.dumps(validate(specs_dir, dbt_dir).to_dict())

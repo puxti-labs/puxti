@@ -152,16 +152,24 @@ def load_spec_file(path: Path) -> tuple[Any | None, list[SpecError]]:
 
 
 def _declared_key(path: Path) -> str | None:
-    """ "<kind>:<name>" as a file that failed to load spells them, when it is readable YAML
-    with string `kind` and `name` keys."""
+    """ "<kind>:<name>" as a file that failed to load spells them. Only the top-level `kind`
+    and `name` scalars are read from the parsed structure; nothing is constructed, so a
+    value that would fail to construct (a bad date, an unknown tag) cannot raise here."""
     try:
-        data = yaml.load(path.read_text(encoding="utf-8"), Loader=_SpecLoader)
+        node = yaml.compose(path.read_text(encoding="utf-8"), Loader=_SpecLoader)
     except (OSError, UnicodeDecodeError, yaml.YAMLError):
         return None
-    if isinstance(data, dict):
-        kind, name = data.get("kind"), data.get("name")
-        if isinstance(kind, str) and isinstance(name, str):
-            return f"{kind}:{name}"
+    if not isinstance(node, MappingNode):
+        return None
+    found = {
+        key.value: value.value
+        for key, value in node.value
+        if isinstance(key, ScalarNode)
+        and isinstance(value, ScalarNode)
+        and key.value in ("kind", "name")
+    }
+    if "kind" in found and "name" in found:
+        return f"{found['kind']}:{found['name']}"
     return None
 
 
@@ -184,7 +192,7 @@ def field_line(
             cache[path] = node
     if node is None:
         return None
-    return _locate(node, loc, missing=False)[0]
+    return _locate(node, loc, missing=False, stop_at_unknown=True)[0]
 
 
 def _spec_files(root: Path) -> list[Path]:
@@ -224,12 +232,16 @@ def _spec_error(path: Path, root: Node, err: Any) -> SpecError:
     return SpecError(path=path, line=line, message=message)
 
 
-def _locate(node: Node, loc: Sequence[str | int], missing: bool) -> tuple[int, str]:
+def _locate(
+    node: Node, loc: Sequence[str | int], missing: bool, stop_at_unknown: bool = False
+) -> tuple[int, str]:
     """Follow a pydantic error location through the YAML nodes.
 
     Location parts that name no key are union tags added by pydantic (the ``kind`` or
     chart ``type`` value) and are skipped. For a missing field, the last part is the
-    field's name: it is kept in the path and the line is its parent mapping's.
+    field's name: it is kept in the path and the line is its parent mapping's. A plain
+    field path has no union tags, so with ``stop_at_unknown`` the walk ends at the first
+    part the file does not have.
     """
     line = node.start_mark.line + 1
     path: list[str] = []
@@ -243,9 +255,15 @@ def _locate(node: Node, loc: Sequence[str | int], missing: bool) -> tuple[int, s
             else:
                 if missing and i == len(loc) - 1:
                     path.append(part)
+                elif stop_at_unknown:
+                    break
         elif isinstance(node, SequenceNode) and isinstance(part, int):
             if 0 <= part < len(node.value):
                 node = node.value[part]
                 line = node.start_mark.line + 1
+            elif stop_at_unknown:
+                break
             path.append(f"[{part}]")
+        elif stop_at_unknown:  # the path expects a mapping or list the file does not have
+            break
     return line, ".".join(path).replace(".[", "[")

@@ -284,3 +284,78 @@ def test_type_classification(dtype: str, numeric: bool, temporal: bool) -> None:
     from puxti.core.bi_validate import _is_numeric, _is_temporal
 
     assert (_is_numeric(dtype), _is_temporal(dtype)) == (numeric, temporal)
+
+
+# ── CodeRabbit review on #99 ──────────────────────────────────────────────────
+
+
+def test_artifacts_that_cannot_be_read_are_findings(tmp_path: Path) -> None:
+    from puxti.core.bi_validate import _load_json
+
+    assert _load_json(tmp_path / "missing.json") == (None, None)
+    data, problem = _load_json(tmp_path)  # a directory: an OSError other than not-found
+    assert data is None and problem.startswith("is unreadable")
+
+
+def test_malformed_manifest_fields_never_raise(tmp_path: Path) -> None:
+    node = {**MODEL, "unique_id": [], "package_name": [], "columns": {"amount": {"data_type": []}}}
+    nodes = {"model.shop.orders": node, "model.shop.orders_2": {**node, "name": "orders"}}
+    report = validate(_project(tmp_path, nodes=nodes) / "bi", tmp_path / "shop")
+    assert report.findings  # ambiguous model or otherwise: findings, not an exception
+
+
+def test_catalog_lookup_uses_the_manifest_key(tmp_path: Path) -> None:
+    nodes = {"model.shop.orders": {**MODEL, "unique_id": ["not", "a", "key"]}}
+    assert _findings(_project(tmp_path, nodes=nodes)) == []
+
+
+def test_malformed_catalog_columns_fall_back_to_yaml_with_a_warning(tmp_path: Path) -> None:
+    catalog = {"nodes": {"model.shop.orders": {"columns": []}}}
+    findings = _findings(_project(tmp_path, catalog=catalog))
+    assert all(f[2] == "warning" for f in findings)  # no "not in dbt model" errors
+    assert any(f[0] == "catalog.json" and "no 'columns' object" in f[3] for f in findings)
+
+
+def test_malformed_catalog_nodes_section_is_reported(tmp_path: Path) -> None:
+    findings = _findings(_project(tmp_path, catalog={"nodes": []}))
+    assert ("catalog.json", None, "warning", "'nodes' is not a JSON object, so it was ignored") in (
+        findings
+    )
+
+
+def test_malformed_catalog_type_keeps_the_yaml_type(tmp_path: Path) -> None:
+    columns = {**CATALOG_COLUMNS, "AMOUNT": {"type": ["NUMERIC"]}}
+    catalog = {"nodes": {"model.shop.orders": {"columns": columns}}}
+    assert _findings(_project(tmp_path, catalog=catalog)) == []  # YAML says amount is numeric
+
+
+def test_schema_match_on_a_version_that_is_not_the_latest_is_an_error(tmp_path: Path) -> None:
+    v1 = {**MODEL, "schema": "analytics", "version": 1, "latest_version": 2}
+    v2 = {**MODEL, "schema": "marts", "version": 2, "latest_version": 2}
+    nodes = {"model.shop.orders.v1": v1, "model.shop.orders.v2": v2}
+    dataset = DATASET.replace("model: orders", "model: analytics.orders")
+    findings = _findings(_project(tmp_path, specs={"bi/orders.yml": dataset}, nodes=nodes))
+    (finding,) = [f for f in findings if f[1] == 4]
+    assert finding[2] == "error" and "not its latest version 2" in finding[3]
+
+
+def test_dbt_metric_is_checked_even_when_the_model_is_missing(tmp_path: Path) -> None:
+    findings = _findings(_project(tmp_path, nodes={}, metrics={}))
+    messages = {f[3] for f in findings}
+    assert "dbt model 'orders' does not exist" in messages
+    assert "dbt metric 'arr' does not exist" in messages
+
+
+def test_dbt_metric_without_a_type_is_a_warning(tmp_path: Path) -> None:
+    findings = _findings(_project(tmp_path, metrics={"metric.shop.arr": {"name": "arr"}}))
+    assert [f[:3] for f in findings] == [("orders.yml", 8, "warning")]
+    assert "records no type" in findings[0][3]
+
+
+@pytest.mark.parametrize(
+    ("dtype", "numeric"), [("integer", True), ("integer ARRAY", False), ("integer[]", False)]
+)
+def test_sql_array_spellings_are_not_numeric(dtype: str, numeric: bool) -> None:
+    from puxti.core.bi_validate import _is_numeric
+
+    assert _is_numeric(dtype) is numeric

@@ -38,8 +38,9 @@ def check_references(specs: SpecSet) -> list[SpecError]:
                 message = f"dataset '{chart.dataset}' does not exist"
                 error("chart", chart.name, ("dataset",), message)
             continue
+        defined = {m.name for m in dataset.metrics}
         for loc, metric in _chart_metrics(chart):
-            if metric not in {m.name for m in dataset.metrics}:
+            if metric not in defined:
                 message = f"metric '{metric}' is not defined on dataset '{dataset.name}'"
                 error("chart", chart.name, loc, message)
         if dataset.columns is None:
