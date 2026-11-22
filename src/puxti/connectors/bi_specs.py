@@ -224,7 +224,9 @@ class BiSpecsConnector(BaseConnector):
         for chart in specs.charts.values():
             charts_on.setdefault(chart.dataset, []).append(chart)
         for dataset in specs.datasets.values():
-            if dataset.model.lower() != model:
+            # A dataset may qualify its model with a schema (`analytics.orders`);
+            # entity IDs carry the bare name, so compare that.
+            if dataset.model.lower().rsplit(".", 1)[-1] != model:
                 continue
             dataset_id = bi_entity_id("dataset", dataset.name)
             if column is None:

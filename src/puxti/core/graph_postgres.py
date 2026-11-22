@@ -413,14 +413,15 @@ class PostgresKnowledgeGraph:
 
     # Unlocked primitives for the shared helpers; only serialized methods call them.
 
-    async def _direct_dependents(self, entity_id: str) -> list[Entity]:
+    async def _direct_dependents(self, ids: list[str]) -> list[Entity]:
+        """Distinct entities with a lineage edge to any of ids."""
         rows = await self._conn.fetch(
             """
             SELECT DISTINCT e.* FROM lineage_edges le
             JOIN entities e ON e.id = le.from_id
-            WHERE le.to_id = $1
+            WHERE le.to_id = ANY($1::text[])
             """,
-            entity_id,
+            ids,
         )
         return [_to_entity(r) for r in rows]
 
@@ -438,26 +439,6 @@ class PostgresKnowledgeGraph:
 
     async def _entity_type(self, entity_id: str) -> str | None:
         return await self._conn.fetchval("SELECT type FROM entities WHERE id = $1", entity_id)
-
-    async def _walk_dependents(self, entity_id: str) -> list[tuple[Entity, int]]:
-        # GROUP BY the entity primary key: Postgres then allows selecting the
-        # other e.* columns (functionally dependent on the PK) alongside MIN().
-        rows = await self._conn.fetch(
-            """
-            WITH RECURSIVE deps(id, depth) AS (
-                SELECT from_id, 1 FROM lineage_edges WHERE to_id = $1
-                UNION
-                SELECT le.from_id, deps.depth + 1
-                FROM lineage_edges le JOIN deps ON le.to_id = deps.id
-                WHERE deps.depth < 20
-            )
-            SELECT e.*, MIN(deps.depth) AS depth
-            FROM deps JOIN entities e ON e.id = deps.id
-            GROUP BY e.id
-            """,
-            entity_id,
-        )
-        return [(_to_entity(r), r["depth"]) for r in rows]
 
     @_serialized
     async def get_structural_ancestors(self, entity_id: str) -> list[tuple[Entity, int]]:

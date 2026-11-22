@@ -91,7 +91,7 @@ rows:
 ## In the Knowledge Graph
 
 Add a `bi` connector to `.puxti.yml` (see [Configuration](configuration.md#workspace-config-puxtiyml))
-and `puxti scan` reads the spec folder with no LLM calls. Each asset becomes an entity:
+and `puxti scan` reads the spec folder with no LLM calls, so scanning specs alone needs no LLM configuration. Each asset becomes an entity:
 `dataset.bi.<name>`, `chart.bi.<name>` and `dashboard.bi.<name>`. Each one depends on what it
 reads:
 

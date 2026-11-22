@@ -116,7 +116,18 @@ class SemanticScanner:
     """
 
     def __init__(self, backend: LLMBackend | None = None) -> None:
-        self._backend = backend or get_backend()
+        self._backend_override = backend
+        self._resolved_backend: LLMBackend | None = None
+
+    @property
+    def _backend(self) -> LLMBackend:
+        """The LLM backend, created on first use: a scan with nothing to define
+        (BI specs alone) then needs no LLM configuration at all."""
+        if self._backend_override is not None:
+            return self._backend_override
+        if self._resolved_backend is None:
+            self._resolved_backend = get_backend()
+        return self._resolved_backend
 
     async def infer_definition(
         self,
@@ -166,6 +177,20 @@ class SemanticScanner:
         # Same definable-entity rule as scan(): the connector's source-text
         # map decides what gets a definition call.
         model_entities = [e for e in entities if e.id in sql_map]
+        if not model_entities:
+            # Nothing to define, so scan() makes no definition or edge calls.
+            return {
+                "models": 0,
+                "entities_total": len(entities),
+                "def_input_tokens": 0,
+                "def_est_output_tokens": 0,
+                "edges_input_tokens": 0,
+                "edges_est_output_tokens": 0,
+                "total_input_tokens": 0,
+                "total_est_output_tokens": 0,
+                "tokens_exact": True,
+                "estimated_cost_usd": 0.0,
+            }
 
         # Build upstream name map (same logic as scan())
         upstream_map: dict[str, list[str]] = {e.id: [] for e in model_entities}

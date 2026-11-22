@@ -281,7 +281,8 @@ async def _run_capture(
                 for eid in affected
                 if eid.split(".")[0] in ("model", "source") and len(eid.split(".")) >= 2
             }
-            foreign_projects = dbt_projects - {dbt.get_project_name()} if dbt_projects else set()
+            current = _dbt_project_name(dbt) if dbt_projects else None
+            foreign_projects = dbt_projects - {current} if current is not None else set()
             if foreign_projects:
                 projects_hint = ", ".join(f"`{escape(p)}`" for p in sorted(foreign_projects))
                 console.print(
@@ -435,3 +436,13 @@ def _refuse_rename(exc: ColumnRenameCollisionError) -> NoReturn:
     err_console.print(f"[red]Error:[/red] {escape(str(exc))}")
     err_console.print("No diffs were generated and no PR was opened.")
     raise typer.Exit(1) from exc
+
+
+def _dbt_project_name(dbt: DbtConnector) -> str | None:
+    """The configured dbt project's name, or None without a manifest. Another
+    connector (bi) can list entities for review when dbt read nothing, so the
+    cross-project hint must not fail on a missing manifest."""
+    try:
+        return dbt.get_project_name()
+    except FileNotFoundError:
+        return None

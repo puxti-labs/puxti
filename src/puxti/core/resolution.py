@@ -89,15 +89,21 @@ def resolve_edges(edges: list[Edge], index: dict[str, str]) -> tuple[list[Edge],
     as-is — the placeholder ID in the graph is inert but visible, and a later
     re-scan with more connectors configured can resolve it.
     """
+    # Owners indexed under a schema-qualified key know their schema. A qualified
+    # reference that missed their exact key names another schema, so it must not
+    # fall back to their bare key.
+    schema_known = {owner for key, owner in index.items() if "." in key.split("#", 1)[0]}
     unresolved: list[str] = []
     for edge in edges:
         if not edge.to_entity_id.startswith(SQLREF_PREFIX):
             continue
         raw = edge.to_entity_id[len(SQLREF_PREFIX) :].lower()
         resolved = index.get(raw)
-        if resolved is None and "." in raw:
+        table, hash_, column = raw.partition("#")
+        if resolved is None and "." in table:
             # schema-qualified reference whose owner indexed only the bare name
-            resolved = index.get(raw.rsplit(".", 1)[-1])
+            bare = index.get(table.rsplit(".", 1)[-1] + hash_ + column)
+            resolved = bare if bare not in schema_known else None
         if resolved is not None:
             edge.metadata["resolved_from"] = raw
             edge.to_entity_id = resolved

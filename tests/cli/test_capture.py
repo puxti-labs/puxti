@@ -293,7 +293,8 @@ def _run_capture_with_results(
     gh_cls = MagicMock(return_value=mock_gh)
 
     mock_dbt = dbt or MagicMock()
-    mock_dbt.get_project_name = MagicMock(return_value="jaffle_shop")
+    if dbt is None or not isinstance(dbt.get_project_name.side_effect, Exception):
+        mock_dbt.get_project_name = MagicMock(return_value="jaffle_shop")
 
     with (
         patch("puxti.cli.capture.settings") as mock_settings,
@@ -863,3 +864,17 @@ def test_capture_foreign_project_hint_survives_a_bi_result():
     output = " ".join(plain(cli_result.output).split())
     assert "different dbt project (`other`)" in output
     assert "chart.bi.revenue" in output
+
+
+def test_capture_bi_result_without_a_dbt_manifest_still_lists_specs():
+    """No manifest: the project name is unknown, so no cross-project hint, no crash."""
+    dbt = MagicMock()
+    dbt.get_project_name.side_effect = FileNotFoundError("dbt manifest not found")
+    cli_result, _, _, _ = _run_capture_with_results(
+        [_bi_result()], affected=["model.other.orders"], dbt=dbt
+    )
+
+    assert cli_result.exit_code == 0, cli_result.output
+    output = " ".join(plain(cli_result.output).split())
+    assert "chart.bi.revenue" in output
+    assert "different dbt project" not in output

@@ -8,8 +8,8 @@
 
 ### Changed
 
-- **`puxti impact` and the MCP `impact_of_change` tool follow structural dependents all the way downstream.** They used to list direct dependents only; each dependent now appears at its shortest hop distance. `consumers` still lists direct dependents. For a column, the dependents of its model are always included, as before, even when BI specs give the column edges of its own.
-- **Scan no longer asks to confirm an empty set of definitions** when a connector has nothing to define.
+- **`puxti impact` and the MCP `impact_of_change` tool follow structural dependents all the way downstream.** They used to list direct dependents only; each dependent now appears at its shortest hop distance. `consumers` still lists direct dependents. For a column, the dependents of its own model (found by ID, so a same-named model in another project is not mixed in) are always included, even when BI specs give the column edges of its own.
+- **Scan no longer asks to confirm an empty set of definitions** when a connector has nothing to define. A scan with nothing to define (BI specs alone) needs no LLM configuration, and its `--dry-run` estimate is zero.
 
 ### Fixed
 

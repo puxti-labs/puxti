@@ -203,3 +203,19 @@ def test_prisma_columns_go_by_their_database_name():
     index = build_reference_index([table, field])
     assert index["users#created_at"] == "table.prisma.User.createdAt"
     assert "users#createdat" not in index
+
+
+def test_qualified_reference_does_not_fall_back_to_another_schema():
+    """`finance.orders` must not resolve to `analytics.orders`, table or column."""
+    model = _dbt_model("shop", "orders", schema="analytics")
+    index = build_reference_index([model, _dbt_column(model.id, "amount")])
+    edges, unresolved = resolve_edges(
+        [
+            _sqlref_edge("dataset.bi.d", "finance.orders"),
+            _sqlref_edge("dataset.bi.d", "finance.orders#amount"),
+            _sqlref_edge("dataset.bi.d", "analytics.orders#amount"),
+        ],
+        index,
+    )
+    assert unresolved == ["finance.orders", "finance.orders#amount"]
+    assert edges[2].to_entity_id == "model.shop.orders.amount"

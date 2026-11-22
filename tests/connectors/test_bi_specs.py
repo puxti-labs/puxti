@@ -303,3 +303,37 @@ def test_model_change_reaches_every_dataset_on_it_and_their_charts(tmp_path: Pat
 
 def test_change_to_another_model_reaches_nothing(tmp_path: Path) -> None:
     assert _listed(_project(tmp_path), _changed("model.shop.customers.amount")) == []
+
+
+def test_schema_qualified_dataset_model_is_matched_on_change(tmp_path: Path) -> None:
+    qualified = DATASET.replace("model: orders", "model: analytics.orders")
+    project = _project(tmp_path, **{"bi/datasets/orders.yml": qualified})
+    assert "dataset.bi.orders" in _listed(project, _changed("model.shop.orders.amount"))
+
+
+def test_dry_run_estimate_for_specs_alone_is_zero_with_no_backend_calls(tmp_path: Path) -> None:
+    backend = MagicMock()
+    estimate = asyncio.run(SemanticScanner(backend).estimate_scan_cost(_bi(_project(tmp_path))))
+    assert estimate["total_input_tokens"] == 0
+    assert estimate["total_est_output_tokens"] == 0
+    assert estimate["estimated_cost_usd"] == 0.0
+    assert backend.method_calls == []
+
+
+def test_scan_of_specs_needs_no_llm_configuration(tmp_path: Path) -> None:
+    """get_backend() raises on an incomplete provider config; a BI-only scan never calls it."""
+    with patch("puxti.core.scanner.get_backend", side_effect=RuntimeError("no LLM config")):
+        scanner = SemanticScanner()
+
+        async def go() -> int:
+            kg = SqliteKnowledgeGraph(tmp_path / "g.db")
+            await kg.connect()
+            try:
+                result = await scanner.scan(
+                    _bi(_project(tmp_path)), kg, interactive=False, console=Console(quiet=True)
+                )
+            finally:
+                await kg.close()
+            return result.entities_upserted
+
+        assert asyncio.run(go()) == 3

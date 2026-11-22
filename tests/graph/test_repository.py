@@ -963,3 +963,35 @@ async def test_name_fallback_keeps_walking_downstream(kg: KnowledgeGraph) -> Non
         "chart.bi.c": 2,
         "dashboard.bi.d": 3,
     }
+
+
+@pytest.mark.asyncio
+async def test_structural_walk_has_no_depth_cap(kg: KnowledgeGraph) -> None:
+    """25 models in a row, then a dataset, chart and dashboard: all are reached."""
+    ids = [f"model.p.m{i:02d}" for i in range(25)]
+    await _put(kg, ids[0], EntityType.MODEL)
+    for prev, cur in zip(ids, ids[1:]):
+        await _put(kg, cur, EntityType.MODEL, prev)
+    await _put(kg, "dataset.bi.d", EntityType.DATASET, ids[-1])
+    await _put(kg, "chart.bi.c", EntityType.CHART, "dataset.bi.d")
+    await _put(kg, "dashboard.bi.x", EntityType.DASHBOARD, "chart.bi.c")
+
+    deps = {e.id: hop for e, hop in await kg.get_structural_dependents_with_depth(ids[0])}
+    assert deps["dataset.bi.d"] == 25
+    assert deps["dashboard.bi.x"] == 27
+
+
+@pytest.mark.asyncio
+async def test_column_fallback_stays_in_its_own_project(kg: KnowledgeGraph) -> None:
+    """Projects p and q both have `orders`; a p column must not list q's consumers."""
+    await _put(kg, "model.p.orders", EntityType.MODEL)
+    await _put(kg, "model.q.orders", EntityType.MODEL)
+    await _put(kg, "model.p.orders.amount", EntityType.COLUMN)
+    await _put(kg, "model.p.revenue", EntityType.MODEL, "model.p.orders")
+    await _put(kg, "model.q.refunds", EntityType.MODEL, "model.q.orders")
+    await _put(kg, "chart.bi.c", EntityType.CHART, "model.p.orders.amount")
+
+    one_hop = {e.id for e in await kg.get_structural_dependents("model.p.orders.amount")}
+    assert one_hop == {"chart.bi.c", "model.p.revenue"}
+    deps = {e.id for e, _ in await kg.get_structural_dependents_with_depth("model.p.orders.amount")}
+    assert deps == {"chart.bi.c", "model.p.revenue"}
