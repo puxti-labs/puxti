@@ -19,7 +19,8 @@ reviewable GitHub PRs. Commands are registered in `src/puxti/cli/__init__.py`
   connectors; `capture.py` and `redefine.py` propagate changes; `corrector.py`
   fixes inferred definitions; `graph.py` is the high-level graph interface;
   `resolution.py` resolves cross-connector table, column and metric references
-  at scan time.
+  at scan time. `bi_validate.py` checks BI specs against the dbt project's
+  `target/` files for `puxti validate`, offline.
 - `src/puxti/connectors/` — integrations. `dbt.py` parses manifests (models, sources, MetricFlow metrics) and
   generates SQL diffs; `github.py` opens PRs; `airflow.py` parses DAGs;
   `prisma.py` parses schema.prisma; `sql_views.py` parses CREATE VIEW files
@@ -37,7 +38,8 @@ reviewable GitHub PRs. Commands are registered in `src/puxti/cli/__init__.py`
 - `tests/` — mirrors `src/puxti/`.
 - `packages/` — uv workspace members, released with puxti under one version.
   `packages/puxti-bi-core/` holds the BI spec schema (datasets, charts, dashboards
-  as YAML) and its JSON Schema; it must never import `puxti`. puxti depends on
+  as YAML), its JSON Schema and the checks between specs (`checks.py`); it
+  must never import `puxti`. puxti depends on
   it pinned to its own version (`tests/test_package_versions.py` checks the
   pin, so a release bumps it too). See `docs/bi-specs.md` and issue #28.
   After changing the spec models, run `make bi-schema` and commit the

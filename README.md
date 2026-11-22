@@ -66,6 +66,7 @@ Then connect a coding agent so it can query the graph: in Claude Code run `claud
 |---|---|
 | `puxti scan` | Build the Knowledge Graph from dbt, Prisma and SQL views, including MetricFlow metrics |
 | `puxti impact` | Show what depends on an entity, no LLM call |
+| `puxti validate` | Check BI specs against each other and the dbt project, offline, for CI |
 | `puxti capture` | Propagate a column rename and open a PR |
 | `puxti redefine` | Change what an entity means and open a PR for the affected models |
 | `puxti correct` | Fix a wrong definition without touching code |

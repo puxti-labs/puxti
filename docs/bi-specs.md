@@ -6,8 +6,9 @@ defined by the `puxti-bi-core` package in this repository and published as a
 
 **Status:** the schema is `v1alpha1` and may still change in breaking ways. `puxti scan` reads specs
 into the Knowledge Graph, so `puxti impact` shows the charts and dashboards a dbt change reaches
-(see [In the Knowledge Graph](#in-the-knowledge-graph)). `puxti validate`, `puxti impact` against a
-base manifest, and deploying to a BI tool come next. The plan is in
+(see [In the Knowledge Graph](#in-the-knowledge-graph)), and `puxti validate` checks specs in CI
+(see [Validate in CI](#validate-in-ci)). `puxti impact` against a base manifest, and deploying to
+a BI tool, come next. The plan is in
 [#28](https://github.com/puxti-labs/puxti/issues/28).
 
 ## Layout
@@ -114,6 +115,40 @@ references no connector owns.
 model, every dataset on it and their charts; for a column, the datasets and charts that name it,
 directly or through a dataset metric. Dashboards holding a listed chart are listed too. Puxti does
 not edit specs yet.
+
+## Validate in CI
+
+`puxti validate` checks the spec folder offline: no LLM calls, no Knowledge Graph, no BI tool.
+
+- every file against the schema
+- references between specs: a chart's dataset, the metrics a chart shows, the columns a chart
+  reads (when its dataset lists `columns`), a dashboard's charts
+- against dbt: a dataset's model exists (a versioned model resolves to its latest version), every
+  column a dataset or chart names exists, `sum` and `avg` aggregate a numeric column, an `x` with
+  a `grain` is a date or time column, and a `dbt_metric` exists and is a simple metric
+
+dbt facts come from `target/manifest.json` and, when present, `target/catalog.json`. The manifest
+only knows the columns a model's YAML declares; the catalog has every column and its type. Without
+a catalog, a column nothing declares, or a type nothing records, is a warning rather than an error.
+A column the YAML declares but the catalog lacks, such as one added in the same pull request
+before the warehouse is rebuilt, is a warning too. Run `dbt docs generate` before `puxti validate` in CI so columns and types are checked in full.
+
+Each finding names the file and line. Errors exit 1; warnings print and exit 0.
+
+```bash
+dbt parse && dbt docs generate
+puxti validate --dbt-project-dir .
+```
+
+```
+bi/charts/revenue.yml:8: error: column 'region' is not in dbt model 'orders'
+bi/datasets/orders.yml:7: error: `sum` needs a numeric column; 'status' is VARCHAR
+✗ 2 error(s), 0 warning(s) in bi
+```
+
+The spec folder and dbt project come from the `bi` and `dbt` connectors in `.puxti.yml`, or
+`--specs-dir` and `--dbt-project-dir`. `--json` prints the same findings as the MCP
+`validate_bi_specs` tool.
 
 ## Common fields and the escape hatch
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -46,17 +46,22 @@ _SpecLoader.add_implicit_resolver(
 
 
 class SpecError(BaseModel):
-    """A problem in one spec file. ``line`` is 1-based, None when the file has no position."""
+    """A problem in one spec file. ``line`` is 1-based, None when the file has no position.
+
+    ``severity`` is ``error`` for a spec that is wrong, ``warning`` for one that could not be
+    fully checked (for example a dbt column whose existence nothing records)."""
 
     model_config = ConfigDict(frozen=True)
 
     path: Path
     line: int | None = None
     message: str
+    severity: Literal["error", "warning"] = "error"
 
     def __str__(self) -> str:
         where = f"{self.path}:{self.line}" if self.line else str(self.path)
-        return f"{where}: {self.message}"
+        prefix = "warning: " if self.severity == "warning" else ""
+        return f"{where}: {prefix}{self.message}"
 
 
 class SpecSet(BaseModel):
@@ -66,6 +71,9 @@ class SpecSet(BaseModel):
     charts: dict[str, Any] = Field(default_factory=dict)  # name -> one of the chart models
     dashboards: dict[str, Dashboard] = Field(default_factory=dict)
     paths: dict[str, Path] = Field(default_factory=dict)  # "<kind>:<name>" -> file
+    # "<kind>:<name>" of files that failed to load, as far as their kind and name could be
+    # read: references to them are not reported again as missing.
+    unloaded: set[str] = Field(default_factory=set)
 
 
 def load_specs(root: Path) -> tuple[SpecSet, list[SpecError]]:
@@ -82,6 +90,8 @@ def load_specs(root: Path) -> tuple[SpecSet, list[SpecError]]:
         spec, file_errors = load_spec_file(path)
         errors.extend(file_errors)
         if spec is None:
+            if (key := _declared_key(path)) is not None:
+                specs.unloaded.add(key)
             continue
         key = f"{spec.kind}:{spec.name}"
         if key in specs.paths:
@@ -141,6 +151,50 @@ def load_spec_file(path: Path) -> tuple[Any | None, list[SpecError]]:
         return None, [_spec_error(path, nodes[0], err) for err in exc.errors()]
 
 
+def _declared_key(path: Path) -> str | None:
+    """ "<kind>:<name>" as a file that failed to load spells them. Only the top-level `kind`
+    and `name` scalars are read from the parsed structure; nothing is constructed, so a
+    value that would fail to construct (a bad date, an unknown tag) cannot raise here."""
+    try:
+        node = yaml.compose(path.read_text(encoding="utf-8"), Loader=_SpecLoader)
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        return None
+    if not isinstance(node, MappingNode):
+        return None
+    found = {
+        key.value: value.value
+        for key, value in node.value
+        if isinstance(key, ScalarNode)
+        and isinstance(value, ScalarNode)
+        and key.value in ("kind", "name")
+    }
+    if "kind" in found and "name" in found:
+        return f"{found['kind']}:{found['name']}"
+    return None
+
+
+def field_line(
+    path: Path, loc: Sequence[str | int], cache: dict[Path, Node | None] | None = None
+) -> int | None:
+    """The 1-based line of a field in a spec file, e.g. ``("metrics", 0, "column")``.
+
+    A location that runs past what the file has gives the line of the deepest part found.
+    None when the file cannot be read or parsed (load_spec_file reports that). Pass the
+    same ``cache`` dict for many lookups in one run, so each file is parsed once."""
+    if cache is not None and path in cache:
+        node = cache[path]
+    else:
+        try:
+            node = yaml.compose(path.read_text(encoding="utf-8"), Loader=_SpecLoader)
+        except (OSError, UnicodeDecodeError, yaml.YAMLError):
+            node = None
+        if cache is not None:
+            cache[path] = node
+    if node is None:
+        return None
+    return _locate(node, loc, missing=False, stop_at_unknown=True)[0]
+
+
 def _spec_files(root: Path) -> list[Path]:
     return sorted(
         p
@@ -178,12 +232,16 @@ def _spec_error(path: Path, root: Node, err: Any) -> SpecError:
     return SpecError(path=path, line=line, message=message)
 
 
-def _locate(node: Node, loc: Sequence[str | int], missing: bool) -> tuple[int, str]:
+def _locate(
+    node: Node, loc: Sequence[str | int], missing: bool, stop_at_unknown: bool = False
+) -> tuple[int, str]:
     """Follow a pydantic error location through the YAML nodes.
 
     Location parts that name no key are union tags added by pydantic (the ``kind`` or
     chart ``type`` value) and are skipped. For a missing field, the last part is the
-    field's name: it is kept in the path and the line is its parent mapping's.
+    field's name: it is kept in the path and the line is its parent mapping's. A plain
+    field path has no union tags, so with ``stop_at_unknown`` the walk ends at the first
+    part the file does not have.
     """
     line = node.start_mark.line + 1
     path: list[str] = []
@@ -197,9 +255,15 @@ def _locate(node: Node, loc: Sequence[str | int], missing: bool) -> tuple[int, s
             else:
                 if missing and i == len(loc) - 1:
                     path.append(part)
+                elif stop_at_unknown:
+                    break
         elif isinstance(node, SequenceNode) and isinstance(part, int):
             if 0 <= part < len(node.value):
                 node = node.value[part]
                 line = node.start_mark.line + 1
+            elif stop_at_unknown:
+                break
             path.append(f"[{part}]")
+        elif stop_at_unknown:  # the path expects a mapping or list the file does not have
+            break
     return line, ".".join(path).replace(".[", "[")

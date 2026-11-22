@@ -134,6 +134,25 @@ Output shows each dependent entity, its hop distance from the target, and whethe
 
 ---
 
+## Validate BI specs (optional)
+
+Check the BI spec folder against itself and the dbt project, offline, with no LLM calls and no Knowledge Graph. Errors exit 1, so it can gate CI; see [BI specs](bi-specs.md#validate-in-ci) for every check.
+
+```bash
+dbt parse && dbt docs generate   # catalog.json makes column and type checks complete
+puxti validate --dbt-project-dir .
+```
+
+### `validate` options
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--specs-dir` | No | Spec folder. Defaults to the `bi` connector's folder in `.puxti.yml`, else `bi/` in the dbt project |
+| `--dbt-project-dir` | No | dbt project whose `target/manifest.json` and `target/catalog.json` are read. Defaults to `.puxti.yml`, then `DBT_PROJECT_DIR` |
+| `--json` | No | Output as JSON (same shape as the MCP `validate_bi_specs` tool) |
+
+---
+
 ## Define and bind a metric before it exists (optional)
 
 See [Metrics](metrics.md#define-a-metric-before-it-exists) for `puxti define` and `puxti bind`.

@@ -14,6 +14,7 @@ from puxti.cli import define  # noqa: F401
 from puxti.cli import bind  # noqa: F401
 from puxti.cli import link  # noqa: F401
 from puxti.cli import impact  # noqa: F401
+from puxti.cli import validate  # noqa: F401
 from puxti.cli import redefine  # noqa: F401
 from puxti.cli import correct  # noqa: F401
 from puxti.cli import purge  # noqa: F401

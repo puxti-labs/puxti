@@ -1,5 +1,6 @@
 """Tests for the MCP server tool functions."""
 import json
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from puxti.models import EntityStatus
@@ -423,3 +424,29 @@ async def test_impact_of_change_reports_structural_hop_depth():
         result = json.loads(await impact_of_change(entity_id="model.jaffle_shop.orders"))
     assert result["dependents"][0]["hop"] == 3
     assert result["dependents"][0]["relationship"] == "structural"
+
+
+async def test_validate_bi_specs_reads_the_workspace(tmp_path, monkeypatch):
+    from puxti.mcp_server import validate_bi_specs
+    from tests.core.test_bi_validate import CHART, _project
+
+    project = _project(tmp_path, specs={"bi/chart.yml": CHART.replace("orders", "nope", 1)})
+    (tmp_path / ".puxti.yml").write_text(
+        "version: 1\nconnectors:\n  dbt:\n    project_dir: shop\n  bi:\n    project_dir: shop\n"
+    )
+    monkeypatch.chdir(tmp_path)
+    result = json.loads(await validate_bi_specs())
+    assert result["ok"] is False
+    assert result["findings"][0]["path"] == str(Path("shop/bi/chart.yml"))
+    assert project.exists()
+
+
+async def test_validate_bi_specs_reports_a_broken_workspace_file(tmp_path, monkeypatch):
+    from puxti.mcp_server import validate_bi_specs
+
+    (tmp_path / ".puxti.yml").write_text("version: 7\n")
+    monkeypatch.chdir(tmp_path)
+    result = json.loads(await validate_bi_specs())
+    assert result["ok"] is False and result["errors"] == 1
+    assert result["findings"][0]["path"] == ".puxti.yml"
+    assert "invalid .puxti.yml" in result["findings"][0]["message"]

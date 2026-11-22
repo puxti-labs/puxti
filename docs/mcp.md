@@ -25,7 +25,7 @@ Add `--scope project` to write it to the project's `.mcp.json` instead, so every
 
 The same `command` and `args` work for any other MCP client that launches stdio servers.
 
-Once connected, five read-only tools are available:
+Once connected, six read-only tools are available:
 
 | Tool | What it answers |
 |---|---|
@@ -34,10 +34,11 @@ Once connected, five read-only tools are available:
 | `consumers` | Which models directly read from this entity? |
 | `describe_entity` | What does this entity mean? What semantic edges does it have? |
 | `definition_history` | How has the meaning of this entity evolved over time? |
+| `validate_bi_specs` | Do the BI specs I just edited still match each other and the dbt project? Same findings as `puxti validate --json`. |
 
 For a *proposed* metric (one created with `puxti define` but not yet bound to a model), `describe_entity` returns the definition with `"bound": false`, and `impact_of_change` / `consumers` return a `"proposed"` marker with no dependents. The tools present a proposed metric as intent, never as a value to report.
 
-The other four tools take an exact `entity_id`. Agents call `search_entities` first to find it instead of guessing the ID format.
+`describe_entity`, `definition_history`, `impact_of_change` and `consumers` take an exact `entity_id`. Agents call `search_entities` first to find it instead of guessing the ID format.
 
 Run `puxti scan` in your dbt project first to populate the graph (see [Commands](commands.md#step-1--bootstrap-the-knowledge-graph)).
 
