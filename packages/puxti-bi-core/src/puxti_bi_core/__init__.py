@@ -1,6 +1,7 @@
 """puxti-bi-core: the spec schema for BI assets as code."""
 
-from puxti_bi_core.loader import SpecError, SpecSet, load_spec_file, load_specs
+from puxti_bi_core.checks import chart_column_fields, check_references, dataset_column_fields
+from puxti_bi_core.loader import SpecError, SpecSet, field_line, load_spec_file, load_specs
 from puxti_bi_core.spec import (
     API_VERSION,
     GRID_COLUMNS,
@@ -41,6 +42,10 @@ __all__ = [
     "SpecSet",
     "TableChart",
     "XAxis",
+    "chart_column_fields",
+    "check_references",
+    "dataset_column_fields",
+    "field_line",
     "load_spec_file",
     "load_specs",
 ]

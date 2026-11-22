@@ -1,17 +1,20 @@
 """MCP server exposing puxti's Knowledge Graph to coding agents.
 
-Exposes five read-only tools — all read directly from the Knowledge Graph, no LLM calls:
+Exposes six read-only tools, none of which calls an LLM. The first five read the Knowledge
+Graph; validate_bi_specs reads the BI spec folder and the dbt project's target/ files:
   search_entities   — find entity IDs by name, so agents don't guess them
   impact_of_change  — what depends on an entity and what breaks
   consumers         — direct structural consumers (1-hop lineage)
   definition_history — full version history of an entity's definition
   describe_entity   — type, connector, definition, and semantic edges
+  validate_bi_specs — check BI specs against each other and the dbt project
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
 
@@ -26,6 +29,7 @@ mcp = MCPServer(
         "instead of guessing the ID format. "
         "Use impact_of_change or consumers to understand blast radius before making changes. "
         "Use describe_entity to look up what a model or source means. "
+        "After editing BI specs, call validate_bi_specs to check them against dbt. "
         "Run `puxti scan` in the project first to populate the graph."
     ),
 )
@@ -315,3 +319,34 @@ async def describe_entity(entity_id: str) -> str:
             ],
         }
     )
+
+
+@mcp.tool()
+async def validate_bi_specs() -> str:
+    """Check the workspace's BI specs (datasets, charts, dashboards) against each other
+    and the dbt project, offline: schema, references between specs, dbt models, columns,
+    column types and dbt metrics. Call it after editing a spec.
+
+    Takes no arguments: the spec folder and dbt project come from .puxti.yml and
+    DBT_PROJECT_DIR, as for `puxti validate`. Reads target/manifest.json and, when
+    present, target/catalog.json; does not need the Knowledge Graph.
+
+    Returns JSON: {ok, specs_dir, errors, warnings,
+    findings: [{path, line, severity, message}]}. ok is false when any error was found;
+    warnings mark what could not be checked (for example a column type with no catalog).
+    """
+    from puxti.core.bi_validate import ValidationReport, resolve_dirs, validate
+    from puxti.workspace import load_workspace
+    from puxti_bi_core import SpecError
+
+    try:
+        ws = load_workspace()
+    except ValueError as exc:
+        # Same shape as a run: the broken config is the one error finding.
+        report = ValidationReport(
+            specs_dir=Path("."),
+            findings=[SpecError(path=Path(".puxti.yml"), message=f"invalid .puxti.yml: {exc}")],
+        )
+        return json.dumps(report.to_dict())
+    specs_dir, dbt_dir = resolve_dirs(ws)
+    return json.dumps(validate(specs_dir, dbt_dir).to_dict())

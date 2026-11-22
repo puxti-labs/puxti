@@ -28,8 +28,9 @@ Puxti tracks what each entity in this project *means* and how that meaning has c
 over time. A model's SQL can silently lag its definition: the column name never changes,
 so nothing errors, but the number is wrong. Your job is to catch that before you answer.
 
-You have five read-only puxti MCP tools:
-`search_entities`, `describe_entity`, `definition_history`, `impact_of_change`, `consumers`.
+You have six read-only puxti MCP tools:
+`search_entities`, `describe_entity`, `definition_history`, `impact_of_change`, `consumers`,
+`validate_bi_specs`.
 
 **These tools return meaning, not SQL.** They give you each entity's definition, how that
 definition has changed, its semantic edges, and what depends on it — never the model's
@@ -43,6 +44,8 @@ the SQL against.
 - Any question about a metric or KPI ("what was revenue / active users / win rate…").
 - Any "which model or table should I trust for X" or "what does X mean" question.
 - Before proposing a change to a model, to understand its blast radius.
+- After editing a BI spec (a dataset, chart or dashboard YAML file), call
+  `validate_bi_specs` and fix every error it reports before you call the edit done.
 
 ## Workflow — do this before answering a metric question
 
