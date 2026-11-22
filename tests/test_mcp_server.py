@@ -27,6 +27,9 @@ def _mock_graph(
     g.get_entity_by_id = AsyncMock(return_value=entity)
     g.get_semantic_dependents_with_depth = AsyncMock(return_value=semantic_deps or [])
     g.get_structural_dependents = AsyncMock(return_value=structural_deps or [])
+    g.get_structural_dependents_with_depth = AsyncMock(
+        return_value=[(d, 1) for d in structural_deps or []]
+    )
     g.get_latest_definition = AsyncMock(return_value=definition)
     g.get_entity_semantic_edges = AsyncMock(return_value=edges or [])
     g.get_definition_history = AsyncMock(return_value=history or [])
@@ -407,3 +410,16 @@ async def test_not_found_on_populated_graph_points_at_search():
     for result in results:
         assert "search_entities" in result["error"]
         assert "puxti scan" not in result["error"]
+
+
+async def test_impact_of_change_reports_structural_hop_depth():
+    entity = _mock_entity("model.jaffle_shop.orders", "orders")
+    dashboard = _mock_entity("dashboard.bi.sales", "sales")
+    graph = _mock_graph(entity=entity)
+    graph.get_structural_dependents_with_depth = AsyncMock(return_value=[(dashboard, 3)])
+    with patch("puxti.mcp_server._graph_connect", new=AsyncMock(return_value=graph)):
+        from puxti.mcp_server import impact_of_change
+
+        result = json.loads(await impact_of_change(entity_id="model.jaffle_shop.orders"))
+    assert result["dependents"][0]["hop"] == 3
+    assert result["dependents"][0]["relationship"] == "structural"

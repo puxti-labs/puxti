@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`puxti scan` reads BI specs into the Knowledge Graph.** Configure a `bi` connector in `.puxti.yml` and its spec folder (default `bi/`) becomes `dataset.bi.*`, `chart.bi.*` and `dashboard.bi.*` entities, linked to each other and to the dbt models, columns and metrics they read. Ingestion makes no LLM calls. `puxti impact` on a dbt model or column now lists the charts and dashboards built on it, and `puxti capture` lists affected BI assets for review by hand. puxti now depends on `puxti-bi-core`. See [BI specs](docs/bi-specs.md#in-the-knowledge-graph). ([#28](https://github.com/puxti-labs/puxti/issues/28))
+
+### Changed
+
+- **`puxti impact` and the MCP `impact_of_change` tool follow structural dependents all the way downstream.** They used to list direct dependents only; each dependent now appears at its shortest hop distance. `consumers` still lists direct dependents. For a column, the dependents of its own model (found by ID, so a same-named model in another project is not mixed in) are always included, even when BI specs give the column edges of its own.
+- **Scan no longer asks to confirm an empty set of definitions** when a connector has nothing to define. A scan with nothing to define (BI specs alone) needs no LLM configuration, and its `--dry-run` estimate is zero.
+
 ### Fixed
 
 - **Airflow task lineage pointed upstream.** `extract >> load` was stored as `extract` depending on `load`, so `puxti impact` and `capture` on a task listed the tasks before it instead of after it. The edge now runs from `load` to `extract`, like every other dependency edge. Scan adds edges but never removes them, so a graph scanned before this fix keeps the reversed edges. Delete the Airflow lineage edges and rescan: `sqlite3 ~/.puxti/graph.db "DELETE FROM lineage_edges WHERE connector = 'airflow'"` (or the same statement in `psql` against `DATABASE_URL`), then `puxti scan`. This leaves `puxti link` edges and definitions alone; `puxti purge` would remove those too.

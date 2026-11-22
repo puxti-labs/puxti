@@ -1,6 +1,7 @@
 """Shared CLI runtime: consoles, async runner, update check, workspace loading."""
 
 import asyncio
+import re
 import threading
 import time
 import urllib.request
@@ -180,6 +181,9 @@ def _print_diffs(diffs: list[FileDiff]) -> None:
         console.print(Text("\n".join(lines)))
 
 
+_BI_ENTITY_ID = re.compile(r"(dataset|chart|dashboard)\.bi\.[^.]+")
+
+
 def _parse_entity_id(entity_id: str) -> tuple[EntityType, str, str]:
     """Return (EntityType, source_connector, project) from a puxti entity ID.
 
@@ -194,6 +198,9 @@ def _parse_entity_id(entity_id: str) -> tuple[EntityType, str, str]:
       table.prisma.<model>[.<field>]   → TABLE, prisma,    prisma
       view.<schema>.<name>[.<column>]  → VIEW,  sql_views, schema
       metric.<project>.<name>          → METRIC, proposed, project
+      dataset.bi.<name>                → DATASET,   bi, bi
+      chart.bi.<name>                  → CHART,     bi, bi
+      dashboard.bi.<name>              → DASHBOARD, bi, bi
     """
     parts = entity_id.split(".")
     if parts[0] == "metric" and len(parts) >= 3:
@@ -210,11 +217,14 @@ def _parse_entity_id(entity_id: str) -> tuple[EntityType, str, str]:
         return EntityType.TABLE, "prisma", "prisma"
     if parts[0] == "view" and len(parts) >= 3:
         return EntityType.VIEW, "sql_views", parts[1]
+    if _BI_ENTITY_ID.fullmatch(entity_id):
+        return EntityType(parts[0]), "bi", "bi"
     raise ValueError(
         f"Unrecognized entity ID: {entity_id!r}\n"
         "  Expected one of:\n"
         "    task.airflow.<dag>.<task>\n"
         "    source.<project>.<table>  or  model.<project>.<name>\n"
         "    table.prisma.<model>[.<field>]\n"
-        "    view.<schema>.<name>[.<column>]"
+        "    view.<schema>.<name>[.<column>]\n"
+        "    dataset.bi.<name>  or  chart.bi.<name>  or  dashboard.bi.<name>"
     )

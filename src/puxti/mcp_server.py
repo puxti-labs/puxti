@@ -126,8 +126,9 @@ async def search_entities(query: str, type: str | None = None, limit: int = 20) 
 async def impact_of_change(entity_id: str, change_type: str | None = None) -> str:
     """Show which entities depend on a given entity and would be affected by a change.
 
-    Returns semantic dependents (concept-level) and structural dependents
-    (SQL lineage) with hop depth. Optionally scope risk annotation with
+    Returns semantic dependents (concept-level) and every structural dependent
+    downstream through lineage (models, views, BI datasets, charts and
+    dashboards), each with its shortest hop depth. Optionally scope risk annotation with
     change_type: rename (structural risk), redefine (semantic risk),
     drop or type_change (both).
 
@@ -153,16 +154,17 @@ async def impact_of_change(entity_id: str, change_type: str | None = None) -> st
         )
 
     semantic_deps = await graph.get_semantic_dependents_with_depth(entity_id)
-    structural_deps = await graph.get_structural_dependents(entity_id)
+    structural_deps = await graph.get_structural_dependents_with_depth(entity_id)
 
     dep_map: dict[str, dict] = {}
     for dep, hop in semantic_deps:
         entry = dep_map.setdefault(dep.id, {"entity": dep, "hop": hop, "rels": set()})
         entry["rels"].add("semantic")
         entry["hop"] = min(entry["hop"], hop)
-    for dep in structural_deps:
-        entry = dep_map.setdefault(dep.id, {"entity": dep, "hop": 1, "rels": set()})
+    for dep, hop in structural_deps:
+        entry = dep_map.setdefault(dep.id, {"entity": dep, "hop": hop, "rels": set()})
         entry["rels"].add("structural")
+        entry["hop"] = min(entry["hop"], hop)
 
     rows = sorted(dep_map.values(), key=lambda r: (r["hop"], r["entity"].name))
     return json.dumps(

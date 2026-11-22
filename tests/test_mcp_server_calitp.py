@@ -44,6 +44,9 @@ def _graph(**kwargs) -> AsyncMock:
     g.get_entity_by_id = AsyncMock(return_value=kwargs.get("entity"))
     g.get_semantic_dependents_with_depth = AsyncMock(return_value=kwargs.get("semantic_deps", []))
     g.get_structural_dependents = AsyncMock(return_value=kwargs.get("structural_deps", []))
+    g.get_structural_dependents_with_depth = AsyncMock(
+        return_value=[(d, 1) for d in kwargs.get("structural_deps", [])]
+    )
     g.get_latest_definition = AsyncMock(return_value=kwargs.get("definition"))
     g.get_entity_semantic_edges = AsyncMock(return_value=kwargs.get("edges", []))
     g.get_definition_history = AsyncMock(return_value=kwargs.get("history", []))

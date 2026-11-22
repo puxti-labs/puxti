@@ -21,11 +21,13 @@ import logging
 from puxti.core.graph import (
     _PURGE_SCAN_RUNS_SQL,
     _SCHEMA,
+    _merged_dependents,
     _search_sql,
     _to_definition,
     _to_entity,
     _to_entity_with_definition,
     _to_semantic_edge,
+    _walk_with_fallback,
 )
 from puxti.models import (
     ChangeEvent,
@@ -397,40 +399,46 @@ class PostgresKnowledgeGraph:
 
     @_serialized
     async def get_structural_dependents(self, entity_id: str) -> list[Entity]:
-        """Return direct structural dependents (single-hop LINEAGE). Falls back to name lookup."""
+        """Return direct structural dependents (single-hop LINEAGE). Falls back to name lookup.
+        See SqliteKnowledgeGraph.get_structural_dependents."""
+        return await _merged_dependents(self, entity_id)
+
+    @_serialized
+    async def get_structural_dependents_with_depth(
+        self, entity_id: str
+    ) -> list[tuple[Entity, int]]:
+        """Every entity downstream through lineage, with its shortest hop depth.
+        See SqliteKnowledgeGraph.get_structural_dependents_with_depth."""
+        return await _walk_with_fallback(self, entity_id)
+
+    # Unlocked primitives for the shared helpers; only serialized methods call them.
+
+    async def _direct_dependents(self, ids: list[str]) -> list[Entity]:
+        """Distinct entities with a lineage edge to any of ids."""
         rows = await self._conn.fetch(
             """
             SELECT DISTINCT e.* FROM lineage_edges le
             JOIN entities e ON e.id = le.from_id
-            WHERE le.to_id = $1
+            WHERE le.to_id = ANY($1::text[])
             """,
-            entity_id,
+            ids,
         )
+        return [_to_entity(r) for r in rows]
 
-        if rows:
-            return [_to_entity(r) for r in rows]
+    async def _dependents_of_model_named(self, model_name: str) -> list[Entity]:
+        rows = await self._conn.fetch(
+            """
+            SELECT DISTINCT e.* FROM lineage_edges le
+            JOIN entities e ON e.id = le.from_id
+            JOIN entities src ON src.id = le.to_id
+            WHERE src.name = $1 AND src.type = 'model'
+            """,
+            model_name,
+        )
+        return [_to_entity(r) for r in rows]
 
-        # Fallback: resolve by model name. Column IDs put the model name
-        # second-to-last ("model.jaffle_shop.orders.amount" → "orders");
-        # model IDs put it last ("model.jaffle_shop.orders" → "orders").
-        # Try the column interpretation first, then the model one.
-        parts = entity_id.split(".")
-        candidates = ([parts[-2]] if len(parts) >= 2 else []) + [parts[-1]]
-        for model_name in candidates:
-            if not model_name:
-                continue
-            rows = await self._conn.fetch(
-                """
-                SELECT DISTINCT e.* FROM lineage_edges le
-                JOIN entities e ON e.id = le.from_id
-                JOIN entities src ON src.id = le.to_id
-                WHERE src.name = $1 AND src.type = 'model'
-                """,
-                model_name,
-            )
-            if rows:
-                return [_to_entity(r) for r in rows]
-        return []
+    async def _entity_type(self, entity_id: str) -> str | None:
+        return await self._conn.fetchval("SELECT type FROM entities WHERE id = $1", entity_id)
 
     @_serialized
     async def get_structural_ancestors(self, entity_id: str) -> list[tuple[Entity, int]]:

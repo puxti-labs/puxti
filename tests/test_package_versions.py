@@ -16,3 +16,13 @@ def test_workspace_packages_share_the_puxti_version() -> None:
     assert members, "no workspace packages found"
     mismatched = {p.parent.name: _version(p) for p in members if _version(p) != expected}
     assert mismatched == {}, f"bump these to {expected}: {mismatched}"
+
+
+def test_puxti_pins_its_workspace_packages_to_its_own_version() -> None:
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    pins = {
+        dep.split("==")[0]: dep.split("==")[1]
+        for dep in project["dependencies"]
+        if dep.startswith("puxti-")
+    }
+    assert pins == {"puxti-bi-core": project["version"]}

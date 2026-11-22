@@ -293,7 +293,8 @@ def _run_capture_with_results(
     gh_cls = MagicMock(return_value=mock_gh)
 
     mock_dbt = dbt or MagicMock()
-    mock_dbt.get_project_name = MagicMock(return_value="jaffle_shop")
+    if dbt is None or not isinstance(dbt.get_project_name.side_effect, Exception):
+        mock_dbt.get_project_name = MagicMock(return_value="jaffle_shop")
 
     with (
         patch("puxti.cli.capture.settings") as mock_settings,
@@ -820,3 +821,60 @@ def test_capture_reports_reason_and_literal_detail_without_opening_pr():
     assert "non-standard dbt layering" in cli_result.output
     assert "could not confirm" in cli_result.output.lower()
     mock_gh.open_pr.assert_not_called()
+
+
+def _bi_result():
+    from puxti.models import PropagationResult, UnverifiedEntity, UnverifiedReason
+
+    return PropagationResult(
+        change_event_id="evt-059",
+        connector="bi",
+        target_entity_id="model.jaffle_shop.orders.order_date",
+        diffs=[],
+        unverified_entities=[
+            UnverifiedEntity(
+                entity_id="chart.bi.revenue",
+                reason=UnverifiedReason.BI_SPEC_MANUAL,
+                detail="bi/charts/revenue.yml",
+                is_source=False,
+            )
+        ],
+    )
+
+
+def test_capture_bi_only_review_explains_specs_not_dbt_layering():
+    cli_result, _, mock_gh, _ = _run_capture_with_results([_bi_result()])
+
+    assert cli_result.exit_code == 0, cli_result.output
+    output = " ".join(plain(cli_result.output).split())
+    assert "chart.bi.revenue" in output
+    assert "does not edit specs yet" in output
+    assert "non-standard dbt layering" not in output
+    mock_gh.open_pr.assert_not_called()
+
+
+def test_capture_foreign_project_hint_survives_a_bi_result():
+    """dbt produced nothing because the models are in another project; a BI asset
+    listed for review must not hide the --dbt-project-dir hint."""
+    cli_result, _, _, _ = _run_capture_with_results(
+        [_bi_result()], affected=["model.other.orders"]
+    )
+
+    assert cli_result.exit_code == 0, cli_result.output
+    output = " ".join(plain(cli_result.output).split())
+    assert "different dbt project (`other`)" in output
+    assert "chart.bi.revenue" in output
+
+
+def test_capture_bi_result_without_a_dbt_manifest_still_lists_specs():
+    """No manifest: the project name is unknown, so no cross-project hint, no crash."""
+    dbt = MagicMock()
+    dbt.get_project_name.side_effect = FileNotFoundError("dbt manifest not found")
+    cli_result, _, _, _ = _run_capture_with_results(
+        [_bi_result()], affected=["model.other.orders"], dbt=dbt
+    )
+
+    assert cli_result.exit_code == 0, cli_result.output
+    output = " ".join(plain(cli_result.output).split())
+    assert "chart.bi.revenue" in output
+    assert "different dbt project" not in output

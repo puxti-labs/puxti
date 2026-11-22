@@ -62,6 +62,6 @@ moves its semantic edges across.
 
 A metric created with `puxti define` is a definition with no backing model. It holds no value and has no structural dependents until it is bound. `puxti scan` only auto-suggests a bind when a scanned model, view or dbt metric has the exact same name. A dbt metric wins over a model with the same name (jaffle-shop has both an `orders` metric and an `orders` model), and a name that two metrics or two models share is skipped; for anything else, bind it explicitly with `puxti bind`.
 
-### Metric impact is one hop
+### Consumers are one hop
 
-`impact_of_change` and `consumers` list direct dependents. A simple metric built on `orders` shows up in the impact of `orders`; a derived metric built on that simple metric does not, until you run impact on the simple metric itself. A column rename also leaves the semantic model YAML that references the column untouched.
+`puxti impact` and `impact_of_change` follow structural dependents all the way downstream, so a derived metric built on a simple metric built on `orders` shows up in the impact of `orders`, two hops away. `consumers` lists direct dependents only. A column rename also leaves the semantic model YAML that references the column untouched.

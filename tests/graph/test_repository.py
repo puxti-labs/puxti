@@ -861,3 +861,137 @@ async def test_read_only_connect_leaves_an_old_schema_untouched(tmp_path: Path) 
         async with raw.execute("SELECT name FROM sqlite_master WHERE type='table'") as cur:
             tables = {row[0] for row in await cur.fetchall()}
     assert "scan_runs" not in tables
+
+
+# ── transitive structural dependents ─────────────────────────────────────────
+
+
+async def _chain(kg: KnowledgeGraph, *names: str) -> list[Entity]:
+    """Entities where each one depends on the one before it."""
+    entities = [await kg.upsert_entity_by_name(_entity(n)) for n in names]
+    for parent, child in zip(entities, entities[1:]):
+        await kg.upsert_edge(
+            Edge(
+                from_entity_id=child.id,
+                to_entity_id=parent.id,
+                type=EdgeType.DEPENDS_ON,
+                connector="test",
+            )
+        )
+    return entities
+
+
+@pytest.mark.asyncio
+async def test_structural_dependents_with_depth_walks_every_hop(kg: KnowledgeGraph) -> None:
+    model, dataset, chart, dashboard = await _chain(kg, "orders", "ds", "chart", "dash")
+    # A shortcut, as a chart that reads a model column directly: chart → model.
+    await kg.upsert_edge(
+        Edge(
+            from_entity_id=chart.id,
+            to_entity_id=model.id,
+            type=EdgeType.DEPENDS_ON,
+            connector="test",
+        )
+    )
+    deps = {e.name: hop for e, hop in await kg.get_structural_dependents_with_depth(model.id)}
+    assert deps == {"ds": 1, "chart": 1, "dash": 2}  # shortest hop wins
+
+
+@pytest.mark.asyncio
+async def test_structural_dependents_with_depth_survives_a_cycle(kg: KnowledgeGraph) -> None:
+    a, b = await _chain(kg, "a", "b")
+    await kg.upsert_edge(
+        Edge(from_entity_id=a.id, to_entity_id=b.id, type=EdgeType.DEPENDS_ON, connector="test")
+    )
+    deps = await kg.get_structural_dependents_with_depth(a.id)
+    assert [(e.name, hop) for e, hop in deps] == [("b", 1)]  # never the entity itself
+
+
+@pytest.mark.asyncio
+async def test_structural_dependents_with_depth_empty_without_dependents(
+    kg: KnowledgeGraph,
+) -> None:
+    (alone,) = await _chain(kg, "alone")
+    assert await kg.get_structural_dependents_with_depth(alone.id) == []
+
+
+async def _put(kg: KnowledgeGraph, entity_id: str, etype: EntityType, *deps: str) -> None:
+    """Upsert an entity with a fixed ID, depending on the given IDs."""
+    name = entity_id.rsplit(".", 1)[-1]
+    await kg.upsert_entity(
+        Entity(id=entity_id, name=name, type=etype, source_connector="dbt", project="p")
+    )
+    for dep in deps:
+        await kg.upsert_edge(
+            Edge(from_entity_id=entity_id, to_entity_id=dep, type=EdgeType.DEPENDS_ON, connector="t")
+        )
+
+
+@pytest.mark.asyncio
+async def test_column_with_bi_edges_still_lists_the_models_downstream(kg: KnowledgeGraph) -> None:
+    """A chart reading a column gives the column direct edges; the dbt models that
+    read its model must still appear, since dbt has no column-level lineage."""
+    await _put(kg, "model.p.orders", EntityType.MODEL)
+    await _put(kg, "model.p.orders.amount", EntityType.COLUMN)
+    await _put(kg, "model.p.customer_orders", EntityType.MODEL, "model.p.orders")
+    await _put(kg, "model.p.ltv", EntityType.MODEL, "model.p.customer_orders")
+    await _put(kg, "chart.bi.revenue", EntityType.CHART, "model.p.orders.amount")
+
+    one_hop = {e.id for e in await kg.get_structural_dependents("model.p.orders.amount")}
+    assert one_hop == {"chart.bi.revenue", "model.p.customer_orders"}
+
+    deps = await kg.get_structural_dependents_with_depth("model.p.orders.amount")
+    assert {e.id: hop for e, hop in deps} == {
+        "chart.bi.revenue": 1,
+        "model.p.customer_orders": 1,
+        "model.p.ltv": 2,
+    }
+
+
+@pytest.mark.asyncio
+async def test_name_fallback_keeps_walking_downstream(kg: KnowledgeGraph) -> None:
+    """A column with no edges of its own falls back to its model's dependents,
+    and the walk continues from each of them."""
+    await _put(kg, "model.p.orders", EntityType.MODEL)
+    await _put(kg, "dataset.bi.orders", EntityType.DATASET, "model.p.orders")
+    await _put(kg, "chart.bi.c", EntityType.CHART, "dataset.bi.orders")
+    await _put(kg, "dashboard.bi.d", EntityType.DASHBOARD, "chart.bi.c")
+
+    deps = await kg.get_structural_dependents_with_depth("model.p.orders.status")
+    assert {e.id: hop for e, hop in deps} == {
+        "dataset.bi.orders": 1,
+        "chart.bi.c": 2,
+        "dashboard.bi.d": 3,
+    }
+
+
+@pytest.mark.asyncio
+async def test_structural_walk_has_no_depth_cap(kg: KnowledgeGraph) -> None:
+    """25 models in a row, then a dataset, chart and dashboard: all are reached."""
+    ids = [f"model.p.m{i:02d}" for i in range(25)]
+    await _put(kg, ids[0], EntityType.MODEL)
+    for prev, cur in zip(ids, ids[1:]):
+        await _put(kg, cur, EntityType.MODEL, prev)
+    await _put(kg, "dataset.bi.d", EntityType.DATASET, ids[-1])
+    await _put(kg, "chart.bi.c", EntityType.CHART, "dataset.bi.d")
+    await _put(kg, "dashboard.bi.x", EntityType.DASHBOARD, "chart.bi.c")
+
+    deps = {e.id: hop for e, hop in await kg.get_structural_dependents_with_depth(ids[0])}
+    assert deps["dataset.bi.d"] == 25
+    assert deps["dashboard.bi.x"] == 27
+
+
+@pytest.mark.asyncio
+async def test_column_fallback_stays_in_its_own_project(kg: KnowledgeGraph) -> None:
+    """Projects p and q both have `orders`; a p column must not list q's consumers."""
+    await _put(kg, "model.p.orders", EntityType.MODEL)
+    await _put(kg, "model.q.orders", EntityType.MODEL)
+    await _put(kg, "model.p.orders.amount", EntityType.COLUMN)
+    await _put(kg, "model.p.revenue", EntityType.MODEL, "model.p.orders")
+    await _put(kg, "model.q.refunds", EntityType.MODEL, "model.q.orders")
+    await _put(kg, "chart.bi.c", EntityType.CHART, "model.p.orders.amount")
+
+    one_hop = {e.id for e in await kg.get_structural_dependents("model.p.orders.amount")}
+    assert one_hop == {"chart.bi.c", "model.p.revenue"}
+    deps = {e.id for e, _ in await kg.get_structural_dependents_with_depth("model.p.orders.amount")}
+    assert deps == {"chart.bi.c", "model.p.revenue"}

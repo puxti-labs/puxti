@@ -164,3 +164,16 @@ def test_star_notice_skipped_on_failure(tmp_path):
         _shared._run(_fail())
     assert "github.com" not in buf.getvalue()
     assert not (tmp_path / "config.toml").exists()
+
+
+def test_parse_entity_id_bi_assets():
+    import pytest
+
+    from puxti.cli._shared import _parse_entity_id
+    from puxti.models import EntityType
+
+    assert _parse_entity_id("dataset.bi.orders") == (EntityType.DATASET, "bi", "bi")
+    assert _parse_entity_id("chart.bi.revenue") == (EntityType.CHART, "bi", "bi")
+    assert _parse_entity_id("dashboard.bi.sales") == (EntityType.DASHBOARD, "bi", "bi")
+    with pytest.raises(ValueError):
+        _parse_entity_id("chart.other.revenue")

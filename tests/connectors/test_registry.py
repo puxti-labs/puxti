@@ -88,3 +88,13 @@ def test_build_configured_connectors_skips_unbuildable():
 
 def test_build_configured_connectors_empty_workspace():
     assert build_configured_connectors(WorkspaceConfig()) == []
+
+
+def test_build_connector_bi_defaults_specs_dir():
+    from puxti.connectors.bi_specs import BiSpecsConnector
+
+    connector = build_connector("bi", ConnectorConfig(project_dir="/app"))
+    assert isinstance(connector, BiSpecsConnector)
+    assert str(connector.specs_dir) == "/app/bi"
+    custom = build_connector("bi", ConnectorConfig(project_dir="/app", extras={"specs_dir": "x"}))
+    assert str(custom.specs_dir) == "/app/x"

@@ -10,7 +10,7 @@ import yaml
 # they are health-checked, scanned, and propagated. dbt stays first — it is
 # the default producer and other CLI defaults (e.g. capture's PR repo) key
 # off it.
-KNOWN_CONNECTORS = ("dbt", "airflow", "prisma", "sql_views")
+KNOWN_CONNECTORS = ("dbt", "airflow", "prisma", "sql_views", "bi")
 
 
 @dataclass
@@ -28,6 +28,7 @@ class WorkspaceConfig:
     airflow: ConnectorConfig | None = None
     prisma: ConnectorConfig | None = None
     sql_views: ConnectorConfig | None = None
+    bi: ConnectorConfig | None = None
     path: Path | None = None
 
     def get(self, name: str) -> ConnectorConfig | None:
