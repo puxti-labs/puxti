@@ -11,6 +11,10 @@
 - **`puxti impact` and the MCP `impact_of_change` tool follow structural dependents all the way downstream.** They used to list direct dependents only; each dependent now appears at its shortest hop distance. `consumers` still lists direct dependents. For a column, the dependents of its model are always included, as before, even when BI specs give the column edges of its own.
 - **Scan no longer asks to confirm an empty set of definitions** when a connector has nothing to define.
 
+### Fixed
+
+- **Airflow task lineage pointed upstream.** `extract >> load` was stored as `extract` depending on `load`, so `puxti impact` and `capture` on a task listed the tasks before it instead of after it. The edge now runs from `load` to `extract`, like every other dependency edge. Scan adds edges but never removes them, so a graph scanned before this fix keeps the reversed edges. Delete the Airflow lineage edges and rescan: `sqlite3 ~/.puxti/graph.db "DELETE FROM lineage_edges WHERE connector = 'airflow'"` (or the same statement in `psql` against `DATABASE_URL`), then `puxti scan`. This leaves `puxti link` edges and definitions alone; `puxti purge` would remove those too.
+
 ## [0.21.0] — 2026-11-21
 
 ### Added

@@ -150,7 +150,9 @@ async def test_extract_lineage_returns_edges(dags_dir: Path) -> None:
     edges = await connector.extract_lineage()
     pairs = {(e.from_entity_id, e.to_entity_id) for e in edges}
 
-    assert ("task.airflow.my_dag.extract_orders", "task.airflow.my_dag.load_orders") in pairs
+    # extract_orders >> load_orders: load_orders depends on extract_orders.
+    assert ("task.airflow.my_dag.load_orders", "task.airflow.my_dag.extract_orders") in pairs
+    assert ("task.airflow.my_dag.extract_orders", "task.airflow.my_dag.load_orders") not in pairs
 
 
 @pytest.mark.asyncio
@@ -350,3 +352,25 @@ async def test_generate_changes_malformed_task_reports_reason(dags_dir):
             reason=UnverifiedReason.INVALID_ENTITY_ID,
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_downstream_task_is_the_dependent_in_the_graph(dags_dir: Path) -> None:
+    """extract_orders >> load_orders: a change to extract_orders reaches load_orders,
+    and nothing in the DAG depends on load_orders."""
+    from puxti.core.graph import KnowledgeGraph
+
+    connector = AirflowConnector(config={"dags_dir": str(dags_dir)})
+    kg = KnowledgeGraph(db_path=Path(":memory:"))
+    await kg.connect()
+    try:
+        for entity in await connector.extract_entities():
+            await kg.upsert_entity(entity)
+        for edge in await connector.extract_lineage():
+            await kg.upsert_edge(edge)
+        extract_deps = await kg.get_structural_dependents("task.airflow.my_dag.extract_orders")
+        load_deps = await kg.get_structural_dependents("task.airflow.my_dag.load_orders")
+    finally:
+        await kg.close()
+    assert [e.id for e in extract_deps] == ["task.airflow.my_dag.load_orders"]
+    assert load_deps == []
