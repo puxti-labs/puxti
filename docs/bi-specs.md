@@ -7,8 +7,9 @@ defined by the `puxti-bi-core` package in this repository and published as a
 **Status:** the schema is `v1alpha1` and may still change in breaking ways. `puxti scan` reads specs
 into the Knowledge Graph, so `puxti impact` shows the charts and dashboards a dbt change reaches
 (see [In the Knowledge Graph](#in-the-knowledge-graph)), and `puxti validate` checks specs in CI
-(see [Validate in CI](#validate-in-ci)). `puxti impact` against a base manifest, and deploying to
-a BI tool, come next. The plan is in
+(see [Validate in CI](#validate-in-ci)), and `puxti impact --state` lists the specs a dbt change
+breaks before it merges (see [Impact of a dbt change in CI](#impact-of-a-dbt-change-in-ci)).
+Deploying to a BI tool comes next. The plan is in
 [#28](https://github.com/puxti-labs/puxti/issues/28).
 
 ## Layout
@@ -149,6 +150,66 @@ bi/datasets/orders.yml:7: error: `sum` needs a numeric column; 'status' is VARCH
 The spec folder and dbt project come from the `bi` and `dbt` connectors in `.puxti.yml`, or
 `--specs-dir` and `--dbt-project-dir`. `--json` prints the same findings as the MCP
 `validate_bi_specs` tool.
+
+## Impact of a dbt change in CI
+
+`puxti impact --state DIR` compares two dbt builds: the base in `DIR` (usually the production
+job's `target/`, holding `manifest.json` and, ideally, `catalog.json`) and the current project's
+`target/`. It lists the BI specs the change touches, offline: puxti runs no dbt command, no LLM calls and no
+Knowledge Graph.
+
+- **broken**: a check from `puxti validate` that passes against the base and fails against the
+  current build: a removed model, column or dbt metric, or a column whose new type no longer fits
+  (`sum` on text, a grain on a non-date). Charts on a broken dataset and dashboards holding a
+  broken chart are broken too.
+- **affected**: a dataset whose model changed (removed, SQL changed, a column removed or retyped),
+  sits downstream of a changed model, seed or snapshot, or now resolves to a different node (a
+  new latest version), and the charts and dashboards built on it, while every reference still
+  works.
+
+A spec that was already broken on the base is not reported; `puxti validate` covers it. Broken
+assets exit 1; affected assets and warnings exit 0.
+
+Columns are compared from the same source on both sides: the catalog when both builds have an
+entry for the model, else the columns its YAML declares. When neither is available and the
+model's SQL changed, a removed column cannot be seen, so the dataset gets a warning saying so
+instead of passing silently. For complete column and type changes, give both builds a
+`catalog.json`.
+
+`dbt docs generate` reads the catalog from the warehouse, so it describes the tables that exist,
+not the SQL in the pull request. Build the changed models into the CI schema first; otherwise
+the PR's catalog shows the old tables, and a column the PR's SQL removes looks unchanged.
+
+Keep the production run's `target/manifest.json` and `catalog.json` where CI can fetch them (an
+artifact of the deploy workflow, a bucket, or your dbt platform's artifacts API), then in the
+pull request job:
+
+```bash
+dbt build --select state:modified+ --defer --state prod-target   # build what the PR changed
+dbt docs generate                                                 # the current build's catalog
+puxti impact --state prod-target --dbt-project-dir .
+```
+
+Without a build (`dbt parse` alone), there is no current catalog: models, dbt metrics and the
+columns declared in YAML are still compared, and a changed model whose columns nothing records
+gets a warning.
+
+```
+Changed dbt models (base: prod-target)
+  model.shop.orders: column 'amount' removed
+ Asset             Kind       Status  Reason
+ orders            dataset    broken  column 'amount' is not in dbt model 'orders'
+                                      dbt model model.shop.orders: column 'amount' removed
+ revenue_by_month  chart      broken  dataset 'orders' is broken
+ sales             dashboard  broken  chart 'revenue_by_month' is broken
+bi/datasets/orders.yml:6: error: column 'amount' is not in dbt model 'orders'
+✗ 3 broken, 0 affected, 0 warning(s)
+```
+
+Lineage between models comes from `depends_on` in both manifests, so the dependents of a removed
+model are found too. Downstream models are followed at model level: a dataset downstream of a
+changed model is affected, without the column detail. `--json` prints the changed models, the
+assets with their reasons, and the findings.
 
 ## Common fields and the escape hatch
 

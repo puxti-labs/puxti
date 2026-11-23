@@ -20,7 +20,9 @@ reviewable GitHub PRs. Commands are registered in `src/puxti/cli/__init__.py`
   fixes inferred definitions; `graph.py` is the high-level graph interface;
   `resolution.py` resolves cross-connector table, column and metric references
   at scan time. `bi_validate.py` checks BI specs against the dbt project's
-  `target/` files for `puxti validate`, offline.
+  `target/` files for `puxti validate`, offline; `bi_impact.py` compares two
+  dbt builds for `puxti impact --state`; both read the `target/` files through
+  `dbt_artifacts.py`.
 - `src/puxti/connectors/` — integrations. `dbt.py` parses manifests (models, sources, MetricFlow metrics) and
   generates SQL diffs; `github.py` opens PRs; `airflow.py` parses DAGs;
   `prisma.py` parses schema.prisma; `sql_views.py` parses CREATE VIEW files
