@@ -128,9 +128,22 @@ Output shows each dependent entity, its hop distance from the target, and whethe
 
 | Flag | Required | Description |
 |------|----------|-------------|
-| `<entity>` | Yes | Entity ID to analyze (positional argument) |
+| `<entity>` | Yes, unless `--state` | Entity ID to analyze (positional argument) |
 | `--change-type` | No | One of `rename`, `redefine`, `drop`, `type_change` — scopes the risk annotation |
-| `--json` | No | Output as JSON (same shape as the MCP `impact_of_change` tool) |
+| `--state` | No | Folder with a base build's `manifest.json` (and `catalog.json`). Compares it with the current `target/` and lists the BI specs the change breaks or affects; takes no `<entity>` or `--change-type` |
+| `--specs-dir` | With `--state` | Spec folder, defaulting as for `validate` |
+| `--dbt-project-dir` | With `--state` | dbt project whose `target/` is the current build, defaulting as for `validate` |
+| `--json` | No | Output as JSON (for an entity, the same shape as the MCP `impact_of_change` tool) |
+
+### Impact of a dbt change on BI specs
+
+In a pull request's CI job, compare its dbt build with production's, offline: no Knowledge Graph, no LLM calls, and puxti runs no dbt command itself. A spec the change breaks (a removed model, column or dbt metric, or a type that no longer fits) exits 1; a spec on a changed or downstream model is listed as affected. See [BI specs](bi-specs.md#impact-of-a-dbt-change-in-ci).
+
+```bash
+dbt build --select state:modified+ --defer --state prod-target   # catalog.json must reflect the PR's SQL
+dbt docs generate
+puxti impact --state prod-target --dbt-project-dir .
+```
 
 ---
 

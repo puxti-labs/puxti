@@ -1,39 +1,85 @@
-"""`puxti impact` — show blast radius of a change, straight from the graph."""
+"""`puxti impact` — blast radius of a change: from the graph, or between two dbt builds."""
 
-from typing import Optional
+import json
+from pathlib import Path
+from typing import TYPE_CHECKING, Optional
 
 import typer
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 from puxti.cli._app import app
-from puxti.cli._shared import _run, console, err_console
+from puxti.cli._shared import _load_workspace, _run, console, err_console
 from puxti.core.graph import KnowledgeGraph
+
+if TYPE_CHECKING:
+    from puxti.core.bi_impact import ImpactReport
 
 
 @app.command()
 def impact(
-    entity: str = typer.Argument(..., help="Entity ID to analyze (e.g. model.jaffle_shop.orders)"),
+    entity: Optional[str] = typer.Argument(
+        None, help="Entity ID to analyze (e.g. model.jaffle_shop.orders). Omit with --state."
+    ),
     change_type: Optional[str] = typer.Option(
         None,
         "--change-type",
         help="Type of change to evaluate: rename, redefine, drop, type_change",
     ),
+    state: Optional[str] = typer.Option(
+        None,
+        "--state",
+        help="Folder holding the base build's manifest.json (and catalog.json), e.g. the "
+        "production job's target/. Compares it with the current target/ and lists the BI "
+        "specs the change breaks or affects, offline.",
+    ),
+    specs_dir: Optional[str] = typer.Option(
+        None,
+        "--specs-dir",
+        help="With --state: BI spec folder. Defaults as for `puxti validate`.",
+    ),
+    dbt_project_dir: Optional[str] = typer.Option(
+        None,
+        "--dbt-project-dir",
+        help="With --state: dbt project whose target/ is the current build. Defaults to "
+        ".puxti.yml, then DBT_PROJECT_DIR.",
+    ),
     as_json: bool = typer.Option(
         False,
         "--json",
-        help="Output as JSON (same shape as the MCP impact_of_change tool).",
+        help="Output as JSON (for an entity, the same shape as the MCP impact_of_change tool).",
     ),
 ) -> None:
     """Show what depends on an entity and what would be affected by a change.
 
-    Queries the Knowledge Graph for semantic and structural dependents without
-    making any LLM calls. Run `puxti scan` first to populate the graph.
-
-    Use --change-type to see which dependents are primary risk for a specific
-    type of change: rename (structural), redefine (semantic), drop or
+    With an ENTITY, queries the Knowledge Graph for semantic and structural
+    dependents without making any LLM calls. Run `puxti scan` first to populate
+    the graph. Use --change-type to see which dependents are primary risk for a
+    specific type of change: rename (structural), redefine (semantic), drop or
     type_change (both).
+
+    With --state DIR instead, compares two dbt builds (DIR and the current
+    target/) and lists the BI datasets, charts and dashboards the change breaks
+    or affects. No Knowledge Graph, no LLM; puxti runs no dbt command. Exits 1 when an asset
+    breaks, so it can gate CI; affected assets and warnings exit 0.
     """
+    if state is not None:
+        if entity is not None or change_type is not None:
+            err_console.print(
+                "[red]Error:[/red] --state compares two dbt builds; it takes no ENTITY "
+                "or --change-type."
+            )
+            raise typer.Exit(1)
+        _run(_run_state_impact(state, specs_dir, dbt_project_dir, as_json), command="impact")
+        return
+    if entity is None:
+        err_console.print("[red]Error:[/red] Pass an ENTITY ID, or --state DIR to compare builds.")
+        raise typer.Exit(1)
+    if specs_dir is not None or dbt_project_dir is not None:
+        err_console.print("[red]Error:[/red] --specs-dir and --dbt-project-dir need --state.")
+        raise typer.Exit(1)
     _VALID_CHANGE_TYPES = {"rename", "redefine", "drop", "type_change"}
     if change_type and change_type not in _VALID_CHANGE_TYPES:
         err_console.print(
@@ -42,6 +88,73 @@ def impact(
         )
         raise typer.Exit(1)
     _run(_run_impact(entity=entity, change_type=change_type, as_json=as_json), command="impact")
+
+
+async def _run_state_impact(
+    state: str, specs_dir: str | None, dbt_project_dir: str | None, as_json: bool
+) -> None:
+    from puxti.core.bi_impact import ImpactReport, impact_against_state
+    from puxti.core.bi_validate import config_error_report, resolve_dirs
+    from puxti.workspace import load_workspace
+
+    try:
+        ws = load_workspace()
+    except ValueError as exc:
+        if not as_json:
+            _load_workspace()  # prints the config error and exits 1
+        findings = config_error_report(exc).findings
+        report = ImpactReport(specs_dir=Path("."), state_dir=Path(state), findings=findings)
+        console.print_json(json.dumps(report.to_dict()))
+        raise typer.Exit(1)
+    specs_path, dbt_path = resolve_dirs(ws, specs_dir, dbt_project_dir)
+    report = impact_against_state(specs_path, dbt_path, Path(state))
+    if as_json:
+        console.print_json(json.dumps(report.to_dict()))
+    else:
+        _print_state_report(report)
+    if not report.ok:
+        raise typer.Exit(1)
+
+
+def _print_state_report(report: "ImpactReport") -> None:
+    from puxti.core.bi_validate import display_path
+
+    if report.changed_models:
+        console.print(Text(f"Changed dbt models (base: {report.state_dir})", style="bold"))
+        for change in report.changed_models:
+            console.print(Text(f"  {change.unique_id}: {', '.join(change.changes)}"))
+    if report.assets:
+        table = Table(show_lines=False)
+        table.add_column("Asset", style="bold", no_wrap=True)
+        table.add_column("Kind", style="dim", no_wrap=True)
+        table.add_column("Status", no_wrap=True)
+        table.add_column("Reason")
+        for asset in report.assets:
+            color = "red" if asset.status == "broken" else "yellow"
+            table.add_row(
+                Text(asset.name),
+                Text(asset.kind),
+                Text(asset.status, style=color),
+                Text("\n".join(asset.reasons)),
+            )
+        console.print(table)
+    for finding in report.findings:
+        path = display_path(finding.path)
+        where = f"{path}:{finding.line}" if finding.line else path
+        line = Text(f"{where}: ")
+        line.append(finding.severity, style="red" if finding.severity == "error" else "yellow")
+        line.append(f": {finding.message}")
+        console.print(line, highlight=False)
+    counts = f"{report.broken} broken, {report.affected} affected, {report.warnings} warning(s)"
+    if report.ok:
+        mark = "[green]✓[/green]"
+        if not report.assets:
+            counts = f"No BI spec is affected ({report.warnings} warning(s))"
+    else:
+        mark = "[red]✗[/red]"
+        if report.errors and not report.broken:
+            counts = f"{report.errors} error(s), {report.warnings} warning(s)"
+    console.print(f"{mark} {escape(counts)}", highlight=False)
 
 
 async def _run_impact(entity: str, change_type: str | None, as_json: bool) -> None:

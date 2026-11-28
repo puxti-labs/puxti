@@ -16,14 +16,13 @@ no columns declared in YAML, or a column whose type nothing records.
 
 from __future__ import annotations
 
-import json
 import re
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
 
+from puxti.core.dbt_artifacts import DbtFacts, ModelColumns, load_json
 from puxti.settings import settings
 from puxti.workspace import WorkspaceConfig
 from puxti_bi_core import (
@@ -108,35 +107,51 @@ def validate(specs_dir: Path, dbt_project_dir: Path | None) -> ValidationReport:
         return _sorted(report)
 
     target = (dbt_project_dir or Path(".")) / "target"
-    manifest_path = target / "manifest.json"
-    manifest, problem = _load_json(manifest_path)
-    if manifest is None:
-        reason = problem or "not found"
-        report.findings.append(
-            SpecError(
-                path=manifest_path,
-                message=f"dbt manifest {reason}; run `dbt parse` so dbt references can "
-                "be checked (set the dbt project with --dbt-project-dir)",
-            )
-        )
-        return _sorted(report)
+    facts, findings = read_target(
+        target,
+        "run `dbt parse` so dbt references can be checked (set the dbt project with "
+        "--dbt-project-dir)",
+    )
+    report.findings += findings
+    if facts is not None:
+        report.findings += dbt_findings(specs, facts)
+        report.findings += facts_problems(target, facts)
+    return _sorted(report)
 
-    catalog, problem = _load_json(target / "catalog.json")
+
+def read_target(target: Path, missing_hint: str) -> tuple[DbtFacts | None, list[SpecError]]:
+    """The dbt facts in a target/-style folder (manifest.json, optional catalog.json).
+    None with an error when the manifest is missing or unreadable; an unusable catalog is
+    a warning and the manifest is used alone."""
+    manifest_path = target / "manifest.json"
+    manifest, problem = load_json(manifest_path)
+    if manifest is None:
+        message = f"dbt manifest {problem or 'not found'}; {missing_hint}"
+        return None, [SpecError(path=manifest_path, message=message)]
+    findings: list[SpecError] = []
+    catalog, problem = load_json(target / "catalog.json")
     if problem:
-        report.findings.append(
+        findings.append(
             SpecError(
                 path=target / "catalog.json",
                 message=f"catalog.json {problem}, so it was not used for columns and types",
                 severity="warning",
             )
         )
-    facts = _DbtFacts(manifest, catalog)
-    report.findings += _DbtChecks(specs, facts).run()
-    report.findings += [
+    return DbtFacts(manifest, catalog), findings
+
+
+def dbt_findings(specs: SpecSet, facts: DbtFacts) -> list[SpecError]:
+    """Every check of the specs against one dbt project's facts."""
+    return _DbtChecks(specs, facts).run()
+
+
+def facts_problems(target: Path, facts: DbtFacts) -> list[SpecError]:
+    """What was malformed in the target/ files, as warnings."""
+    return [
         SpecError(path=target / file, message=message, severity="warning")
         for file, message in dict.fromkeys(facts.problems)
     ]
-    return _sorted(report)
 
 
 def config_error_report(exc: Exception) -> ValidationReport:
@@ -155,165 +170,11 @@ def display_path(path: Path) -> str:
         return str(path)
 
 
-# ── dbt facts ─────────────────────────────────────────────────────────────────
-
-
-def _load_json(path: Path) -> tuple[dict | None, str | None]:
-    """A JSON object from a file, or None with what is wrong ("not found" is None, None)."""
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return None, None
-    except (OSError, ValueError) as exc:
-        return None, f"is unreadable: {exc}"
-    if not isinstance(data, dict):
-        return None, f"is not a JSON object (got {type(data).__name__})"
-    return data, None
-
-
-def _text(value: Any) -> str | None:
-    """value when it is a nonempty string; any other JSON value records nothing."""
-    return value if isinstance(value, str) and value else None
-
-
-def _version(value: Any) -> str | None:
-    """A dbt model version, which may be a number or a string, as text."""
-    if isinstance(value, bool) or value is None:
-        return None
-    return str(value) if isinstance(value, (str, int, float)) else None
-
-
-@dataclass
-class _Model:
-    """A manifest model, reduced to checked fields. unique_id is the manifest's key."""
-
-    unique_id: str
-    schema: str
-    package: str | None
-    version: str | None
-    latest_version: str | None
-    declared: dict[str, str | None]  # lowercase column name -> YAML data_type
-
-
-@dataclass
-class _Columns:
-    """What is known about a model's columns, by lowercase name.
-
-    ``catalog`` holds the columns the warehouse has, None when the catalog has no usable
-    entry for the model; ``declared`` holds the ones its YAML declares. A type comes from
-    the catalog first, then the YAML's ``data_type``; None when neither records one."""
-
-    catalog: set[str] | None
-    declared: set[str]
-    types: dict[str, str | None]
-    catalog_loaded: bool
-
-    @property
-    def known(self) -> bool:
-        return self.catalog is not None or bool(self.declared)
-
-
-class _DbtFacts:
-    """The manifest and catalog, read defensively. Every malformed section becomes an
-    entry in ``problems`` (file name, message), reported as a warning; it never raises."""
-
-    def __init__(self, manifest: dict, catalog: dict | None) -> None:
-        self.problems: list[tuple[str, str]] = []
-        self._models: dict[str, list[_Model]] = {}
-        for node_id, node in self._section(manifest, "nodes", "manifest.json").items():
-            if not isinstance(node, dict) or node.get("resource_type") != "model":
-                continue
-            name = _text(node.get("name"))
-            if name is None:
-                continue
-            columns = node.get("columns")
-            declared = {
-                str(col).lower(): _text(meta.get("data_type")) if isinstance(meta, dict) else None
-                for col, meta in (columns.items() if isinstance(columns, dict) else [])
-            }
-            model = _Model(
-                unique_id=str(node_id),
-                schema=(_text(node.get("schema")) or "").lower(),
-                package=_text(node.get("package_name")),
-                version=_version(node.get("version")),
-                latest_version=_version(node.get("latest_version")),
-                declared=declared,
-            )
-            self._models.setdefault(name.lower(), []).append(model)
-        self._metrics: dict[str, str | None] = {}
-        for metric in self._section(manifest, "metrics", "manifest.json").values():
-            if isinstance(metric, dict) and (name := _text(metric.get("name"))):
-                self._metrics[name.lower()] = _text(metric.get("type"))
-        self._catalog_loaded = catalog is not None
-        self._catalog = self._section(catalog, "nodes", "catalog.json") if catalog else {}
-
-    def _section(self, data: dict, key: str, file: str) -> dict:
-        value = data.get(key)
-        if value is None:
-            return {}
-        if not isinstance(value, dict):
-            self.problems.append((file, f"'{key}' is not a JSON object, so it was ignored"))
-            return {}
-        return value
-
-    def model(self, name: str) -> tuple[_Model | None, str | None]:
-        """The model a dataset names, or None with the reason. A schema-qualified name
-        (`analytics.orders`) matches the model of that name in that schema."""
-        schema, _, bare = name.lower().rpartition(".")
-        models = self._models.get(bare, [])
-        if schema:
-            models = [m for m in models if m.schema == schema]
-        if not models:
-            return None, f"dbt model '{name}' does not exist"
-        if len(models) == 1:
-            (model,) = models
-            if model.version and model.latest_version and model.version != model.latest_version:
-                return None, (
-                    f"dbt model '{name}' matches version {model.version} "
-                    f"({model.unique_id}), not its latest version {model.latest_version}"
-                )
-            return model, None
-        latest = [m for m in models if m.version and m.version == m.latest_version]
-        packages = {m.package for m in models}
-        if len(latest) == 1 and len(packages) == 1 and None not in packages:
-            return latest[0], None
-        ids = ", ".join(sorted(m.unique_id for m in models))
-        return None, f"dbt model name '{name}' is ambiguous: {ids}"
-
-    def columns(self, model: _Model) -> _Columns:
-        types = dict(model.declared)
-        catalog: set[str] | None = None
-        entry = self._catalog.get(model.unique_id)
-        if entry is not None:
-            columns = entry.get("columns") if isinstance(entry, dict) else None
-            if isinstance(columns, dict):
-                catalog = set()
-                for col, meta in columns.items():
-                    name = str(col).lower()
-                    catalog.add(name)
-                    catalog_type = _text(meta.get("type")) if isinstance(meta, dict) else None
-                    types[name] = catalog_type or types.get(name)
-            else:
-                self.problems.append(
-                    (
-                        "catalog.json",
-                        f"the entry for {model.unique_id} has no 'columns' object, so the "
-                        "catalog was not used for that model",
-                    )
-                )
-        return _Columns(catalog, set(model.declared), types, self._catalog_loaded)
-
-    def metric(self, name: str) -> tuple[bool, str | None]:
-        """(exists, type) for a dbt metric; type None when the manifest records none."""
-        key = name.lower()
-        return key in self._metrics, self._metrics.get(key)
-
-
 # ── dbt checks ────────────────────────────────────────────────────────────────
 
 
 class _DbtChecks:
-    def __init__(self, specs: SpecSet, facts: _DbtFacts) -> None:
+    def __init__(self, specs: SpecSet, facts: DbtFacts) -> None:
         self.specs = specs
         self.facts = facts
         self.findings: list[SpecError] = []
@@ -339,7 +200,7 @@ class _DbtChecks:
                 self._check_chart(chart, dataset, columns)
         return self.findings
 
-    def _check_dataset(self, dataset: Dataset, path: Path, columns: _Columns) -> None:
+    def _check_dataset(self, dataset: Dataset, path: Path, columns: ModelColumns) -> None:
         for loc, column in dataset_column_fields(dataset):
             self._check_column(path, loc, column, dataset.model, columns)
         for i, metric in enumerate(dataset.metrics):
@@ -354,7 +215,7 @@ class _DbtChecks:
                     why=f"`{metric.agg.value}`",
                 )
 
-    def _check_chart(self, chart: Any, dataset: Dataset, columns: _Columns) -> None:
+    def _check_chart(self, chart: Any, dataset: Dataset, columns: ModelColumns) -> None:
         path = self._path("chart", chart.name)
         # A dataset that lists its columns has them checked against dbt, and the chart
         # against that list (check_references), so only an open dataset needs this.
@@ -374,7 +235,7 @@ class _DbtChecks:
             )
 
     def _check_column(
-        self, path: Path, loc: tuple, column: str, model: str, columns: _Columns
+        self, path: Path, loc: tuple, column: str, model: str, columns: ModelColumns
     ) -> None:
         name = column.lower()
         if not columns.known:
@@ -419,7 +280,7 @@ class _DbtChecks:
         loc: tuple,
         column: str,
         model: str,
-        columns: _Columns,
+        columns: ModelColumns,
         need: str,
         why: str,
     ) -> None:

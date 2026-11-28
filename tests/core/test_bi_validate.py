@@ -290,10 +290,10 @@ def test_type_classification(dtype: str, numeric: bool, temporal: bool) -> None:
 
 
 def test_artifacts_that_cannot_be_read_are_findings(tmp_path: Path) -> None:
-    from puxti.core.bi_validate import _load_json
+    from puxti.core.dbt_artifacts import load_json
 
-    assert _load_json(tmp_path / "missing.json") == (None, None)
-    data, problem = _load_json(tmp_path)  # a directory: an OSError other than not-found
+    assert load_json(tmp_path / "missing.json") == (None, None)
+    data, problem = load_json(tmp_path)  # a directory: an OSError other than not-found
     assert data is None and problem.startswith("is unreadable")
 
 
