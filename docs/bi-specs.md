@@ -162,23 +162,31 @@ Knowledge Graph.
   current build: a removed model, column or dbt metric, or a column whose new type no longer fits
   (`sum` on text, a grain on a non-date). Charts on a broken dataset and dashboards holding a
   broken chart are broken too.
-- **affected**: a dataset whose model changed (removed, SQL changed, a column removed or retyped),
-  sits downstream of a changed model, seed or snapshot, or now resolves to a different node (a
-  new latest version), and the charts and dashboards built on it, while every reference still
-  works.
+- **affected**: a dataset whose model changed (removed, SQL changed, a column removed or retyped,
+  or its `depends_on` changed, as when an unpinned `ref()` follows a new latest version), sits
+  downstream of a changed model, seed or snapshot, or now resolves to a different node (a new
+  latest version), and the charts and dashboards built on it, while every reference still works.
 
 A spec that was already broken on the base is not reported; `puxti validate` covers it. Broken
 assets exit 1; affected assets and warnings exit 0.
 
 Columns are compared from the same source on both sides: the catalog when both builds have an
-entry for the model, else the columns its YAML declares. When neither is available and the
-model's SQL changed, a removed column cannot be seen, so the dataset gets a warning saying so
-instead of passing silently. For complete column and type changes, give both builds a
-`catalog.json`.
+entry for the model, else the columns its YAML declares. When neither is available for an
+affected dataset's model (changed itself or downstream of a change), a removed column cannot be
+seen, so the dataset gets a warning saying so instead of passing silently. For complete column
+and type changes, give both builds a `catalog.json`.
+
+dbt checksums a seed larger than 1 MiB by its file path, so an edit to its rows leaves the
+checksum unchanged. Such a seed is always reported as changed, with a note that data edits could
+not be ruled out, and everything downstream of it is affected.
 
 `dbt docs generate` reads the catalog from the warehouse, so it describes the tables that exist,
 not the SQL in the pull request. Build the changed models into the CI schema first; otherwise
-the PR's catalog shows the old tables, and a column the PR's SQL removes looks unchanged.
+the PR's catalog shows the old tables, and a column the PR's SQL removes looks unchanged. Build
+into a fresh or empty CI schema: an incremental model built into a table that already exists
+keeps the columns the PR's SQL removed (with `on_schema_change: append_new_columns`, for
+example), and the catalog then still lists them. If the CI schema has to persist, add
+`--full-refresh` so incremental models are rebuilt.
 
 Keep the production run's `target/manifest.json` and `catalog.json` where CI can fetch them (an
 artifact of the deploy workflow, a bucket, or your dbt platform's artifacts API), then in the
@@ -191,8 +199,11 @@ puxti impact --state prod-target --dbt-project-dir .
 ```
 
 Without a build (`dbt parse` alone), there is no current catalog: models, dbt metrics and the
-columns declared in YAML are still compared, and a changed model whose columns nothing records
-gets a warning.
+columns declared in YAML are still compared, and an affected dataset whose model's columns
+nothing records gets a warning. `dbt parse` does not touch `target/catalog.json`, and puxti does
+not check how old that file is: one left from an earlier build is read as the current catalog,
+replacing the YAML comparison and hiding that warning. Delete `target/catalog.json`, or parse
+into a clean target directory, before running `dbt parse`.
 
 ```
 Changed dbt models (base: prod-target)

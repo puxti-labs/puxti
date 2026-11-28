@@ -53,6 +53,9 @@ class DbtModel:
     latest_version: str | None
     declared: dict[str, str | None]  # lowercase column name -> YAML data_type
     checksum: str | None = None
+    # dbt's checksum algorithm: "sha256" for file contents, "path" for a seed over 1 MiB,
+    # whose checksum is its file path and so does not change when its rows do.
+    checksum_name: str | None = None
     resource_type: str = "model"
     depends_on: list[str] = field(default_factory=list)  # unique_ids of upstream nodes
 
@@ -107,6 +110,7 @@ class DbtFacts:
                 latest_version=_version(node.get("latest_version")),
                 declared=declared,
                 checksum=_text(checksum.get("checksum")) if isinstance(checksum, dict) else None,
+                checksum_name=_text(checksum.get("name")) if isinstance(checksum, dict) else None,
                 depends_on=[u for u in upstream if isinstance(u, str)]
                 if isinstance(upstream, list)
                 else [],

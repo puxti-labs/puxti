@@ -10,8 +10,8 @@ used.
   every chart and dashboard built on a broken spec. A check that already failed on the
   base is left to `puxti validate`: impact reports what the change introduced.
 - **affected**: a dataset whose model changed (removed, SQL changed, a column removed or
-  retyped) or sits downstream of one through ``depends_on``, and the charts and
-  dashboards built on it, while every reference still works.
+  retyped, its ``depends_on`` changed) or sits downstream of one through ``depends_on``,
+  and the charts and dashboards built on it, while every reference still works.
 
 What cannot be compared is a warning, never a silent pass.
 """
@@ -145,11 +145,11 @@ def impact_against_state(
     if base is None or current is None:
         return _sorted(report)
 
-    changes, not_comparable = _model_changes(base, current)
+    changes = _model_changes(base, current)
     report.changed_models = [ModelChange(unique_id=u, changes=c) for u, c in changes.items()]
     upstream = _affected_models(changes, base, current)
 
-    _Impact(report, specs, base, current, upstream, not_comparable).run()
+    _Impact(report, specs, base, current, upstream).run()
     # Last: reading columns during the checks can add problems.
     report.findings += facts_problems(state_dir, base) + facts_problems(target, current)
     return _sorted(report)
@@ -158,12 +158,9 @@ def impact_against_state(
 # ── dbt diff ──────────────────────────────────────────────────────────────────
 
 
-def _model_changes(base: DbtFacts, current: DbtFacts) -> tuple[dict[str, list[str]], set[str]]:
-    """What changed in each base model, seed or snapshot, and the changed ones whose
-    columns could not be compared (neither a catalog entry nor YAML columns on both
-    sides)."""
+def _model_changes(base: DbtFacts, current: DbtFacts) -> dict[str, list[str]]:
+    """What changed in each base model, seed or snapshot."""
     changes: dict[str, list[str]] = {}
-    not_comparable: set[str] = set()
     for uid, before in sorted(base.by_id.items()):
         after = current.by_id.get(uid)
         if after is None:
@@ -171,17 +168,27 @@ def _model_changes(base: DbtFacts, current: DbtFacts) -> tuple[dict[str, list[st
             continue
         found: list[str] = []
         kind = before.resource_type
-        if before.checksum and after.checksum:
+        if "path" in (before.checksum_name, after.checksum_name):
+            # dbt checksums a seed over 1 MiB by its path, so edited rows look unchanged.
+            found.append(
+                "checksum is the file path (dbt does this for seeds over 1 MiB), so data "
+                "edits could not be ruled out"
+            )
+        elif before.checksum and after.checksum:
             if before.checksum != after.checksum:
                 found.append("SQL changed" if kind != "seed" else "data changed")
         elif before.checksum or after.checksum:
             # One build records no checksum: an edit cannot be ruled out.
             found.append("checksum recorded in one build only, so edits could not be ruled out")
+        # An unpinned ref() follows a model's latest version, which can move without the
+        # file (and so the checksum) changing.
+        parents_before, parents_after = set(before.depends_on), set(after.depends_on)
+        if added := sorted(parents_after - parents_before):
+            found.append(f"now depends on {', '.join(added)}")
+        if dropped := sorted(parents_before - parents_after):
+            found.append(f"no longer depends on {', '.join(dropped)}")
         columns = _comparable_columns(base, before, current, after)
-        if columns is None:
-            if found:
-                not_comparable.add(uid)
-        else:
+        if columns is not None:
             (cols_before, types_before), (cols_after, types_after) = columns
             found += [f"column '{c}' removed" for c in sorted(cols_before - cols_after)]
             for col in sorted(cols_before & cols_after):
@@ -190,7 +197,7 @@ def _model_changes(base: DbtFacts, current: DbtFacts) -> tuple[dict[str, list[st
                     found.append(f"column '{col}' type {old} → {new}")
         if found:
             changes[uid] = found
-    return changes, not_comparable
+    return changes
 
 
 _ColumnSide = tuple[set[str], dict[str, str | None]]
@@ -247,14 +254,12 @@ class _Impact:
         base: DbtFacts,
         current: DbtFacts,
         upstream: dict[str, str],
-        not_comparable: set[str],
     ) -> None:
         self.report = report
         self.specs = specs
         self.base = base
         self.current = current
         self.upstream = upstream
-        self.not_comparable = not_comparable
         self.assets: dict[str, ImpactedAsset] = {}
         self.by_path = {path: key for key, path in specs.paths.items()}
 
@@ -262,26 +267,33 @@ class _Impact:
         self._broken_checks()
         for dataset in self.specs.datasets.values():
             now, before = self.current.model(dataset.model)[0], self.base.model(dataset.model)[0]
+            reasons: list[str] = []
             if now and before and now.unique_id != before.unique_id:
-                self._mark(
-                    "dataset",
-                    dataset.name,
-                    "affected",
+                reasons.append(
                     f"dbt model '{dataset.model}' now resolves to {now.unique_id} instead "
-                    f"of {before.unique_id}",
+                    f"of {before.unique_id}"
                 )
             model = now or before
-            if model is None or model.unique_id not in self.upstream:
-                continue
-            self._mark("dataset", dataset.name, "affected", self.upstream[model.unique_id])
-            if model.unique_id in self.not_comparable:
+            if model is not None and model.unique_id in self.upstream:
+                reasons.append(self.upstream[model.unique_id])
+            for reason in reasons:
+                self._mark("dataset", dataset.name, "affected", reason)
+            # A change upstream can remove a column here too (`select *`), so a dataset
+            # whose model's columns cannot be compared gets a warning, not a silent pass.
+            if (
+                reasons
+                and now
+                and before
+                and _comparable_columns(self.base, before, self.current, now) is None
+            ):
                 self.report.findings.append(
                     SpecError(
                         path=self.specs.paths[f"dataset:{dataset.name}"],
-                        message=f"the SQL of dbt model {model.unique_id} changed and its "
-                        "columns could not be compared, so a removed or retyped column may "
-                        "be missing here: give both builds a catalog.json from built "
-                        "models, or declare the columns in the model's YAML",
+                        message=f"dbt model {now.unique_id} changed or sits downstream of a "
+                        "change, and its columns could not be compared, so a removed or "
+                        "retyped column may be missing here: give both builds a "
+                        "catalog.json from built models, or declare the columns in the "
+                        "model's YAML",
                         severity="warning",
                     )
                 )
@@ -330,9 +342,16 @@ class _Impact:
 
 
 _TYPE_SUFFIX = re.compile(r"(; '[^']*' is ).*$")
+# The three ways DbtFacts.model fails. Their detail (the matching unique_ids, the
+# versions) can change while the model still fails to resolve, which is no new break.
+_UNRESOLVED = re.compile(
+    r"^dbt model (?:name )?('[^']*') (?:does not exist|matches version |is ambiguous: )"
+)
 
 
 def _place(finding: SpecError) -> tuple[Path, int | None, str]:
+    if match := _UNRESOLVED.match(finding.message):
+        return finding.path, finding.line, f"dbt model {match.group(1)} does not resolve"
     return finding.path, finding.line, _TYPE_SUFFIX.sub(r"\1", finding.message)
 
 

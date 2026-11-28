@@ -164,13 +164,15 @@ def test_removed_model_breaks_its_dataset(tmp_path: Path) -> None:
     ]
 
 
-def test_dependents_of_a_removed_model_are_found_through_the_base(tmp_path: Path) -> None:
-    """stg_orders is gone in the PR; orders now reads elsewhere, so only the base knows
-    the edge between them."""
+def test_dependents_of_a_removed_model_are_affected(tmp_path: Path) -> None:
+    """stg_orders is gone in the PR and orders now reads elsewhere: only the base knows
+    the edge, and orders' own depends_on shows the change."""
     nodes = {"model.shop.orders": {**ORDERS, "depends_on": {"nodes": []}}}
     report = _run(tmp_path, nodes=nodes)
     assert ("dataset", "orders", "affected") in _assets(report)
-    assert report.assets[0].reasons == ["upstream dbt model model.shop.stg_orders changed"]
+    assert report.assets[0].reasons == [
+        "dbt model model.shop.orders: no longer depends on model.shop.stg_orders"
+    ]
 
 
 def test_breakage_already_on_the_base_is_left_to_validate(tmp_path: Path) -> None:
@@ -353,3 +355,70 @@ def test_checksum_in_one_build_only_is_not_a_silent_pass(tmp_path: Path) -> None
     assert _assets(report)[0] == ("dataset", "orders", "affected")
     warnings = [f.message for f in report.findings if f.path.name == "orders.yml"]
     assert any("columns could not be compared" in w for w in warnings)
+
+
+def test_a_ref_that_moves_to_a_new_latest_version_affects_the_model_downstream(
+    tmp_path: Path,
+) -> None:
+    """An unpinned ref() follows the latest version without the file changing, so the
+    checksum stays the same; the changed depends_on is what shows it."""
+    stg_v1 = {**STG, "version": 1, "latest_version": 1}
+    base_nodes = {
+        "model.shop.orders": {**ORDERS, "depends_on": {"nodes": ["model.shop.stg_orders.v1"]}},
+        "model.shop.stg_orders.v1": stg_v1,
+    }
+    nodes = {
+        "model.shop.orders": {**ORDERS, "depends_on": {"nodes": ["model.shop.stg_orders.v2"]}},
+        "model.shop.stg_orders.v1": {**stg_v1, "latest_version": 2},
+        "model.shop.stg_orders.v2": {**stg_v1, "version": 2, "latest_version": 2},
+    }
+    report = _run(tmp_path, nodes=nodes, base_nodes=base_nodes)
+    assert report.ok and _assets(report)[0] == ("dataset", "orders", "affected")
+    assert report.assets[0].reasons == [
+        "dbt model model.shop.orders: now depends on model.shop.stg_orders.v2, no longer "
+        "depends on model.shop.stg_orders.v1"
+    ]
+
+
+def test_a_dataset_affected_through_lineage_warns_when_columns_cannot_be_compared(
+    tmp_path: Path,
+) -> None:
+    """Only stg_orders changed, but a `select *` in orders would pass a removed column on;
+    with nothing to compare orders' columns with, that is a warning, and still exit 0."""
+    nodes = _with("model.shop.stg_orders", checksum={"name": "sha256", "checksum": "s2"})
+    report = _run(tmp_path, nodes=nodes, catalog=None, base_catalog=None)
+    assert report.ok and _assets(report)[0] == ("dataset", "orders", "affected")
+    warnings = [f.message for f in report.findings if f.path.name == "orders.yml"]
+    assert any(
+        "model.shop.orders changed or sits downstream" in w and "columns could not be compared" in w
+        for w in warnings
+    )
+
+
+def test_a_model_still_ambiguous_with_another_match_is_not_a_new_break(tmp_path: Path) -> None:
+    """The ambiguity message lists the matches; one more match is the same failed check."""
+    base_nodes = {**NODES, "model.other.orders": {**ORDERS, "package_name": "other"}}
+    nodes = {**base_nodes, "model.third.orders": {**ORDERS, "package_name": "third"}}
+    report = _run(tmp_path, nodes=nodes, base_nodes=base_nodes)
+    assert report.broken == 0 and report.errors == 0
+
+
+def test_a_large_seed_with_a_path_checksum_is_not_a_silent_pass(tmp_path: Path) -> None:
+    """dbt checksums a seed over 1 MiB by its path, so edited rows keep the checksum."""
+    seed = {
+        "resource_type": "seed",
+        "name": "country_codes",
+        "package_name": "shop",
+        "checksum": {"name": "path", "checksum": "seeds/country_codes.csv"},
+    }
+    nodes = {
+        **NODES,
+        "seed.shop.country_codes": seed,
+        "model.shop.orders": {**ORDERS, "depends_on": {"nodes": ["seed.shop.country_codes"]}},
+    }
+    report = _run(tmp_path, nodes=nodes, base_nodes=nodes)
+    assert report.ok and _assets(report)[0] == ("dataset", "orders", "affected")
+    assert report.assets[0].reasons == ["upstream dbt seed seed.shop.country_codes changed"]
+    (change,) = report.changed_models
+    assert change.unique_id == "seed.shop.country_codes"
+    assert "data edits could not be ruled out" in change.changes[0]
